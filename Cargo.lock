@@ -183,6 +183,7 @@ name = "xeflash-runtime"
 version = "0.1.0"
 dependencies = [
  "xeflash-core",
+ "xeflash-model",
 ]
 
 [[package]]
@@ -202,6 +203,15 @@ dependencies = [
  "xeflash-core",
  "xeflash-model",
  "xeflash-quant",
+]
+
+[[package]]
+name = "xf-run"
+version = "0.1.0"
+dependencies = [
+ "xeflash-core",
+ "xeflash-model",
+ "xeflash-runtime",
 ]
 
 [[package]]

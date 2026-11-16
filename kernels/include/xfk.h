@@ -114,6 +114,64 @@ typedef struct {
 
 int xf_gemm(xf_ctx *ctx, const xf_gemm_desc *d);
 
+/* ---- Model pass (kernels/model/model.cpp) ------------------------------ */
+
+/* A quantised matrix resident on the device. */
+typedef struct {
+  const void *w;    /* tile-ordered codes */
+  const float *rs;  /* rows */
+  const float *cs;  /* cols */
+  float cmax;       /* max |cs| */
+  int32_t rows, cols, fmt;
+} xf_mat;
+
+enum { XF_LAYER_GDN = 0, XF_LAYER_ATTN = 1 };
+
+/* Matrices:  GDN  m = {in_proj_qkv, in_proj_z, out_proj, gate, up, down}
+ *            ATTN m = {q_proj, k_proj, v_proj, o_proj, gate, up, down}
+ * Aux (f32): GDN  aux = {ab [96][5120] (a rows then b rows), conv taps [4][10240],
+ *                        -exp(A_log) [64], dt_bias [64], norm weight [128]}
+ *            ATTN aux = {1 + q_norm [256], 1 + k_norm [256]}
+ * ln1 / ln2 hold 1 + weight of input_layernorm / post_attention_layernorm.
+ * state: block of xf_state_bytes(kind, ctx) bytes owned by the host. */
+typedef struct {
+  int32_t kind, reserved;
+  const float *ln1, *ln2;
+  xf_mat m[7];
+  const float *aux[5];
+  void *state;
+} xf_layer;
+
+typedef struct {
+  int32_t nlayers, ctx;
+  const xf_layer *layers;
+  const uint16_t *embed; /* bf16 [vocab][5120] */
+  const float *fnorm;    /* 1 + final norm weight */
+  xf_mat head;           /* lm_head */
+  const float *rope_cos, *rope_sin; /* [ctx][32] */
+  void *ws;              /* xf_ws_bytes(ctx) bytes */
+} xf_model;
+
+enum { XF_FWD_EMBED = 1, XF_FWD_HEAD = 2 };
+enum { XF_WS_IDS = 0, XF_WS_H, XF_WS_XN, XF_WS_LOGITS, XF_WS_AMAX_V, XF_WS_AMAX_I, XF_WS_MTP_H };
+enum { XF_MAX_TOKENS = 16, XF_PROF_COUNT = 7, XF_AMAX_PER_TOKEN = 97 * 64 };
+
+size_t xf_ws_bytes(int ctx);
+size_t xf_state_bytes(int kind, int ctx);
+size_t xf_ws_offset(int which, int ctx);
+
+/* Submit layers [l0, l1) for m tokens at positions pos0.. . Token ids must be
+ * in the workspace (XF_WS_IDS) when XF_FWD_EMBED is set. Committed recurrent
+ * state is not modified. If prof is non-NULL (XF_PROF_COUNT doubles) the call
+ * synchronises after every stage and adds milliseconds per category:
+ * norm, quant, gemm, gdn, attn, mlp, head. */
+int xf_forward(xf_ctx *ctx, const xf_model *md, int m, int pos0, int l0, int l1, int flags, double *prof);
+/* Make the first n tokens of the last pass part of the recurrent state. */
+int xf_commit(xf_ctx *ctx, const xf_model *md, int n);
+/* Queued device-to-device copy / zero fill. */
+int xf_copy(xf_ctx *ctx, void *dst, const void *src, size_t bytes);
+int xf_zero(xf_ctx *ctx, void *dst, size_t bytes);
+
 #ifdef __cplusplus
 }
 #endif

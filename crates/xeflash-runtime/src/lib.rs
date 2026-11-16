@@ -6,6 +6,7 @@
 //! * Kernel calls only *submit* work. [`Device::wait`] synchronises and is the
 //!   place where asynchronous failures, including a lost device, surface.
 
+pub mod engine;
 mod ffi;
 
 use std::ffi::CStr;
@@ -28,7 +29,7 @@ fn last_error() -> String {
     unsafe { CStr::from_ptr(ffi::xf_last_error()) }.to_string_lossy().into_owned()
 }
 
-fn check(status: i32) -> Result<()> {
+pub(crate) fn check(status: i32) -> Result<()> {
     match status {
         ffi::XF_OK => Ok(()),
         ffi::XF_ERR_INVALID => Err(Error::Invalid(last_error())),

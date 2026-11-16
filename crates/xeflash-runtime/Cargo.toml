@@ -8,3 +8,4 @@ links = "xfk"
 
 [dependencies]
 xeflash-core.workspace = true
+xeflash-model.workspace = true

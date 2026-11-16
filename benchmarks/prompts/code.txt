@@ -1,0 +1,7 @@
+<|im_start|>user
+Write a Python function that merges overlapping intervals and add a few tests for it.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+

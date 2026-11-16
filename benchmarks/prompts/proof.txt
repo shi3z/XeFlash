@@ -1,0 +1,7 @@
+<|im_start|>user
+Prove that the square root of 2 is irrational.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+

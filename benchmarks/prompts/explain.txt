@@ -1,0 +1,7 @@
+<|im_start|>user
+Explain how a hash table works, including collisions and resizing, with a short example.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
