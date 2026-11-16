@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/xeflash-core",
+    "crates/xeflash-runtime",
+    "crates/xeflash-quant",
+    "tools/benchmark",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+xeflash-core = { path = "crates/xeflash-core" }
+xeflash-runtime = { path = "crates/xeflash-runtime" }
+xeflash-quant = { path = "crates/xeflash-quant" }
+
+[profile.release]
+opt-level = 3
+debug = 1
