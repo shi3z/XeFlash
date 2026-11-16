@@ -4,6 +4,9 @@
 //!   xf-run dump <model.xfm> <ids.json> <out_dir> [--chunk 1|8|16] [--ctx N]
 //!   xf-run cmp  <model.xfm> <ids.json>[,..] <n_new> [--block 8|16|0=adaptive] [--sketch dir ..] [--bdraft main.yskn,draft.yskn]
 //!               compare draft sources on the same main model: official MTP, bdraft2 (feature), D0/D1-style lookup
+//!   xf-run collect <model.xfm> <dir of ids .json> <out_dir> <n_new> --bdraft main.yskn,draft.yskn [--skip-existing]
+//!               teacher data for drafter training: tokens, the five tap states (f16) of every committed row,
+//!               and what bdraft2 proposed / got accepted in the real speculative loop
 //!   xf-run mtp-tf <model.xfm> <ids.json> [--out pred.json]
 //!   xf-run gen  <model.xfm> <ids.json>[,<ids2.json>..] <n_new> [--ctx N] [--mtp K[,K..]] [--profile]
 //!               [--sketch dir --rank 512 --groups 8] [--mtp-xfm other.xfm] [--host-chain]
@@ -105,6 +108,7 @@ fn main() -> Result<()> {
         Some("dump") if args.len() >= 4 => dump(&dev, &args),
         Some("gen") if args.len() >= 4 => generate(&dev, &args),
         Some("cmp") if args.len() >= 4 => compare(&dev, &args),
+        Some("collect") if args.len() >= 5 => collect(&dev, &args),
         Some("mtp-tf") if args.len() >= 3 => mtp_teacher_forced(&dev, &args),
         _ => Err(Error::Invalid("usage: xf-run mem|dump|gen ... (see the source header)".into())),
     }
@@ -791,5 +795,143 @@ fn compare(dev: &Device, args: &[String]) -> Result<()> {
     if let Some(path) = opt(args, "--json") {
         std::fs::write(&path, json.trim_end().trim_end_matches(',').to_string() + "\n]\n")?;
     }
+    Ok(())
+}
+
+/// IEEE half from f32, round to nearest even (taps are stored as f16).
+fn f32_to_f16(v: f32) -> u16 {
+    let x = v.to_bits();
+    let sign = ((x >> 16) & 0x8000) as u16;
+    let exp = ((x >> 23) & 0xff) as i32;
+    let man = x & 0x7f_ffff;
+    if exp == 0xff {
+        return sign | 0x7c00 | if man != 0 { 0x200 } else { 0 };
+    }
+    let e = exp - 127 + 15;
+    if e >= 31 {
+        return sign | 0x7c00;
+    }
+    if e <= 0 {
+        if e < -10 {
+            return sign;
+        }
+        let m = (man | 0x80_0000) >> (1 - e);
+        let half = (m >> 13) as u16;
+        let rem = m & 0x1fff;
+        return sign | (half + ((rem > 0x1000 || (rem == 0x1000 && half & 1 == 1)) as u16));
+    }
+    let half = sign | ((e as u16) << 10) | (man >> 13) as u16;
+    let rem = man & 0x1fff;
+    half + ((rem > 0x1000 || (rem == 0x1000 && half & 1 == 1)) as u16)
+}
+
+/// collect: run every prompt with the bdraft2 drafter (adaptive block) and save,
+/// per sequence, `<name>.tok` (u32 token ids: prompt then generated),
+/// `<name>.taps` (f16, [tokens][5][5120]: residual stream after layers
+/// 5/19/33/47/61 for every committed token) and `<name>.json` (prompt length
+/// and one record per speculative cycle: position, block rows, drafts, accepted).
+/// The main model's greedy choice after token t is token t + 1 of the file.
+fn collect(dev: &Device, args: &[String]) -> Result<()> {
+    let n_new: usize = args[4].parse().map_err(|_| Error::Invalid("bad token count".into()))?;
+    let out = Path::new(&args[3]);
+    std::fs::create_dir_all(out)?;
+    let mut files: Vec<_> = std::fs::read_dir(&args[2])?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .collect();
+    files.sort();
+    let skip = args.iter().any(|a| a == "--skip-existing");
+    let budget = opt_usize(args, "--seconds", 240)? as f64; // stop starting new sequences after this long
+    let mut e = load_opts(dev, &args[1], opt_usize(args, "--ctx", 8192)?, args)?;
+    #[allow(unused_mut)]
+    let mut bd: Option<Bd> = None;
+    #[cfg(feature = "bdraft2")]
+    if let Some(paths) = opt(args, "--bdraft") {
+        let (m, d) = paths.split_once(',').ok_or_else(|| Error::Invalid("--bdraft main.yskn,draft.yskn".into()))?;
+        bd = Some(Bd::open(m, d, e.capacity())?);
+    }
+    let Some(mut bd) = bd else {
+        return Err(Error::Invalid("collect needs --bdraft and the bdraft2 feature".into()));
+    };
+    e.set_capture(true);
+    let started = Instant::now();
+    let (mut done, mut toks) = (0usize, 0usize);
+    let mut taps = vec![0f32; 5 * 16 * HIDDEN];
+    for path in &files {
+        let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("seq").to_string();
+        if skip && out.join(format!("{name}.json")).exists() {
+            continue;
+        }
+        if started.elapsed().as_secs_f64() > budget {
+            break;
+        }
+        let prompt = read_ids(path.to_str().unwrap())?;
+        if prompt.len() + n_new + 16 > e.capacity() {
+            continue;
+        }
+        e.reset()?;
+        bd.reset()?;
+        let mut seq: Vec<u32> = Vec::new();
+        let mut f16: Vec<u16> = Vec::new();
+        let mut save_rows = |taps: &[f32], n: usize, f16: &mut Vec<u16>| {
+            for r in 0..n {
+                for t in 0..5 {
+                    let at = (t * 16 + r) * HIDDEN;
+                    f16.extend(taps[at..at + HIDDEN].iter().map(|v| f32_to_f16(*v)));
+                }
+            }
+        };
+        let mut next = 0u32;
+        let mut pend = (0usize, 0usize);
+        let nchunks = prompt.len().div_ceil(16);
+        for (ci, c) in prompt.chunks(16).enumerate() {
+            next = e.forward(c, None)?.last().unwrap().0;
+            e.commit(c.len())?;
+            e.read_taps(&mut taps)?;
+            save_rows(&taps, c.len(), &mut f16);
+            seq.extend_from_slice(c);
+            if ci + 1 < nchunks {
+                bd.ctx(&taps, c.len(), ci * 16)?;
+            } else {
+                pend = (c.len(), ci * 16);
+            }
+        }
+        let mut adapt = Adapt::new();
+        let mut cycles = String::new();
+        let mut generated = 0usize;
+        while generated < n_new {
+            let pos = e.position();
+            let rows = if adapt.use16() { 16 } else { 8 };
+            let drafts = bd.step(&taps, pend.0, pend.1, rows, next, pos)?;
+            let mut ids = vec![next];
+            ids.extend(&drafts);
+            let g = e.forward(&ids, None)?;
+            let mut n = 1;
+            while n < ids.len() && g[n - 1].0 == ids[n] {
+                n += 1;
+            }
+            e.commit(n)?;
+            adapt.update(rows, n - 1);
+            e.read_taps(&mut taps)?;
+            save_rows(&taps, n, &mut f16);
+            seq.extend_from_slice(&ids[..n]);
+            let sep = if cycles.is_empty() { "" } else { "," };
+            cycles.push_str(&format!("{sep}{{\"pos\":{pos},\"rows\":{rows},\"drafts\":{:?},\"accepted\":{}}}", drafts, n - 1));
+            generated += n;
+            next = g[n - 1].0;
+            pend = (n, pos);
+        }
+        let tok_bytes: Vec<u8> = seq.iter().flat_map(|t| t.to_le_bytes()).collect();
+        let tap_bytes: Vec<u8> = f16.iter().flat_map(|t| t.to_le_bytes()).collect();
+        std::fs::write(out.join(format!("{name}.tok")), tok_bytes)?;
+        std::fs::write(out.join(format!("{name}.taps")), tap_bytes)?;
+        std::fs::write(
+            out.join(format!("{name}.json")),
+            format!("{{\"name\":\"{name}\",\"prompt_tokens\":{},\"tokens\":{},\"next_after_last\":{next},\"cycles\":[{cycles}]}}\n", prompt.len(), seq.len()),
+        )?;
+        done += 1;
+        toks += seq.len();
+    }
+    eprintln!("collected {done} sequences, {toks} tokens in {:.0}s", started.elapsed().as_secs_f64());
     Ok(())
 }
