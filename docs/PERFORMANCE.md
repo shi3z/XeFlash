@@ -446,8 +446,8 @@ accepted. bdraft2 drafts 15 tokens for the same 5.8 to 6.3 ms as 7.
 ## D3. Reading
 
 * **bdraft2 is the faster drafter on this main model**: 86.6 against 61.8
-  tok/s on the four benchmark prompts. It accepts more (4.4 to 7.8 tokens per
-  pass against 3.8 to 5.0) and costs less per cycle (6 ms against 11 to 14 ms)
+  tok/s on the four benchmark prompts. It accepts more (2.5 to 7.8 tokens per
+  pass against 2.4 to 5.2 for the MTP's best setting per prompt) and costs less per cycle (6 ms against 11 to 14 ms)
   because one block yields all drafts.
 * It did not need retraining for XeFlash's INT4 main model: first-draft
   acceptance is 84 to 97 % on English, code and proofs.
