@@ -3,3 +3,4 @@
 /isa
 *.so
 __pycache__/
+benchmarks/prompts/long*.json
