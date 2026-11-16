@@ -16,6 +16,8 @@
 #include <sycl/ext/intel/esimd.hpp>
 
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 
 #include "../ctx.hpp"
 
@@ -646,14 +648,18 @@ void k_argmax(Q &q, const float *logits, float *amv, int32_t *ami, int m) {
 struct Timer {
   Q &q;
   double *prof;
+  bool trace; // XF_TRACE_STAGES: wait and print a marker after every stage
   std::chrono::steady_clock::time_point t0;
-  Timer(Q &queue, double *p) : q(queue), prof(p) {
+  Timer(Q &queue, double *p) : q(queue), prof(p), trace(std::getenv("XF_TRACE_STAGES") != nullptr) {
     if (prof) t0 = std::chrono::steady_clock::now();
   }
   // Attribute everything submitted since the last call to category `cat`.
   void tick(int cat) {
-    if (!prof) return;
+    if (!prof && !trace) return;
+    if (trace) std::fprintf(stderr, "%d", cat);
     q.wait_and_throw();
+    if (trace) std::fprintf(stderr, ". ");
+    if (!prof) return;
     const auto t1 = std::chrono::steady_clock::now();
     prof[cat] += std::chrono::duration<double, std::milli>(t1 - t0).count();
     t0 = t1;
@@ -691,7 +697,8 @@ struct Pass {
     d.y = y;
     d.ypart = ws.ypart;
     d.toff = ws.toff;
-    d.bias = mat.bias;
+    static const bool no_bias = std::getenv("XF_NO_BIAS") != nullptr; // diagnostic
+    d.bias = no_bias ? nullptr : mat.bias;
     const int st = xf_gemm(ctx, &d);
     tm.tick(P_GEMM);
     return st;
@@ -828,10 +835,17 @@ int xf_forward(xf_ctx *ctx, const xf_model *md, int m, int pos0, int l0, int l1,
       k_embed(q, md->embed, p.ws.ids, p.ws.h, m);
       p.tm.tick(P_NORM);
     }
+    // XF_SYNC_LAYERS=n: wait for the queue every n layers (diagnostic / workaround knob).
+    static const int sync_every = [] {
+      const char *e = std::getenv("XF_SYNC_LAYERS");
+      return e ? std::atoi(e) : 0;
+    }();
     for (int l = l0; l < l1; l++) {
       const xf_layer &L = md->layers[l];
+      if (p.tm.trace) std::fprintf(stderr, "\nL%d: ", l);
       const int st = L.kind == XF_LAYER_GDN ? p.gdn(L) : p.attn(L, pos0);
       if (st != XF_OK) return st;
+      if (sync_every > 0 && (l + 1) % sync_every == 0) q.wait_and_throw();
     }
     if (flags & XF_FWD_HEAD) {
       p.norm(md->fnorm);

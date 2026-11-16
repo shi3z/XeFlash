@@ -321,7 +321,14 @@ template <bool A16> sycl::event combine_int(sycl::queue &q, const xf_gemm_desc &
 
 template <int WF, bool A16> int dispatch(sycl::queue &q, const xf_gemm_desc &d) {
   switch (d.tokens_per_thread) {
-  case 1: submit<WF, 1, 1, 4, A16>(q, d); return XF_OK;
+  case 1:
+    // s8 with 16-bit activations and four tiles per trip (32 weight registers
+    // plus two activation planes) never finishes on the B60: the kernel spins
+    // at full clock. One tile per trip is fine. Observed, not understood; see
+    // docs/EXPERIMENTS.md.
+    if constexpr (WF == XF_W_S8 && A16) submit<WF, 1, 1, 1, A16>(q, d);
+    else submit<WF, 1, 1, 4, A16>(q, d);
+    return XF_OK;
   case 8: submit<WF, 8, 1, 2, A16>(q, d); return XF_OK;
   case 16: submit<WF, 8, 2, 1, A16>(q, d); return XF_OK;
   case 32: submit<WF, 8, 4, 1, A16>(q, d); return XF_OK;

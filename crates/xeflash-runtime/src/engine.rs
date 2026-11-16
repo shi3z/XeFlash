@@ -55,6 +55,9 @@ struct Loader<'a> {
 impl Loader<'_> {
     fn keep(&mut self, category: &'static str, name: &str, buf: DeviceBuf) -> *mut c_void {
         let ptr = buf.ptr;
+        if std::env::var_os("XF_TRACE_ALLOC").is_some() {
+            eprintln!("alloc {:#018x} +{:#x} {category} {name}", ptr as usize, buf.len_bytes());
+        }
         self.allocs.push(Alloc { category, name: name.to_string(), bytes: buf.len_bytes() });
         self.bufs.push(buf);
         ptr
@@ -176,6 +179,9 @@ impl Engine {
             let kind = if is_attn { ffi::XF_LAYER_ATTN } else { ffi::XF_LAYER_GDN };
             let sbytes = unsafe { ffi::xf_state_bytes(kind, ctx as i32) };
             let state = dev.alloc(sbytes)?;
+            if std::env::var_os("XF_TRACE_ALLOC").is_some() {
+                eprintln!("alloc {:#018x} +{:#x} state layer {l}", state.ptr as usize, sbytes);
+            }
             state_allocs.push(Alloc {
                 category: if is_attn { "KV cache" } else { "DeltaNet state" },
                 name: format!("layer {l}"),
@@ -269,6 +275,9 @@ impl Engine {
 
         let ws_bytes = unsafe { ffi::xf_ws_bytes(ctx as i32) };
         let ws = dev.alloc(ws_bytes)?;
+        if std::env::var_os("XF_TRACE_ALLOC").is_some() {
+            eprintln!("alloc {:#018x} +{:#x} workspace", ws.ptr as usize, ws_bytes);
+        }
         let mut allocs = ld.allocs;
         allocs.extend(state_allocs);
         allocs.push(Alloc { category: "workspace", name: "workspace".into(), bytes: ws_bytes });
@@ -351,6 +360,21 @@ impl Engine {
     /// and its logit for every input position.
     pub fn forward(&mut self, ids: &[u32], prof: Option<&mut [f64; 7]>) -> Result<Vec<(u32, f32)>> {
         self.set_tokens(ids)?;
+        if std::env::var_os("XF_TRACE_LAYERS").is_some() {
+            // Debug aid: one layer per submission with a wait, to locate a stuck kernel.
+            self.run_layers(0, 0, true, false, None)?;
+            self.dev.wait()?;
+            for l in 0..LAYERS {
+                eprint!("L{l} ");
+                self.run_layers(l, l + 1, false, false, None)?;
+                self.dev.wait()?;
+            }
+            eprint!("head ");
+            self.run_layers(LAYERS, LAYERS, false, true, None)?;
+            self.dev.wait()?;
+            eprintln!("done");
+            return self.argmax();
+        }
         self.run_layers(0, LAYERS, true, true, prof)?;
         self.argmax()
     }

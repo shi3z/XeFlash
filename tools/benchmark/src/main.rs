@@ -28,6 +28,10 @@ const SHAPES: &[Shape] = &[
     Shape { name: "mlp.gate/up", rows: 17408, cols: 5120 },
     Shape { name: "mlp.down", rows: 5120, cols: 17408 },
     Shape { name: "gdn.qkv", rows: 10240, cols: 5120 },
+    // Row-stacked matrices of merged containers.
+    Shape { name: "merged.qkvz", rows: 16384, cols: 5120 },
+    Shape { name: "merged.attn_qkv", rows: 14336, cols: 5120 },
+    Shape { name: "merged.gate_up", rows: 34816, cols: 5120 },
 ];
 
 struct Case {
@@ -274,7 +278,7 @@ fn main() -> Result<()> {
                 if tokens <= 16 && shape.rows < 8192 {
                     variants.push((4, false)); // few row blocks: add column workers
                 }
-                if matches!(format, WeightFormat::S4 | WeightFormat::S3) && tokens <= 16 {
+                if matches!(format, WeightFormat::S4 | WeightFormat::S3 | WeightFormat::S8) && tokens <= 16 {
                     variants.push((1, true)); // 16-bit activations
                     if shape.rows < 8192 {
                         variants.push((4, true));
