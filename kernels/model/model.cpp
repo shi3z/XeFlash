@@ -28,6 +28,7 @@ constexpr int MAXM = 16;
 constexpr int D = 5120, FF = 17408, QKV = 10240, VD = 6144, QP = 12288, KVD = 1024, VOCAB = 248320;
 constexpr int KH = 16, VH = 48, HD = 128;      // DeltaNet heads
 constexpr int AH = 24, AKH = 4, AD = 256;      // attention heads
+constexpr int QKVZ = QKV + VD, AQKV = QP + 2 * KVD; // row-stacked matrices sharing an input
 constexpr int PS = 320;                        // row stride of per-64-column partials (>= FF / 64)
 constexpr int AMC = 97, AMB = 40;              // argmax: 97 chunks of 40 x 64 logits per token
 constexpr float EPS = 1e-6f;
@@ -115,12 +116,12 @@ WS carve_ws(void *base, int ctx) {
   w.qn = b.take<float>(MAXM * KH * HD);
   w.gout = b.take<float>(MAXM * VD);
   w.go = b.take<float>(MAXM * VD);
-  w.yq = b.take<float>(MAXM * QP);
+  w.yq = b.take<float>(MAXM * AQKV);
   w.yk = b.take<float>(MAXM * KVD);
   w.yv = b.take<float>(MAXM * KVD);
   w.qr = b.take<float>(MAXM * AH * AD);
-  w.g = b.take<float>(size_t(MAXM) * FF);
-  w.u = b.take<float>(size_t(MAXM) * FF);
+  w.g = b.take<float>(size_t(MAXM) * 2 * FF);
+  w.u = b.take<float>(size_t(MAXM) * 2 * FF);
   w.logits = b.take<float>(size_t(MAXM) * VOCAB);
   w.amv = b.take<float>(MAXM * AMC * 64);
   w.ami = b.take<int32_t>(MAXM * AMC * 64);
@@ -142,7 +143,7 @@ GdnState carve_gdn(void *base) {
   GdnState s;
   s.S = b.take<float>(size_t(VH) * HD * HD); // [value head][value column j][key row i]
   s.hist = b.take<float>(3 * QKV);
-  s.raw = b.take<float>(MAXM * QKV);
+  s.raw = b.take<float>(MAXM * QKVZ);
   s.kn = b.take<float>(MAXM * KH * HD);
   s.dsave = b.take<float>(MAXM * VD);
   s.beta = b.take<float>(MAXM * 64);
@@ -244,7 +245,7 @@ void k_addnorm(Q &q, float *h, const float *y, const float *gain, float *xn, flo
 
 // Activation quantisation for one GEMM: x' = v * col_scale, 16-bit, two byte
 // planes in DPAS tile order. step = max|v| * max(col_scale) / 32767.
-void k_quant(Q &q, const float *v, int n, const float *cs, float cmax, const float *pmax, int m, int mpad,
+void k_quant(Q &q, const float *v, size_t vs, int n, const float *cs, float cmax, const float *pmax, int m, int mpad,
              int8_t *xhi, uint8_t *xlo, float *ts, float *toff) {
   const int nc = n / 64;
   // One work-group per token, at most 64 threads, each owning `cpt` chunks of 64 columns.
@@ -269,7 +270,7 @@ void k_quant(Q &q, const float *v, int n, const float *cs, float cmax, const flo
     for (int k = 0; k < cpt; k++) {
       const size_t c = t * cpt + k;
       simd<float, 64> x, sc;
-      x.copy_from(v + mi * n + c * 64);
+      x.copy_from(v + mi * vs + c * 64);
       sc.copy_from(cs + c * 64);
       simd<float, 64> r = es::rnde<float>(x * sc * istep);
       r = es::max(es::min(r, simd<float, 64>(32767.0f)), simd<float, 64>(-32767.0f));
@@ -360,7 +361,7 @@ void k_add(Q &q, float *h, const float *y, int m) {
 }
 
 // Depthwise causal conv (4 taps, tap-major weights [4][QKV]) + SiLU.
-void k_conv(Q &q, const float *raw, const float *hist, const float *taps, float *act, int m) {
+void k_conv(Q &q, const float *raw, size_t rs, const float *hist, const float *taps, float *act, int m) {
   q.parallel_for(sycl::range<1>(size_t(m) * (QKV / 64)), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
     const int mi = int(id[0] / (QKV / 64));
     const size_t c = id[0] % (QKV / 64);
@@ -369,7 +370,7 @@ void k_conv(Q &q, const float *raw, const float *hist, const float *taps, float 
     for (int k = 0; k < 4; k++) {
       const int r = mi - 3 + k;
       simd<float, 64> x, w;
-      x.copy_from(r >= 0 ? raw + size_t(r) * QKV + c * 64 : hist + size_t(3 + r) * QKV + c * 64);
+      x.copy_from(r >= 0 ? raw + size_t(r) * rs + c * 64 : hist + size_t(3 + r) * QKV + c * 64);
       w.copy_from(taps + size_t(k) * QKV + c * 64);
       acc += x * w;
     }
@@ -448,14 +449,14 @@ void k_gdn_commit(Q &q, float *S, const float *kn, const float *decay, const flo
 }
 
 // hist <- last three rows of (hist ++ raw[0..n)).
-void k_hist_commit(Q &q, float *hist, const float *raw, int n) {
+void k_hist_commit(Q &q, float *hist, const float *raw, size_t rs, int n) {
   q.parallel_for(sycl::range<1>(QKV / 64), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
     const size_t c = id[0];
     simd<float, 64> r[3];
 #pragma unroll
     for (int i = 0; i < 3; i++) {
       const int x = n + i; // index into hist ++ raw
-      r[i].copy_from(x < 3 ? hist + size_t(x) * QKV + c * 64 : raw + size_t(x - 3) * QKV + c * 64);
+      r[i].copy_from(x < 3 ? hist + size_t(x) * QKV + c * 64 : raw + size_t(x - 3) * rs + c * 64);
     }
 #pragma unroll
     for (int i = 0; i < 3; i++) r[i].copy_to(hist + size_t(i) * QKV + c * 64);
@@ -463,12 +464,12 @@ void k_hist_commit(Q &q, float *hist, const float *raw, int n) {
 }
 
 // out = w * rmsnorm_128(o) * silu(z), per value head.
-void k_gdn_post(Q &q, const float *gout, const float *z, const float *gw, float *go, float *pmax, int m) {
+void k_gdn_post(Q &q, const float *gout, const float *z, size_t zs, const float *gw, float *go, float *pmax, int m) {
   q.parallel_for(sycl::range<1>(size_t(m) * VH), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
     const size_t mi = id[0] / VH, h = id[0] % VH;
     simd<float, HD> o, zz, w;
     o.copy_from(gout + mi * VD + h * HD);
-    zz.copy_from(z + mi * VD + h * HD);
+    zz.copy_from(z + mi * zs + h * HD);
     w.copy_from(gw);
     o = o * srsqrt(hsum<HD>(o * o) * (1.0f / HD) + EPS) * w * (zz * sigmoid<HD>(zz));
     o.copy_to(go + mi * VD + h * HD);
@@ -496,31 +497,31 @@ ESIMD_INLINE void norm_rope(simd<float, 64> *v, const float *gain, const float *
   v[0].template select<32, 1>(32) = hi * c + lo * s;
 }
 
-void k_attn_q(Q &q, const float *yq, const float *gain, const float *cs, const float *sn, float *qr, int m, int pos0) {
+void k_attn_q(Q &q, const float *yq, size_t qs, const float *gain, const float *cs, const float *sn, float *qr, int m, int pos0) {
   q.parallel_for(sycl::range<1>(size_t(m) * AH), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
     const size_t mi = id[0] / AH, h = id[0] % AH;
     simd<float, 64> v[4];
 #pragma unroll
-    for (int i = 0; i < 4; i++) v[i].copy_from(yq + mi * QP + h * 2 * AD + i * 64);
+    for (int i = 0; i < 4; i++) v[i].copy_from(yq + mi * qs + h * 2 * AD + i * 64);
     norm_rope(v, gain, cs + (pos0 + mi) * 32, sn + (pos0 + mi) * 32);
 #pragma unroll
     for (int i = 0; i < 4; i++) v[i].copy_to(qr + (mi * AH + h) * AD + i * 64);
   });
 }
 
-void k_attn_kv(Q &q, const float *yk, const float *yv, const float *gain, const float *cs, const float *sn, float *K,
+void k_attn_kv(Q &q, const float *yk, const float *yv, size_t ks, const float *gain, const float *cs, const float *sn, float *K,
                float *V, int m, int pos0) {
   q.parallel_for(sycl::range<1>(size_t(m) * AKH), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
     const size_t mi = id[0] / AKH, kh = id[0] % AKH;
     simd<float, 64> v[4];
 #pragma unroll
-    for (int i = 0; i < 4; i++) v[i].copy_from(yk + mi * KVD + kh * AD + i * 64);
+    for (int i = 0; i < 4; i++) v[i].copy_from(yk + mi * ks + kh * AD + i * 64);
     norm_rope(v, gain, cs + (pos0 + mi) * 32, sn + (pos0 + mi) * 32);
 #pragma unroll
     for (int i = 0; i < 4; i++) {
       v[i].copy_to(K + ((pos0 + mi) * AKH + kh) * AD + i * 64);
       simd<float, 64> x;
-      x.copy_from(yv + mi * KVD + kh * AD + i * 64);
+      x.copy_from(yv + mi * ks + kh * AD + i * 64);
       x.copy_to(V + ((pos0 + mi) * AKH + kh) * AD + i * 64);
     }
   });
@@ -570,7 +571,7 @@ void k_attn_part(Q &q, const float *qr, const float *K, const float *V, float *p
 }
 
 // Combine block partials, apply the sigmoid output gate.
-void k_attn_comb(Q &q, const float *pm, const float *pd, const float *pv, const float *yq, float *ao, float *pmax,
+void k_attn_comb(Q &q, const float *pm, const float *pd, const float *pv, const float *yq, size_t qs, float *ao, float *pmax,
                  int m, int pos0, size_t nbs) {
   q.parallel_for(sycl::range<1>(size_t(m) * AH), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
     const size_t mh = id[0], mi = mh / AH, h = mh % AH;
@@ -598,7 +599,7 @@ void k_attn_comb(Q &q, const float *pm, const float *pd, const float *pv, const 
 #pragma unroll
     for (int i = 0; i < 4; i++) {
       simd<float, 64> gate;
-      gate.copy_from(yq + mi * QP + h * 2 * AD + AD + i * 64);
+      gate.copy_from(yq + mi * qs + h * 2 * AD + AD + i * 64);
       simd<float, 64> o = acc[i] * inv * sigmoid<64>(gate);
       o.copy_to(ao + mi * VD + h * AD + i * 64);
       storef(pmax + mi * PS + h * 4 + i, hmax<64>(es::abs(o)));
@@ -607,14 +608,14 @@ void k_attn_comb(Q &q, const float *pm, const float *pd, const float *pv, const 
 }
 
 // a = silu(gate) * up, in place into g.
-void k_mlp_act(Q &q, float *g, const float *u, float *pmax, int m) {
+void k_mlp_act(Q &q, float *g, const float *u, size_t gs, float *pmax, int m) {
   q.parallel_for(sycl::range<1>(size_t(m) * (FF / 64)), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
     const size_t mi = id[0] / (FF / 64), c = id[0] % (FF / 64);
     simd<float, 64> a, b;
-    a.copy_from(g + mi * FF + c * 64);
-    b.copy_from(u + mi * FF + c * 64);
+    a.copy_from(g + mi * gs + c * 64);
+    b.copy_from(u + mi * gs + c * 64);
     a = a * sigmoid<64>(a) * b;
-    a.copy_to(g + mi * FF + c * 64);
+    a.copy_to(g + mi * gs + c * 64);
     storef(pmax + mi * PS + c, hmax<64>(es::abs(a)));
   });
 }
@@ -669,9 +670,10 @@ struct Pass {
   bool pending = false; // ws.y still has to be added to ws.h
 
   // y[m][rows] = mat (v[m][cols]) ; pmax must describe v.
-  int gemm(const xf_mat &mat, const float *v, float *y) {
+  // `vs` is the row stride of v (0 = mat.cols). The output row stride is mat.rows.
+  int gemm(const xf_mat &mat, const float *v, float *y, size_t vs = 0) {
     Q &q = ctx->q;
-    k_quant(q, v, mat.cols, mat.cs, mat.cmax, ws.pmax, m, mpad, ws.xhi, ws.xlo, ws.ts, ws.toff);
+    k_quant(q, v, vs ? vs : size_t(mat.cols), mat.cols, mat.cs, mat.cmax, ws.pmax, m, mpad, ws.xhi, ws.xlo, ws.ts, ws.toff);
     tm.tick(P_QUANT);
     xf_gemm_desc d{};
     d.wfmt = mat.fmt;
@@ -705,14 +707,27 @@ struct Pass {
     pending = false;
   }
 
+  // gi = index of gate_proj. Merged containers hold gate+up as one matrix in
+  // that slot (up slot empty); either way gate and up outputs sit side by side.
   int mlp(const xf_layer &L, int gi) {
     Q &q = ctx->q;
+    const bool merged = L.m[gi + 1].rows == 0;
+    const size_t gs = 2 * FF;
     norm(L.ln2);
-    if (int st = gemm(L.m[gi], ws.xn, ws.g)) return st;
-    if (int st = gemm(L.m[gi + 1], ws.xn, ws.u)) return st;
-    k_mlp_act(q, ws.g, ws.u, ws.pmax, m);
+    if (merged) {
+      if (int st = gemm(L.m[gi], ws.xn, ws.g)) return st; // rows = 2 * FF: [gate | up] per token
+    } else {
+      // Two launches; each writes its own contiguous [m][FF] block, so stage
+      // them and interleave is avoided by giving up its own buffer.
+      if (int st = gemm(L.m[gi], ws.xn, ws.u)) return st;
+      if (int st = gemm(L.m[gi + 1], ws.xn, ws.u + size_t(MAXM) * FF)) return st;
+    }
+    const float *gptr = merged ? ws.g : ws.u;
+    const float *uptr = merged ? ws.g + FF : ws.u + size_t(MAXM) * FF;
+    const size_t stride = merged ? gs : size_t(FF);
+    k_mlp_act(q, const_cast<float *>(gptr), uptr, stride, ws.pmax, m);
     tm.tick(P_MLP);
-    if (int st = gemm(L.m[gi + 2], ws.g, ws.y)) return st;
+    if (int st = gemm(L.m[gi + 2], gptr, ws.y, stride)) return st;
     pending = true;
     return XF_OK;
   }
@@ -720,15 +735,20 @@ struct Pass {
   int gdn(const xf_layer &L) {
     Q &q = ctx->q;
     GdnState s = carve_gdn(L.state);
+    const bool merged = L.m[1].rows == 0; // m[0] is qkv+z stacked
+    const size_t rs = merged ? QKVZ : QKV;
+    const float *z = merged ? s.raw + QKV : ws.yz;
+    const size_t zs = merged ? QKVZ : VD;
     norm(L.ln1);
     if (int st = gemm(L.m[0], ws.xn, s.raw)) return st;
-    if (int st = gemm(L.m[1], ws.xn, ws.yz)) return st;
+    if (!merged)
+      if (int st = gemm(L.m[1], ws.xn, ws.yz)) return st;
     k_gemv_f32(q, L.aux[0], ws.xn, ws.yab, 96, m);
-    k_conv(q, s.raw, s.hist, L.aux[1], ws.act, m);
+    k_conv(q, s.raw, rs, s.hist, L.aux[1], ws.act, m);
     k_gdn_qk(q, ws.act, ws.qn, s.kn, m);
     k_gdn_gate(q, ws.yab, L.aux[2], L.aux[3], s.beta, s.decay, m);
     k_gdn_core(q, s.S, ws.act, ws.qn, s.kn, s.beta, s.decay, s.dsave, ws.gout, m);
-    k_gdn_post(q, ws.gout, ws.yz, L.aux[4], ws.go, ws.pmax, m);
+    k_gdn_post(q, ws.gout, z, zs, L.aux[4], ws.go, ws.pmax, m);
     tm.tick(P_GDN);
     if (int st = gemm(L.m[2], ws.go, ws.y)) return st;
     pending = true;
@@ -739,14 +759,28 @@ struct Pass {
     Q &q = ctx->q;
     AttnState s = carve_attn(L.state, md->ctx);
     const size_t nbs = size_t(md->ctx) / 64 + 1;
+    const bool merged = L.m[1].rows == 0; // m[0] is q+k+v stacked
     norm(L.ln1);
-    if (int st = gemm(L.m[0], ws.xn, ws.yq)) return st;
-    if (int st = gemm(L.m[1], ws.xn, ws.yk)) return st;
-    if (int st = gemm(L.m[2], ws.xn, ws.yv)) return st;
-    k_attn_q(q, ws.yq, L.aux[0], md->rope_cos, md->rope_sin, ws.qr, m, pos0);
-    k_attn_kv(q, ws.yk, ws.yv, L.aux[1], md->rope_cos, md->rope_sin, s.K, s.V, m, pos0);
+    const float *yk, *yv;
+    size_t qs, ks;
+    if (merged) {
+      if (int st = gemm(L.m[0], ws.xn, ws.yq)) return st;
+      qs = ks = AQKV;
+      yk = ws.yq + QP;
+      yv = ws.yq + QP + KVD;
+    } else {
+      if (int st = gemm(L.m[0], ws.xn, ws.yq)) return st;
+      if (int st = gemm(L.m[1], ws.xn, ws.yk)) return st;
+      if (int st = gemm(L.m[2], ws.xn, ws.yv)) return st;
+      qs = QP;
+      ks = KVD;
+      yk = ws.yk;
+      yv = ws.yv;
+    }
+    k_attn_q(q, ws.yq, qs, L.aux[0], md->rope_cos, md->rope_sin, ws.qr, m, pos0);
+    k_attn_kv(q, yk, yv, ks, L.aux[1], md->rope_cos, md->rope_sin, s.K, s.V, m, pos0);
     k_attn_part(q, ws.qr, s.K, s.V, ws.pm, ws.pd, ws.pv, m, pos0, nbs);
-    k_attn_comb(q, ws.pm, ws.pd, ws.pv, ws.yq, ws.go, ws.pmax, m, pos0, nbs);
+    k_attn_comb(q, ws.pm, ws.pd, ws.pv, ws.yq, qs, ws.go, ws.pmax, m, pos0, nbs);
     tm.tick(P_ATTN);
     if (int st = gemm(L.m[3], ws.go, ws.y)) return st;
     pending = true;
@@ -848,7 +882,7 @@ int xf_commit(xf_ctx *ctx, const xf_model *md, int n) {
       if (L.kind != XF_LAYER_GDN) continue;
       GdnState s = carve_gdn(L.state);
       k_gdn_commit(ctx->q, s.S, s.kn, s.decay, s.dsave, n);
-      k_hist_commit(ctx->q, s.hist, s.raw, n);
+      k_hist_commit(ctx->q, s.hist, s.raw, L.m[1].rows == 0 ? size_t(QKVZ) : size_t(QKV), n);
     }
     return XF_OK;
   });

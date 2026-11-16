@@ -23,6 +23,15 @@ PROMPTS = {
 tok = AutoTokenizer.from_pretrained(sys.argv[1])
 out = Path(sys.argv[2])
 out.mkdir(parents=True, exist_ok=True)
+if "--chats" in sys.argv:
+    # Whole conversations (with assistant turns) for teacher-forced evaluation.
+    chats = json.loads(Path(sys.argv[sys.argv.index("--chats") + 1]).read_text())
+    for i, chat in enumerate(chats):
+        s = tok.apply_chat_template(chat, tokenize=False, add_generation_prompt=False, enable_thinking=False)
+        ids = tok(s, add_special_tokens=False)["input_ids"]
+        (out / f"chat{i}.json").write_text(json.dumps(ids))
+        print(f"chat{i}", len(ids))
+    sys.exit(0)
 for name, text in PROMPTS.items():
     s = tok.apply_chat_template([{"role": "user", "content": text}], tokenize=False,
                                 add_generation_prompt=True, enable_thinking=False)

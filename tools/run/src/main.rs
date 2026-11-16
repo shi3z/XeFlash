@@ -2,6 +2,7 @@
 //!
 //!   xf-run mem  <model.xfm> [--ctx N]
 //!   xf-run dump <model.xfm> <ids.json> <out_dir> [--chunk 1|8|16] [--ctx N]
+//!   xf-run mtp-tf <model.xfm> <ids.json> [--out pred.json]
 //!   xf-run gen  <model.xfm> <ids.json> <n_new> [--ctx N] [--prefill-chunk 16] [--mtp K] [--profile] [--out ids.json]
 //!
 //! `ids.json` is a JSON array of token ids. Run through scripts/b60run.
@@ -79,6 +80,7 @@ fn main() -> Result<()> {
         }
         Some("dump") if args.len() >= 4 => dump(&dev, &args),
         Some("gen") if args.len() >= 4 => generate(&dev, &args),
+        Some("mtp-tf") if args.len() >= 3 => mtp_teacher_forced(&dev, &args),
         _ => Err(Error::Invalid("usage: xf-run mem|dump|gen ... (see the source header)".into())),
     }
 }
@@ -115,6 +117,32 @@ fn dump(dev: &Device, args: &[String]) -> Result<()> {
     write_f32(&out.join("logits.bin"), &logits)?;
     std::fs::write(out.join("greedy.json"), format!("{greedy:?}"))?;
     eprintln!("dumped {t} tokens (chunks of {chunk}) to {}", out.display());
+    Ok(())
+}
+
+/// Teacher-forced MTP: feed the true tokens and trunk hidden states, record
+/// what the MTP block predicts at every position (prediction of token t+1 at
+/// MTP position t). Comparable with tools/validation/ref_mtp.py.
+fn mtp_teacher_forced(dev: &Device, args: &[String]) -> Result<()> {
+    let ids = read_ids(&args[2])?;
+    let mut e = load(dev, &args[1], opt_usize(args, "--ctx", 8192)?)?;
+    let mut pred = vec![e.mtp_pass(&ids[..1], 0, None, None)?[0].0];
+    for (ci, c) in ids.chunks(16).enumerate() {
+        let start = ci * 16;
+        e.forward(c, None)?;
+        e.commit(c.len())?;
+        let rows = c.len().min(ids.len() - 1 - start);
+        if rows > 0 {
+            pred.extend(e.mtp_pass(&ids[start + 1..start + 1 + rows], start + 1, Some(0), None)?.iter().map(|p| p.0));
+        }
+    }
+    let t = ids.len();
+    let hit = (1..t - 1).filter(|i| pred[*i] == ids[i + 1]).count();
+    println!("{pred:?}");
+    if let Some(path) = opt(args, "--out") {
+        std::fs::write(&path, format!("{pred:?}"))?;
+    }
+    eprintln!("MTP teacher-forced top-1 accuracy {hit}/{} = {:.1}%", t - 2, 100.0 * hit as f64 / (t - 2) as f64);
     Ok(())
 }
 

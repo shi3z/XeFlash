@@ -3,7 +3,7 @@
 //!
 //!   xf-convert inspect <checkpoint_dir>
 //!   xf-convert analyze <checkpoint_dir> [--layers 0,31,63] [--json out.json]
-//!   xf-convert convert <checkpoint_dir> <out.xfm> [--bits 4|2|8] [--only substring] [--stats dir]
+//!   xf-convert convert <checkpoint_dir> <out.xfm> [--bits 4|2|8] [--only substring] [--stats dir] [--merge]
 //!   xf-convert verify  <checkpoint_dir> <model.xfm>
 
 use std::collections::BTreeMap;
@@ -137,6 +137,40 @@ fn dtype_name(d: Dtype) -> Result<&'static str> {
 /// but copied verbatim. Every body matrix is below 0.13 at 4 bits; mtp.fc is 0.54.
 const FALLBACK_REL: f64 = 0.25;
 
+/// Matrices that consume the same activation vector. With `--merge` each
+/// group is stacked row-wise into one matrix (one activation quantisation and
+/// one GEMM launch at run time, one shared column scale).
+const MERGE_GROUPS: [(&[&str], &str); 3] = [
+    (&["linear_attn.in_proj_qkv.weight", "linear_attn.in_proj_z.weight"], "linear_attn.in_proj_qkvz.weight"),
+    (&["self_attn.q_proj.weight", "self_attn.k_proj.weight", "self_attn.v_proj.weight"], "self_attn.qkv_proj.weight"),
+    (&["mlp.gate_proj.weight", "mlp.up_proj.weight"], "mlp.gate_up_proj.weight"),
+];
+
+/// (output name, member tensors). Members of a merged group collapse into the
+/// job of their first member.
+fn plan_jobs(names: &[String], merge: bool) -> Vec<(String, Vec<String>)> {
+    let mut jobs = Vec::new();
+    for name in names {
+        let group = MERGE_GROUPS.iter().find(|(members, _)| merge && members.iter().any(|m| name.ends_with(m)));
+        match group {
+            Some((members, merged)) => {
+                if !name.ends_with(members[0]) {
+                    continue; // emitted with the first member
+                }
+                let prefix = &name[..name.len() - members[0].len()];
+                let parts: Vec<String> = members.iter().map(|m| format!("{prefix}{m}")).collect();
+                if parts.iter().all(|p| names.contains(p)) {
+                    jobs.push((format!("{prefix}{merged}"), parts));
+                } else {
+                    jobs.push((name.clone(), vec![name.clone()]));
+                }
+            }
+            None => jobs.push((name.clone(), vec![name.clone()])),
+        }
+    }
+    jobs
+}
+
 fn convert(dir: &Path, out: &Path, rest: &[String]) -> Result<()> {
     let opt = |k: &str| rest.iter().position(|a| a == k).and_then(|i| rest.get(i + 1)).cloned();
     let bits: u32 = opt("--bits").map_or(Ok(4), |b| b.parse().map_err(|_| Error::Invalid("bad --bits".into())))?;
@@ -148,11 +182,13 @@ fn convert(dir: &Path, out: &Path, rest: &[String]) -> Result<()> {
     };
     let only = opt("--only");
     let stats_dir = opt("--stats");
+    let merge = rest.iter().any(|a| a == "--merge");
     let ck = Checkpoint::open(dir)?;
     let meta = serde_json::json!({
         "source": dir.display().to_string(),
         "quantizer": if stats_dir.is_some() { "row+column scale, half-offset grid, activation-weighted (diagonal)" } else { "row+column scale, half-offset grid, 3 rounds, data-free" },
         "default_bits": bits,
+        "merged": merge,
     });
     let mut writer = ContainerWriter::create(out, meta, 1 << 20)?;
     let names: Vec<String> = ck
@@ -160,63 +196,66 @@ fn convert(dir: &Path, out: &Path, rest: &[String]) -> Result<()> {
         .filter(|n| is_text_tensor(n) && only.as_ref().is_none_or(|o| n.contains(o.as_str())))
         .map(str::to_string)
         .collect();
+    let jobs = plan_jobs(&names, merge);
     let t_all = Instant::now();
     let (mut n_mat, mut n_dense, mut weights, mut sum_db, mut min_db) = (0usize, 0usize, 0usize, 0f64, f64::INFINITY);
-    for (i, name) in names.iter().enumerate() {
-        let t = ck.get(name)?;
-        if is_gemm_matrix(name, t.shape) {
-            let (rows, cols) = (t.shape[0], t.shape[1]);
-            let t0 = Instant::now();
-            let w = t.to_f32()?;
-            // Activation statistics from tools/validation/calib_stats.py, if given.
-            let act = match &stats_dir {
-                Some(d) => {
-                    let path = Path::new(d).join(format!("{name}.bin"));
-                    match std::fs::read(&path) {
-                        Ok(bytes) => {
-                            Some(bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect::<Vec<f32>>())
-                        }
-                        Err(_) => {
-                            // No calibration data for this tensor (e.g. the MTP block): data-free.
-                            println!("      no activation statistics for {name}: data-free");
-                            None
-                        }
-                    }
-                }
-                None => None,
-            };
-            let z = quantize(&w, rows, cols, QuantSpec { bits, col_scale: true, iters: 3 }, act.as_deref())?;
-            // A matrix that is far from Gaussian (mtp.fc: 5.4 dB at 4 bits and
-            // still 6.5 dB at 8) cannot be carried by a uniform grid. Such
-            // matrices are rare and small; keep the original data and let the
-            // engine run them through the bf16 kernel.
-            if z.weighted_rel_err > FALLBACK_REL {
-                writer.add_dense(name, dtype_name(t.dtype)?, t.shape, t.bytes)?;
-                n_dense += 1;
-                println!("[{:>4}/{}] {:<62} kept dense: relative error {:.3} at {bits} bits", i + 1, names.len(), name, z.weighted_rel_err);
-                continue;
-            }
-            let tiles = pack_weights(format, rows, cols, &z.q)?;
-            writer.add_matrix(name, format, rows, cols, &tiles, &z.row_scale, &z.col_scale, z.sqnr_db())?;
-            n_mat += 1;
-            weights += rows * cols;
-            sum_db += z.sqnr_db();
-            min_db = min_db.min(z.sqnr_db());
-            println!(
-                "[{:>4}/{}] {:<62} {:>12} {} {:>6.2} dB  wrel {:.4}  {:.1}s",
-                i + 1,
-                names.len(),
-                name,
-                format!("{rows}x{cols}"),
-                format.name(),
-                z.sqnr_db(),
-                z.weighted_rel_err,
-                t0.elapsed().as_secs_f64()
-            );
-        } else {
-            writer.add_dense(name, dtype_name(t.dtype)?, t.shape, t.bytes)?;
+    for (i, (name, parts)) in jobs.iter().enumerate() {
+        let first = ck.get(&parts[0])?;
+        if !is_gemm_matrix(&parts[0], first.shape) {
+            writer.add_dense(name, dtype_name(first.dtype)?, first.shape, first.bytes)?;
             n_dense += 1;
+            continue;
         }
+        let cols = first.shape[1];
+        let t0 = Instant::now();
+        let mut w = Vec::new();
+        for p in parts {
+            let t = ck.get(p)?;
+            if t.shape.len() != 2 || t.shape[1] != cols {
+                return Err(Error::Invalid(format!("{p} cannot be stacked into {name}")));
+            }
+            w.extend(t.to_f32()?);
+        }
+        let rows = w.len() / cols;
+        // Activation statistics from tools/validation/calib_stats.py, if given.
+        // Members of a group share their input, so the first member's file serves all.
+        let act = stats_dir.as_ref().and_then(|d| {
+            let bytes = std::fs::read(Path::new(d).join(format!("{}.bin", parts[0]))).ok()?;
+            Some(bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect::<Vec<f32>>())
+        });
+        if stats_dir.is_some() && act.is_none() {
+            println!("      no activation statistics for {name}: data-free");
+        }
+        let z = quantize(&w, rows, cols, QuantSpec { bits, col_scale: true, iters: 3 }, act.as_deref())?;
+        // A matrix that is far from Gaussian (mtp.fc) cannot be carried by a
+        // uniform grid. Such matrices are rare and small; keep the original
+        // data and let the engine run them in floating point.
+        if z.weighted_rel_err > FALLBACK_REL {
+            if parts.len() != 1 {
+                return Err(Error::Invalid(format!("merged matrix {name} is not quantisable")));
+            }
+            writer.add_dense(name, dtype_name(first.dtype)?, first.shape, first.bytes)?;
+            n_dense += 1;
+            println!("[{:>4}/{}] {:<62} kept dense: relative error {:.3} at {bits} bits", i + 1, jobs.len(), name, z.weighted_rel_err);
+            continue;
+        }
+        let tiles = pack_weights(format, rows, cols, &z.q)?;
+        writer.add_matrix(name, format, rows, cols, &tiles, &z.row_scale, &z.col_scale, z.sqnr_db(), parts)?;
+        n_mat += 1;
+        weights += rows * cols;
+        sum_db += z.sqnr_db();
+        min_db = min_db.min(z.sqnr_db());
+        println!(
+            "[{:>4}/{}] {:<62} {:>12} {} {:>6.2} dB  wrel {:.4}  {:.1}s",
+            i + 1,
+            jobs.len(),
+            name,
+            format!("{rows}x{cols}"),
+            format.name(),
+            z.sqnr_db(),
+            z.weighted_rel_err,
+            t0.elapsed().as_secs_f64()
+        );
     }
     let bytes = writer.finish()?;
     println!(
@@ -240,21 +279,24 @@ fn verify(dir: &Path, model: &Path) -> Result<()> {
     let entries: Vec<(String, String)> = xfm.names().map(|(n, k)| (n.to_string(), k.to_string())).collect();
     let (mut bad, mut n_mat, mut sum_db, mut min_db) = (0usize, 0usize, 0f64, f64::INFINITY);
     for (name, kind) in &entries {
-        let t = ck.get(name)?;
         if kind == "dense" {
-            if xfm.dense(name)?.bytes != t.bytes {
+            if xfm.dense(name)?.bytes != ck.get(name)?.bytes {
                 println!("MISMATCH dense {name}");
                 bad += 1;
             }
             continue;
         }
         let m = xfm.matrix(name)?;
-        if t.shape != [m.rows, m.cols] {
+        // A merged matrix is the row-wise stack of its parts.
+        let mut w = Vec::new();
+        for p in &m.parts {
+            w.extend(ck.get(p)?.to_f32()?);
+        }
+        if w.len() != m.rows * m.cols {
             println!("MISMATCH shape {name}");
             bad += 1;
             continue;
         }
-        let w = t.to_f32()?;
         let q = unpack_weights(m.format, m.rows, m.cols, m.tiles)?;
         let (mut err, mut norm) = (0f64, 0f64);
         for i in 0..m.rows {

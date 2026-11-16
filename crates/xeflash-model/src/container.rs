@@ -10,6 +10,8 @@
 //! The header lists tensors. A `matrix` tensor carries tile-ordered codes plus
 //! f32 row and column scales and reconstructs as
 //! `W[i][j] = row_scale[i] * (q[i][j] + 0.5) * col_scale[j]`.
+//! A matrix may be the row-wise stack of several checkpoint tensors that share
+//! their input (`parts`).
 //! A `dense` tensor is the original data, untouched (bf16 norms, biases, ...).
 
 use std::fs::File;
@@ -88,6 +90,7 @@ impl ContainerWriter {
         row_scale: &[f32],
         col_scale: &[f32],
         sqnr_db: f64,
+        parts: &[String],
     ) -> Result<()> {
         if row_scale.len() != rows || col_scale.len() != cols || tiles.len() != rows / 16 * (cols / 32) * format.tile_bytes() {
             return Err(invalid(format!("inconsistent sizes for matrix {name}")));
@@ -99,6 +102,7 @@ impl ContainerWriter {
             "name": name, "kind": "matrix", "format": format_name(format),
             "rows": rows, "cols": cols, "w": w, "row_scale": rs, "col_scale": cs,
             "sqnr_db": (sqnr_db * 1000.0).round() / 1000.0,
+            "parts": parts,
         }));
         Ok(())
     }
@@ -142,6 +146,8 @@ pub struct Matrix<'a> {
     pub row_scale: Vec<f32>,
     pub col_scale: Vec<f32>,
     pub sqnr_db: f64,
+    /// Checkpoint tensors stacked row-wise into this matrix (itself if not merged).
+    pub parts: Vec<String>,
 }
 
 pub struct Dense<'a> {
@@ -219,6 +225,10 @@ impl Container {
             row_scale: self.f32s(&t["row_scale"])?,
             col_scale: self.f32s(&t["col_scale"])?,
             sqnr_db: t["sqnr_db"].as_f64().unwrap_or(f64::NAN),
+            parts: match t["parts"].as_array() {
+                Some(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+                None => vec![name.to_string()],
+            },
         };
         if m.row_scale.len() != m.rows || m.col_scale.len() != m.cols {
             return Err(invalid(format!("{name}: scale vectors do not match the shape")));

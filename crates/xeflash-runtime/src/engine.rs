@@ -112,17 +112,30 @@ impl Engine {
             let mut m = [null_mat; 7];
             let mut aux = [std::ptr::null::<f32>(); 5];
             let mlp_at;
+            let has = |n: &str| xfm.names().any(|(name, kind)| kind == "matrix" && name == n);
             if is_attn {
-                for (i, n) in ["q_proj", "k_proj", "v_proj", "o_proj"].iter().enumerate() {
-                    m[i] = ld.matrix(&format!("{p}self_attn.{n}.weight"), "body matrices")?;
+                // Merged containers stack q, k, v into one matrix (slot 0).
+                let merged = format!("{p}self_attn.qkv_proj.weight");
+                if has(&merged) {
+                    m[0] = ld.matrix(&merged, "body matrices")?;
+                } else {
+                    for (i, n) in ["q_proj", "k_proj", "v_proj"].iter().enumerate() {
+                        m[i] = ld.matrix(&format!("{p}self_attn.{n}.weight"), "body matrices")?;
+                    }
                 }
+                m[3] = ld.matrix(&format!("{p}self_attn.o_proj.weight"), "body matrices")?;
                 aux[0] = ld.gain(&format!("{p}self_attn.q_norm.weight"))?;
                 aux[1] = ld.gain(&format!("{p}self_attn.k_norm.weight"))?;
                 mlp_at = 4;
             } else {
-                for (i, n) in ["in_proj_qkv", "in_proj_z", "out_proj"].iter().enumerate() {
-                    m[i] = ld.matrix(&format!("{p}linear_attn.{n}.weight"), "body matrices")?;
+                let merged = format!("{p}linear_attn.in_proj_qkvz.weight");
+                if has(&merged) {
+                    m[0] = ld.matrix(&merged, "body matrices")?;
+                } else {
+                    m[0] = ld.matrix(&format!("{p}linear_attn.in_proj_qkv.weight"), "body matrices")?;
+                    m[1] = ld.matrix(&format!("{p}linear_attn.in_proj_z.weight"), "body matrices")?;
                 }
+                m[2] = ld.matrix(&format!("{p}linear_attn.out_proj.weight"), "body matrices")?;
                 let mut ab = ld.dense(&format!("{p}linear_attn.in_proj_a.weight"))?;
                 ab.extend(ld.dense(&format!("{p}linear_attn.in_proj_b.weight"))?);
                 aux[0] = ld.upload_f32("small tensors", "in_proj_a+b", &ab)?;
@@ -148,9 +161,14 @@ impl Engine {
                 aux[4] = ld.upload_f32("small tensors", "linear_attn.norm", &gw)?;
                 mlp_at = 3;
             }
-            for (i, n) in ["gate_proj", "up_proj", "down_proj"].iter().enumerate() {
-                m[mlp_at + i] = ld.matrix(&format!("{p}mlp.{n}.weight"), "body matrices")?;
+            let gate_up = format!("{p}mlp.gate_up_proj.weight");
+            if has(&gate_up) {
+                m[mlp_at] = ld.matrix(&gate_up, "body matrices")?;
+            } else {
+                m[mlp_at] = ld.matrix(&format!("{p}mlp.gate_proj.weight"), "body matrices")?;
+                m[mlp_at + 1] = ld.matrix(&format!("{p}mlp.up_proj.weight"), "body matrices")?;
             }
+            m[mlp_at + 2] = ld.matrix(&format!("{p}mlp.down_proj.weight"), "body matrices")?;
             let kind = if is_attn { ffi::XF_LAYER_ATTN } else { ffi::XF_LAYER_GDN };
             let sbytes = unsafe { ffi::xf_state_bytes(kind, ctx as i32) };
             let state = dev.alloc(sbytes)?;
@@ -199,9 +217,22 @@ impl Engine {
         if xfm.names().any(|(n, k)| n == "mtp.fc.weight" && k == "dense") {
             let p = "mtp.layers.0.";
             let mut m = [null_mat; 7];
-            for (i, n) in ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj", "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"].iter().enumerate() {
-                m[i] = ld.matrix(&format!("{p}{n}.weight"), "MTP")?;
+            let has = |n: &str| xfm.names().any(|(name, kind)| kind == "matrix" && name == n);
+            if has(&format!("{p}self_attn.qkv_proj.weight")) {
+                m[0] = ld.matrix(&format!("{p}self_attn.qkv_proj.weight"), "MTP")?;
+            } else {
+                for (i, n) in ["q_proj", "k_proj", "v_proj"].iter().enumerate() {
+                    m[i] = ld.matrix(&format!("{p}self_attn.{n}.weight"), "MTP")?;
+                }
             }
+            m[3] = ld.matrix(&format!("{p}self_attn.o_proj.weight"), "MTP")?;
+            if has(&format!("{p}mlp.gate_up_proj.weight")) {
+                m[4] = ld.matrix(&format!("{p}mlp.gate_up_proj.weight"), "MTP")?;
+            } else {
+                m[4] = ld.matrix(&format!("{p}mlp.gate_proj.weight"), "MTP")?;
+                m[5] = ld.matrix(&format!("{p}mlp.up_proj.weight"), "MTP")?;
+            }
+            m[6] = ld.matrix(&format!("{p}mlp.down_proj.weight"), "MTP")?;
             let mut aux = [std::ptr::null::<f32>(); 5];
             aux[0] = ld.gain(&format!("{p}self_attn.q_norm.weight"))?;
             aux[1] = ld.gain(&format!("{p}self_attn.k_norm.weight"))?;
