@@ -385,8 +385,12 @@ Profile with a wait per stage, ms (`m4_runs.txt`, section D):
 * Rows cost: 8 rows add 7.6 ms over 1 row, 16 rows another 8.2 ms; most of it
   is in the GEMMs (XMX time of the 8-token DPAS, activation loads), the rest
   in the DeltaNet state kernel, which walks tokens serially.
-* XMX utilisation in decode is a few percent (about 25 TOPS-equivalent at 8
-  rows against a 196 TOPS peak): compute is free, bytes are not.
+* XMX utilisation in decode is low: about 20 TOPS at 8 rows (both activation
+  planes counted) against a 196 TOPS peak. Compute is free, bytes are not.
+* Kernel fusion inside the MTP step (item 6 of the plan) was not done: after
+  the sketch, the step is 0.42 ms embedding + norms + `fc`, 0.55 ms layer
+  GEMMs and 0.70 ms head, all dominated by memory traffic rather than by
+  launches, so fusing the small kernels would move little.
 
 Nothing in the trunk was changed in this round.
 
