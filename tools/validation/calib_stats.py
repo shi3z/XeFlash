@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""Collect per-input-channel second moments for every Linear of the text model.
+"""Collect input statistics for every Linear of the text model.
 
     calib_stats.py <checkpoint_dir> <chats.json> <out_dir> [--ids-out dir]
 
 Runs the original BF16 weights (FP32 math, official transformers layer code,
-one layer at a time) over the calibration chats and writes, for every
-`...weight` matrix, `<out_dir>/<tensor name>.bin`: mean of x_j^2 over all
-calibration tokens, float32 [cols]. The converter uses these as weights for
-the quantisation error.
+one layer at a time) over the calibration chats and writes, per `...weight`
+matrix:
 
-Only diagonal statistics are collected: 5 to 17 thousand numbers per matrix
-from about a thousand tokens.
+  <tensor name>.bin        variance of each input channel over the calibration
+                           tokens, every token normalised to unit RMS (f32 [cols])
+  <tensor name>.mean.bin   mean input vector, raw (f32 [cols])
+
+Hidden states have a large component shared by all tokens. The quantisation
+error against that mean is the same for every token, i.e. a constant per
+output row: the converter removes it with a bias (from the mean) and weights
+the remaining error by the variance.
 """
 import json
 import sys
@@ -57,12 +61,23 @@ def main():
     def hook(name):
         def fn(_module, args):
             x = args[0].reshape(-1, args[0].shape[-1]).double()
-            acc[name] = acc.get(name, 0) + (x * x).sum(0)
+            # Every token counts equally in the variance: normalise each
+            # token's input to unit RMS first, otherwise the few positions
+            # whose hidden states are orders of magnitude larger own the
+            # statistics of matrices fed by unnormalised activations.
+            xt = x / x.pow(2).mean(-1, keepdim=True).sqrt().clamp_min(1e-12)
+            s = acc.setdefault(name, [0, 0, 0])
+            s[0] = s[0] + xt.sum(0)
+            s[1] = s[1] + (xt * xt).sum(0)
+            s[2] = s[2] + x.sum(0)
         return fn
 
     def flush():
-        for name, v in acc.items():
-            (v / total).float().numpy().astype("<f4").tofile(out / f"{name}.bin")
+        for name, (s1, s2, raw) in acc.items():
+            mean_t = s1 / total
+            var = (s2 / total - mean_t * mean_t).clamp_min(0)
+            var.float().numpy().astype("<f4").tofile(out / f"{name}.bin")          # centred variance (normalised tokens)
+            (raw / total).float().numpy().astype("<f4").tofile(out / f"{name}.mean.bin")  # mean input (raw)
         acc.clear()
 
     for l in range(cfg.num_hidden_layers):
@@ -86,11 +101,10 @@ def main():
 
     norm = M.Qwen3_5RMSNorm(cfg.hidden_size, eps=cfg.rms_norm_eps)
     norm.weight.copy_(ck.get(pre + "norm.weight"))
-    s = 0
+    fn = hook("lm_head.weight")
     for h in hs:
-        x = norm(h).reshape(-1, cfg.hidden_size).double()
-        s = s + (x * x).sum(0)
-    (s / total).float().numpy().astype("<f4").tofile(out / "lm_head.weight.bin")
+        fn(None, (norm(h),))
+    flush()
     print("done", flush=True)
 
 

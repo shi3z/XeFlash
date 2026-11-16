@@ -46,6 +46,7 @@ pub struct xf_gemm_desc {
     pub y: *mut f32,
     pub ypart: *mut c_void,
     pub toff: *const f32,
+    pub bias: *const f32,
 }
 
 #[repr(C)]
@@ -54,6 +55,7 @@ pub struct xf_mat {
     pub w: *const c_void,
     pub rs: *const f32,
     pub cs: *const f32,
+    pub bias: *const f32,
     pub cmax: f32,
     pub rows: i32,
     pub cols: i32,

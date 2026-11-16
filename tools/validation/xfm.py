@@ -36,3 +36,10 @@ class Xfm:
             r = rs[b0 * 16:b0 * 16 + q.shape[0]]
             out[b0 * 16:b0 * 16 + q.shape[0]] = r[:, None] * (q.astype(np.float32) + 0.5) * cs[None, :]
         return out
+
+    def bias(self, name):
+        """Per-row bias correction of a matrix, or None."""
+        t = self.tensors.get(name)
+        if not t or not isinstance(t.get("bias"), dict):
+            return None
+        return np.frombuffer(self._blob(t["bias"]), "<f4").copy()

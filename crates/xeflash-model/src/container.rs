@@ -9,7 +9,8 @@
 //!
 //! The header lists tensors. A `matrix` tensor carries tile-ordered codes plus
 //! f32 row and column scales and reconstructs as
-//! `W[i][j] = row_scale[i] * (q[i][j] + 0.5) * col_scale[j]`.
+//! `W[i][j] = row_scale[i] * (q[i][j] + 0.5) * col_scale[j]`; an optional
+//! per-row `bias` is added to the product `W x`.
 //! A matrix may be the row-wise stack of several checkpoint tensors that share
 //! their input (`parts`).
 //! A `dense` tensor is the original data, untouched (bf16 norms, biases, ...).
@@ -91,6 +92,7 @@ impl ContainerWriter {
         col_scale: &[f32],
         sqnr_db: f64,
         parts: &[String],
+        bias: Option<&[f32]>,
     ) -> Result<()> {
         if row_scale.len() != rows || col_scale.len() != cols || tiles.len() != rows / 16 * (cols / 32) * format.tile_bytes() {
             return Err(invalid(format!("inconsistent sizes for matrix {name}")));
@@ -98,11 +100,16 @@ impl ContainerWriter {
         let w = self.blob(tiles)?;
         let rs = self.blob(&f32_bytes(row_scale))?;
         let cs = self.blob(&f32_bytes(col_scale))?;
+        let bias = match bias {
+            Some(b) if b.len() == rows => self.blob(&f32_bytes(b))?,
+            Some(_) => return Err(invalid(format!("bias of {name} does not match its rows"))),
+            None => Value::Null,
+        };
         self.tensors.push(json!({
             "name": name, "kind": "matrix", "format": format_name(format),
             "rows": rows, "cols": cols, "w": w, "row_scale": rs, "col_scale": cs,
             "sqnr_db": (sqnr_db * 1000.0).round() / 1000.0,
-            "parts": parts,
+            "parts": parts, "bias": bias,
         }));
         Ok(())
     }
@@ -148,6 +155,9 @@ pub struct Matrix<'a> {
     pub sqnr_db: f64,
     /// Checkpoint tensors stacked row-wise into this matrix (itself if not merged).
     pub parts: Vec<String>,
+    /// Per-row bias correction (added to the output), if the converter had
+    /// calibration means.
+    pub bias: Option<Vec<f32>>,
 }
 
 pub struct Dense<'a> {
@@ -225,6 +235,7 @@ impl Container {
             row_scale: self.f32s(&t["row_scale"])?,
             col_scale: self.f32s(&t["col_scale"])?,
             sqnr_db: t["sqnr_db"].as_f64().unwrap_or(f64::NAN),
+            bias: if t["bias"].is_object() { Some(self.f32s(&t["bias"])?) } else { None },
             parts: match t["parts"].as_array() {
                 Some(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
                 None => vec![name.to_string()],

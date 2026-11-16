@@ -115,14 +115,14 @@ ESIMD_INLINE simd<int32_t, 16 * R> mac(simd<int32_t, 16 * R> acc, simd<int32_t, 
 
 // int32 accumulators -> scaled float output. Shared by the direct path and by
 // the segment combiner so both produce bit-identical results:
-//   y = (acc [* 256 + acc_lo] + token_offset) * row_scale * token_scale
+//   y = (acc [* 256 + acc_lo] + token_offset) * row_scale * token_scale + row_bias
 template <bool A16>
 ESIMD_INLINE simd<float, 16> finish(simd<int32_t, 16> si, simd<int32_t, 16> li, simd<float, 16> rsv, float ts,
-                                    float off) SYCL_ESIMD_FUNCTION {
+                                    float off, simd<float, 16> bias) SYCL_ESIMD_FUNCTION {
   simd<float, 16> f = convert<float>(si);
   if constexpr (A16) f = f * 256.0f + convert<float>(li);
   f = f + off;
-  return f * rsv * ts;
+  return f * rsv * ts + bias;
 }
 
 template <int WF, int R, int G, int U, bool A16> sycl::event submit(sycl::queue &q, const xf_gemm_desc &d) {
@@ -137,6 +137,7 @@ template <int WF, int R, int G, int U, bool A16> sycl::event submit(sycl::queue 
   const float *RS = d.rs;
   const float *TS = d.ts;
   const float *TO = d.toff;
+  const float *RB = d.bias;
   const size_t rows = d.rows;
   const size_t rowblks = rows / 16;
   const size_t tiles = size_t(d.cols) / F::tile_cols;
@@ -237,6 +238,8 @@ template <int WF, int R, int G, int U, bool A16> sycl::event submit(sycl::queue 
       tsv.copy_from(TS + tg * TPT);
       simd<float, TPT> tov(0.0f);
       if (TO) tov.copy_from(TO + tg * TPT);
+      simd<float, 16> rbv(0.0f);
+      if (RB) rbv.copy_from(RB + rb * 16);
 #pragma unroll
       for (int g = 0; g < G; g++) {
         simd<int32_t, 16 * R> s = acc[0][g];
@@ -252,7 +255,7 @@ template <int WF, int R, int G, int U, bool A16> sycl::event submit(sycl::queue 
           simd<int32_t, 16> li = sl.template select<16, 1>(16 * m);
           const size_t tok = tg * TPT + g * R + m;
           if (segs == 1) {
-            simd<float, 16> f = finish<A16>(si, li, rsv, float(tsv[g * R + m]), float(tov[g * R + m]));
+            simd<float, 16> f = finish<A16>(si, li, rsv, float(tsv[g * R + m]), float(tov[g * R + m]), rbv);
             f.copy_to(Y + tok * rows + rb * 16);
           } else {
             // Exact integer partial sums; the combiner converts and scales.
@@ -288,6 +291,7 @@ template <bool A16> sycl::event combine_int(sycl::queue &q, const xf_gemm_desc &
   const float *RS = d.rs;
   const float *TS = d.ts;
   const float *TO = d.toff;
+  const float *RB = d.bias;
   const size_t rows = d.rows, rowblks = rows / 16, segs = d.segs;
   constexpr size_t PLANES = A16 ? 2 : 1;
   return q.parallel_for(sycl::range<1>(mpad * rowblks), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
@@ -308,7 +312,9 @@ template <bool A16> sycl::event combine_int(sycl::queue &q, const xf_gemm_desc &
     simd<float, 1> ts, to(0.0f);
     ts.copy_from(TS + tok);
     if (TO) to.copy_from(TO + tok);
-    simd<float, 16> f = finish<A16>(si, li, rsv, float(ts[0]), float(to[0]));
+    simd<float, 16> rbv(0.0f);
+    if (RB) rbv.copy_from(RB + rb * 16);
+    simd<float, 16> f = finish<A16>(si, li, rsv, float(ts[0]), float(to[0]), rbv);
     f.copy_to(Y + tok * rows + rb * 16);
   });
 }
@@ -346,7 +352,7 @@ extern "C" int xf_gemm(xf_ctx *ctx, const xf_gemm_desc *dp) {
     switch (d.wfmt) {
     case XF_W_S4: st = d.a16 ? dispatch<XF_W_S4, true>(ctx->q, d) : dispatch<XF_W_S4, false>(ctx->q, d); break;
     case XF_W_S2: st = d.a16 ? dispatch<XF_W_S2, true>(ctx->q, d) : dispatch<XF_W_S2, false>(ctx->q, d); break;
-    case XF_W_S8: st = dispatch<XF_W_S8, false>(ctx->q, d); break;
+    case XF_W_S8: st = d.a16 ? dispatch<XF_W_S8, true>(ctx->q, d) : dispatch<XF_W_S8, false>(ctx->q, d); break;
     case XF_W_BF16: st = dispatch<XF_W_BF16, false>(ctx->q, d); break;
     case XF_W_S4_EXP8: st = dispatch<XF_W_S4_EXP8, false>(ctx->q, d); break;
     case XF_W_S3: st = d.a16 ? dispatch<XF_W_S3, true>(ctx->q, d) : dispatch<XF_W_S3, false>(ctx->q, d); break;

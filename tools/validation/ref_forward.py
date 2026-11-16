@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Reference forward pass on the CPU with the official transformers layer code.
 
-    ref_forward.py <checkpoint_dir> <ids.json> <out_dir> [--xfm model.xfm]
+    ref_forward.py <checkpoint_dir> <ids.json> <out_dir> [--xfm model.xfm] [--layers N]
 
 Layers are instantiated one at a time (`Qwen3_5DecoderLayer` from transformers),
 loaded from the checkpoint, and run in FP32 over the whole sequence, so the
@@ -67,10 +67,18 @@ def main():
     position_embeddings = rot(h, pos)
     causal = torch.full((T, T), float("-inf")).triu(1)[None, None]
 
-    for l in range(cfg.num_hidden_layers):
+    n_layers = int(sys.argv[sys.argv.index("--layers") + 1]) if "--layers" in sys.argv else cfg.num_hidden_layers
+    for l in range(n_layers):
         layer = M.Qwen3_5DecoderLayer(cfg, l).float().eval()
         sd = {k: ck.get(f"{pre}layers.{l}.{k}") .reshape(v.shape) for k, v in layer.state_dict().items()}
         layer.load_state_dict(sd, strict=True)
+        if ck.xfm is not None:
+            # Bias correction stored with quantised matrices.
+            for mname, mod in layer.named_modules():
+                if isinstance(mod, torch.nn.Linear):
+                    b = ck.xfm.bias(f"{pre}layers.{l}.{mname}.weight")
+                    if b is not None:
+                        mod.bias = torch.nn.Parameter(torch.from_numpy(b))
         full = cfg.layer_types[l] == "full_attention"
         res = layer(h, position_embeddings=position_embeddings, attention_mask=causal if full else None,
                     position_ids=None, past_key_values=None)
@@ -79,6 +87,8 @@ def main():
         print(f"layer {l:2d} {cfg.layer_types[l]:16s} |h| rms {h.pow(2).mean().sqrt().item():.4f}", flush=True)
         del layer, sd
 
+    if n_layers < cfg.num_hidden_layers:
+        return  # partial run: hidden states only
     norm = M.Qwen3_5RMSNorm(cfg.hidden_size, eps=cfg.rms_norm_eps)
     norm.weight.copy_(ck.get(pre + "norm.weight"))
     hn = norm(h)[0]

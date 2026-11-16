@@ -89,16 +89,80 @@ Rust (xeflash-runtime)  --C ABI (kernels/include/xfk.h)-->  libxfk.so (SYCL/ESIM
 * Only an Intel Level Zero GPU is ever selected.
 * Every GPU run goes through `scripts/b60run`, which takes `/tmp/b60.lock`.
 
-A launch costs about 3 us queued. The engine will submit a whole pass and
-wait once; a per-pass plan (a fixed list of kernel descriptors built at load
-time) is the next step, with a recorded Level Zero command list as an
-optimisation to evaluate after the full model runs.
+The host does not call kernels one by one. Rust builds an `xf_model` once (a
+table of device pointers: matrices, small tensors, state blocks, one
+workspace) and a pass is a single FFI call, `xf_forward`, which submits every
+kernel of the pass (several hundred) to the queue. The host synchronises once
+per pass, when it reads the argmax partials back.
 
-## 6. Status
+## 6. The model (`kernels/model/model.cpp`, `xeflash-runtime::engine`)
 
-Implemented: runtime, tile packing, quantiser, GEMM kernels (bf16, s8, s4,
-s4 expanded to s8, s2; 8/16-bit activations), benchmark, checkpoint reader.
+Structure, taken from `config.json` and the transformers reference
+(`modeling_qwen3_5.py`), not from the model name: 64 layers, hidden 5120;
+layer `l` is gated full attention when `l % 4 == 3` (16 layers) and Gated
+DeltaNet otherwise (48 layers); every layer ends with a SiLU-gated MLP
+(17408). Norms are zero-centred RMSNorms (`x^ * (1 + w)`).
 
-Not yet implemented: the model itself (Gated DeltaNet state update, attention,
-norms, sampling), the XeFlash model container, speculative decoding, the API.
-See EXPERIMENTS.md for what has been measured and PERFORMANCE.md for numbers.
+Everything is resident: all matrices, the bf16 embedding table, the head,
+DeltaNet states, the KV cache and the workspace are allocated at load and
+nothing is allocated afterwards. `xf-run mem` prints every allocation
+category and the driver's own before/after figure.
+
+### Pass and commit
+
+A pass processes up to 16 consecutive tokens starting at the committed
+position. It never changes committed state:
+
+* DeltaNet: the pass reads the committed state `S`, walks its tokens with the
+  state in registers, and records per token the normalised key, the delta and
+  the decay. `xf_commit(n)` replays the first `n` rank-1 updates into `S` and
+  shifts the convolution history.
+* Attention: K/V rows are written at their absolute positions, beyond the
+  committed length; committing just moves the length.
+
+So decoding is `forward([t])`, `commit(1)`; speculative verification is a
+longer pass followed by a commit of the accepted prefix, and rejection needs
+no rollback at all. Snapshot/restore of a conversation is a copy of the state
+blocks.
+
+### Kernels of one layer
+
+| step | kernel | threads | notes |
+|---|---|---|---|
+| residual add + RMSNorm | `k_addnorm` | 40 per token, one work-group | sum of squares through SLM, one barrier |
+| activation quantisation | `k_quant` | <= 64 per token, one work-group | 16-bit, two byte planes in tile order; offset sum through SLM |
+| GEMM | `xf_gemm` (section 4) | 16 rows each | exact int32 |
+| DeltaNet gates | `k_gemv_f32`, `k_gdn_gate` | per row / per token | `in_proj_a/b` stay FP32 |
+| causal conv + SiLU | `k_conv` | 64 channels each | 3-row history |
+| q/k normalisation | `k_gdn_qk` | per key head | |
+| delta rule | `k_gdn_core` | one per (value head, value column) = 6144 | 128 state values in 8 registers across the tokens of the pass |
+| gated output norm | `k_gdn_post` | per value head | |
+| attention q / kv | `k_attn_q`, `k_attn_kv` | per head | head RMSNorm, RoPE from a table |
+| attention scores | `k_attn_part` | per (token, head, 64 keys) | running-max softmax per block |
+| attention combine | `k_attn_comb` | per (token, head) | merges blocks, sigmoid gate |
+| MLP activation | `k_mlp_act` | 64 columns each | |
+
+This is the correctness-first set: FP32 everywhere outside the GEMMs, one
+kernel per step. Attention is deliberately unfused and FP32 over an FP32 KV
+cache; it is the baseline that later variants must beat.
+
+Matrices that consume the same vector (`qkv`+`z`, `q`+`k`+`v`, `gate`+`up`)
+can be stacked row-wise by the converter (`--merge`), which turns two or three
+quantisation + GEMM launches into one.
+
+### Numerical contract
+
+* GEMMs are exact integer arithmetic on 16-bit activations, so a row's result
+  does not depend on how many tokens share the pass.
+* Every float kernel works per token.
+* Consequence, verified: passes of 1, 8 and 16 tokens produce bit-identical
+  logits and states.
+
+## 7. Status
+
+Implemented and verified on the B60: the full forward pass, greedy decoding,
+prefill in 16-token passes, the official MTP block and MTP speculative
+decoding, calibrated conversion. Not implemented: sampling other than greedy,
+a Rust tokenizer (token ids come from the official Python tokenizer), the
+OpenAI-compatible API, long-context attention kernels (DPAS, compressed KV).
+See PERFORMANCE.md for numbers and EXPERIMENTS.md for the record.

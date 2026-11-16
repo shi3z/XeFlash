@@ -135,6 +135,7 @@ impl Device {
             y: g.y.ptr.cast(),
             ypart: g.y_part.map_or(std::ptr::null_mut(), |b| b.ptr),
             toff: g.token_offset.map_or(std::ptr::null(), |b| b.ptr.cast_const().cast()),
+            bias: std::ptr::null(),
         };
         check(unsafe { ffi::xf_gemm(self.ctx.0, &d) })
     }

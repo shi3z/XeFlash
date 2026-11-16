@@ -691,6 +691,7 @@ struct Pass {
     d.y = y;
     d.ypart = ws.ypart;
     d.toff = ws.toff;
+    d.bias = mat.bias;
     const int st = xf_gemm(ctx, &d);
     tm.tick(P_GEMM);
     return st;

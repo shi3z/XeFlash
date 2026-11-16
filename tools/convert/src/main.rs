@@ -136,6 +136,8 @@ fn dtype_name(d: Dtype) -> Result<&'static str> {
 /// Above this (activation-weighted) relative error a matrix is not quantised
 /// but copied verbatim. Every body matrix is below 0.13 at 4 bits; mtp.fc is 0.54.
 const FALLBACK_REL: f64 = 0.25;
+/// Above this error at the default precision a matrix is stored at 8 bits.
+const ESCALATE_REL: f64 = 0.20;
 
 /// Matrices that consume the same activation vector. With `--merge` each
 /// group is stacked row-wise into one matrix (one activation quantisation and
@@ -183,6 +185,7 @@ fn convert(dir: &Path, out: &Path, rest: &[String]) -> Result<()> {
     let only = opt("--only");
     let stats_dir = opt("--stats");
     let merge = rest.iter().any(|a| a == "--merge");
+    let no_bias = rest.iter().any(|a| a == "--no-bias");
     let ck = Checkpoint::open(dir)?;
     let meta = serde_json::json!({
         "source": dir.display().to_string(),
@@ -226,7 +229,17 @@ fn convert(dir: &Path, out: &Path, rest: &[String]) -> Result<()> {
         if stats_dir.is_some() && act.is_none() {
             println!("      no activation statistics for {name}: data-free");
         }
-        let z = quantize(&w, rows, cols, QuantSpec { bits, col_scale: true, iters: 3 }, act.as_deref())?;
+        let mut z = quantize(&w, rows, cols, QuantSpec { bits, col_scale: true, iters: 3 }, act.as_deref())?;
+        let mut format = format;
+        // Sensitivity-driven precision: a matrix whose (activation-weighted)
+        // error is far above the rest is stored at 8 bits, which DPAS also
+        // consumes directly. This is where mixed precision comes from.
+        if bits < 8 && z.weighted_rel_err > ESCALATE_REL {
+            let z8 = quantize(&w, rows, cols, QuantSpec { bits: 8, col_scale: true, iters: 3 }, act.as_deref())?;
+            println!("      {name}: relative error {:.3} at {bits} bits -> 8 bits ({:.4})", z.weighted_rel_err, z8.weighted_rel_err);
+            z = z8;
+            format = WeightFormat::S8;
+        }
         // A matrix that is far from Gaussian (mtp.fc) cannot be carried by a
         // uniform grid. Such matrices are rare and small; keep the original
         // data and let the engine run them in floating point.
@@ -239,8 +252,26 @@ fn convert(dir: &Path, out: &Path, rest: &[String]) -> Result<()> {
             println!("[{:>4}/{}] {:<62} kept dense: relative error {:.3} at {bits} bits", i + 1, jobs.len(), name, z.weighted_rel_err);
             continue;
         }
+        // Bias correction: the mean input produces the same quantisation error
+        // for every token, bias[i] = sum_j (W - W^)[i][j] * mean[j].
+        let mean = stats_dir.as_ref().filter(|_| !no_bias).and_then(|d| {
+            let bytes = std::fs::read(Path::new(d).join(format!("{}.mean.bin", parts[0]))).ok()?;
+            Some(bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect::<Vec<f32>>())
+        });
+        let bias: Option<Vec<f32>> = mean.filter(|m| m.len() == cols).map(|mean| {
+            (0..rows)
+                .map(|i| {
+                    let (wr, qr, r) = (&w[i * cols..(i + 1) * cols], &z.q[i * cols..(i + 1) * cols], z.row_scale[i]);
+                    let mut acc = 0f64;
+                    for j in 0..cols {
+                        acc += (wr[j] - r * (qr[j] as f32 + 0.5) * z.col_scale[j]) as f64 * mean[j] as f64;
+                    }
+                    acc as f32
+                })
+                .collect()
+        });
         let tiles = pack_weights(format, rows, cols, &z.q)?;
-        writer.add_matrix(name, format, rows, cols, &tiles, &z.row_scale, &z.col_scale, z.sqnr_db(), parts)?;
+        writer.add_matrix(name, format, rows, cols, &tiles, &z.row_scale, &z.col_scale, z.sqnr_db(), parts, bias.as_deref())?;
         n_mat += 1;
         weights += rows * cols;
         sum_db += z.sqnr_db();

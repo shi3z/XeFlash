@@ -62,7 +62,7 @@ int xf_noop(xf_ctx *ctx);
 
 /* ---- GEMM -------------------------------------------------------------
  *
- * y[m][row] = rs[row] * ts[m] * (toff[m] + sum_col W[row][col] * x[m][col])
+ * y[m][row] = rs[row] * ts[m] * (toff[m] + sum_col W[row][col] * x[m][col]) + bias[row]
  *
  * Integer formats are exact: the sum is an int32 DPAS accumulation, so the
  * result does not depend on the kernel variant, the token batch size or the
@@ -110,6 +110,8 @@ typedef struct {
                             segs * (a16 ? 2 : 1) * m_pad * rows 4-byte words */
   const float *toff;     /* device: m_pad floats added to the integer sum
                             before scaling (integer formats), or NULL */
+  const float *bias;     /* device: rows floats added to the scaled output
+                            (integer formats), or NULL */
 } xf_gemm_desc;
 
 int xf_gemm(xf_ctx *ctx, const xf_gemm_desc *d);
@@ -121,6 +123,7 @@ typedef struct {
   const void *w;    /* tile-ordered codes */
   const float *rs;  /* rows */
   const float *cs;  /* cols */
+  const float *bias; /* rows, or NULL: bias correction from calibration */
   float cmax;       /* max |cs| */
   int32_t rows, cols, fmt;
 } xf_mat;

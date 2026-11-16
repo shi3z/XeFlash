@@ -88,8 +88,12 @@ impl Loader<'_> {
         let w = self.keep(category, name, w);
         let rs = self.upload_f32("matrix scales", name, &m.row_scale)?;
         let cs = self.upload_f32("matrix scales", name, &m.col_scale)?;
+        let bias = match &m.bias {
+            Some(b) => self.upload_f32("matrix scales", name, b)?,
+            None => std::ptr::null(),
+        };
         let cmax = m.col_scale.iter().fold(0f32, |a, v| a.max(v.abs()));
-        Ok(ffi::xf_mat { w, rs, cs, cmax, rows: m.rows as i32, cols: m.cols as i32, fmt: m.format as i32 })
+        Ok(ffi::xf_mat { w, rs, cs, bias, cmax, rows: m.rows as i32, cols: m.cols as i32, fmt: m.format as i32 })
     }
 }
 
@@ -102,7 +106,7 @@ impl Engine {
         }
         let mut ld = Loader { dev, xfm, bufs: Vec::new(), allocs: Vec::new() };
         let null_mat =
-            ffi::xf_mat { w: std::ptr::null(), rs: std::ptr::null(), cs: std::ptr::null(), cmax: 0.0, rows: 0, cols: 0, fmt: 0 };
+            ffi::xf_mat { w: std::ptr::null(), rs: std::ptr::null(), cs: std::ptr::null(), bias: std::ptr::null(), cmax: 0.0, rows: 0, cols: 0, fmt: 0 };
         let mut layers = Vec::with_capacity(LAYERS);
         let mut states = Vec::new();
         let mut state_allocs = Vec::new();
