@@ -104,8 +104,17 @@ and column scales); everything else is copied verbatim. `xf-convert verify`
 re-reads the container, unpacks the tiles, and recomputes the error against
 the checkpoint.
 
-*Result.* See PERFORMANCE.md for the full-model figures. Layer 0 plus the MTP
-block: 13 matrices, mean 18.96 dB, verify finds 0 mismatches.
+*Result.* Full model: 14.56 GiB, 409 matrices (26.02 G weights), mean
+18.92 dB, 457 tensors copied verbatim, 29 minutes on 12 CPU threads shared
+with another job. `verify` over all 866 tensors: 0 mismatches.
+
+One matrix is not quantisable this way: `mtp.fc` (5120 x 10240) reconstructs
+at 5.4 dB at 4 bits and 6.5 dB at 8 bits, so it is far from the Gaussian rows
+of every other matrix (the next worst is 17.8 dB). The converter now copies
+any matrix below 16 dB verbatim, to be run by the bf16 kernel. The container
+on disk was written before that rule and still holds `mtp.fc` at s4; nothing
+uses the MTP block yet, and it must be reconverted before speculative
+decoding work starts.
 
 ## E6. Converted weights on the GPU against the original model
 

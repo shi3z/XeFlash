@@ -133,6 +133,10 @@ fn dtype_name(d: Dtype) -> Result<&'static str> {
     }
 }
 
+/// Below this SQNR a matrix is not quantised but copied verbatim. Every body
+/// matrix of the model is above 17.7 dB at 4 bits.
+const FALLBACK_DB: f64 = 16.0;
+
 fn convert(dir: &Path, out: &Path, rest: &[String]) -> Result<()> {
     let opt = |k: &str| rest.iter().position(|a| a == k).and_then(|i| rest.get(i + 1)).cloned();
     let bits: u32 = opt("--bits").map_or(Ok(4), |b| b.parse().map_err(|_| Error::Invalid("bad --bits".into())))?;
@@ -164,6 +168,16 @@ fn convert(dir: &Path, out: &Path, rest: &[String]) -> Result<()> {
             let t0 = Instant::now();
             let w = t.to_f32()?;
             let z = quantize(&w, rows, cols, QuantSpec { bits, col_scale: true, iters: 3 })?;
+            // A matrix that is far from Gaussian (mtp.fc: 5.4 dB at 4 bits and
+            // still 6.5 dB at 8) cannot be carried by a uniform grid. Such
+            // matrices are rare and small; keep the original data and let the
+            // engine run them through the bf16 kernel.
+            if z.sqnr_db() < FALLBACK_DB {
+                writer.add_dense(name, dtype_name(t.dtype)?, t.shape, t.bytes)?;
+                n_dense += 1;
+                println!("[{:>4}/{}] {:<62} kept dense: {:.2} dB at {bits} bits", i + 1, names.len(), name, z.sqnr_db());
+                continue;
+            }
             let tiles = pack_weights(format, rows, cols, &z.q)?;
             writer.add_matrix(name, format, rows, cols, &tiles, &z.row_scale, &z.col_scale, z.sqnr_db())?;
             n_mat += 1;
