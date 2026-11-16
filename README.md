@@ -3,6 +3,11 @@
 An LLM inference engine for Qwen3.8-27B built for one GPU: the Intel Arc Pro
 B60 (Xe2, 24 GB). Rust host, C++20 SYCL/ESIMD kernels.
 
+XeFlash is a reconstruction of [YASAKANI](https://github.com/shi3z/yasakani-not5090)
+for the Intel Xe architecture: it starts from the YASAKANI engine and rebuilds
+it around what the Xe2 GPU does well. It follows YASAKANI's licence (Apache
+License 2.0); see `LICENSE` and `NOTICE`.
+
 The engine is designed around a property of the Xe2 systolic array: `dpas`
 consumes packed 4-bit and 2-bit integer operands directly. Weights are stored
 in the order DPAS reads them, so decoding a token is a memory stream feeding
@@ -87,3 +92,8 @@ stuck kernel holds it until the process is killed.
 
 Benchmark on an idle host: a CPU-heavy job starves the submitting thread and
 inflates kernel times.
+
+## Licence
+
+Apache License 2.0, the same as YASAKANI, on which this project is based.
+`NOTICE` says what derives from YASAKANI and how model files are treated.
