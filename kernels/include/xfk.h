@@ -155,7 +155,7 @@ typedef struct {
   void *ws;              /* xf_ws_bytes(ctx) bytes */
 } xf_model;
 
-enum { XF_FWD_EMBED = 1, XF_FWD_HEAD = 2 };
+enum { XF_FWD_EMBED = 1, XF_FWD_HEAD = 2, XF_FWD_IDS_SLOT1 = 4 /* token ids from the verify slot ids[16..] */ };
 enum { XF_WS_IDS = 0, XF_WS_H, XF_WS_XN, XF_WS_LOGITS, XF_WS_AMAX_V, XF_WS_AMAX_I, XF_WS_MTP_H };
 enum { XF_MAX_TOKENS = 16, XF_PROF_COUNT = 7, XF_AMAX_PER_TOKEN = 97 * 64 };
 
@@ -179,6 +179,21 @@ typedef struct {
   const float *norm;   /* 1 + mtp.norm */
 } xf_mtp;
 int xf_mtp_step(xf_ctx *ctx, const xf_model *md, const xf_mtp *mtp, int m, int pos0, int src_row, double *prof);
+
+/* Sketch of the lm_head for drafting: scores = A (B h), A quantised [vocab][rank],
+ * B f32 [rank][5120]. groups * 64 candidates (per group of the vocabulary, the
+ * best token of each id-mod-64 class) are rescored exactly with the real lm_head. Only ever used for MTP drafts. */
+typedef struct {
+  xf_mat a;
+  const float *b;
+  int32_t rank, groups; /* candidates = groups * 64; groups divides 3880 */
+} xf_sketch;
+/* All MTP steps of one speculative cycle, token ids chained on the device.
+ * The workspace id block (XF_WS_IDS, 64 x int32) is: [0,16) pass ids,
+ * [16,32) verify ids (certain next token, then the drafts), [32,48) greedy
+ * token per row of the last pass, [48,64) its logit (f32). */
+int xf_spec_draft(xf_ctx *ctx, const xf_model *md, const xf_mtp *mtp, const xf_sketch *sk, int n, int pos0, int k,
+                  double *prof);
 
 /* Make the first n tokens of the last pass part of the recurrent state. */
 int xf_commit(xf_ctx *ctx, const xf_model *md, int n);

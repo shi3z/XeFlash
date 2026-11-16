@@ -1,0 +1,9 @@
+[
+  {"prompt":"japanese","prompt_tokens":31,"new_tokens":512,"mtp_k":0,"tok_per_s":22.452,"tokens_per_pass":1.0000,"trunk_ms_per_pass":44.536,"mtp_ms_per_pass":0.000,"prefill_tok_per_s":254.59,"accepted":[],"tried":[],"same_as_first":true},
+  {"prompt":"japanese","prompt_tokens":31,"new_tokens":514,"mtp_k":2,"tok_per_s":36.377,"tokens_per_pass":2.0560,"trunk_ms_per_pass":49.045,"mtp_ms_per_pass":7.474,"prefill_tok_per_s":222.00,"accepted":[168, 96],"tried":[250, 168],"same_as_first":true},
+  {"prompt":"japanese","prompt_tokens":31,"new_tokens":513,"mtp_k":4,"tok_per_s":37.030,"tokens_per_pass":2.3213,"trunk_ms_per_pass":49.904,"mtp_ms_per_pass":12.781,"prefill_tok_per_s":222.06,"accepted":[141, 75, 46, 30],"tried":[221, 141, 75, 46],"same_as_first":true},
+  {"prompt":"japanese","prompt_tokens":31,"new_tokens":515,"mtp_k":6,"tok_per_s":36.028,"tokens_per_pass":2.4760,"trunk_ms_per_pass":50.661,"mtp_ms_per_pass":18.062,"prefill_tok_per_s":222.13,"accepted":[135, 68, 42, 29, 22, 11],"tried":[208, 135, 68, 42, 29, 22],"same_as_first":true},
+  {"prompt":"japanese","prompt_tokens":31,"new_tokens":515,"mtp_k":7,"tok_per_s":34.579,"tokens_per_pass":2.4879,"trunk_ms_per_pass":51.280,"mtp_ms_per_pass":20.668,"prefill_tok_per_s":222.07,"accepted":[134, 68, 40, 27, 22, 11, 6],"tried":[207, 134, 68, 40, 27, 22, 11],"same_as_first":true},
+  {"prompt":"japanese","prompt_tokens":31,"new_tokens":515,"mtp_k":8,"tok_per_s":31.521,"tokens_per_pass":2.4879,"trunk_ms_per_pass":55.633,"mtp_ms_per_pass":23.296,"prefill_tok_per_s":221.75,"accepted":[133, 67, 40, 27, 22, 11, 5, 3],"tried":[207, 133, 67, 40, 27, 22, 11, 5],"same_as_first":true},
+  {"prompt":"japanese","prompt_tokens":31,"new_tokens":515,"mtp_k":12,"tok_per_s":27.364,"tokens_per_pass":2.4879,"trunk_ms_per_pass":57.191,"mtp_ms_per_pass":33.730,"prefill_tok_per_s":221.72,"accepted":[133, 67, 39, 26, 21, 10, 5, 3, 1, 1, 1, 1],"tried":[207, 133, 67, 39, 26, 21, 10, 5, 3, 1, 1, 1],"same_as_first":true}
+]

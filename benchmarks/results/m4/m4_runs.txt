@@ -1,0 +1,127 @@
+## A. device chain + sketch head (rank 512, 2560 candidates)
+japanese exit=0
+japanese K=0    22.36 tok/s | 1.00 tok/pass | cycle  44.52 ms/pass | accept []
+japanese K=2    37.44 tok/s | 2.06 tok/pass | cycle  54.91 ms/pass | accept [67% 57%]  same tokens, same state at +64
+japanese K=4    38.95 tok/s | 2.31 tok/pass | cycle  59.32 ms/pass | accept [63% 53% 65% 60%]  same tokens, same state at +65
+japanese K=6    38.75 tok/s | 2.46 tok/pass | cycle  63.60 ms/pass | accept [65% 50% 65% 64% 75% 48%]  same tokens, same state at +65
+japanese K=7    37.56 tok/s | 2.48 tok/pass | cycle  65.93 ms/pass | accept [64% 51% 62% 62% 81% 48% 60%]  same tokens, same state at +65
+japanese K=8    34.40 tok/s | 2.48 tok/pass | cycle  71.98 ms/pass | accept [64% 50% 63% 62% 81% 48% 50% 60%]  same tokens, same state at +65
+japanese K=12   30.81 tok/s | 2.48 tok/pass | cycle  80.36 ms/pass | accept [64% 50% 61% 61% 80% 45% 56% 60% 33% 100% 100% 100%]  same tokens, same state at +65
+outputs identical across draft lengths: true
+explain exit=0
+explain  K=0    22.37 tok/s | 1.00 tok/pass | cycle  44.51 ms/pass | accept []
+explain  K=2    46.63 tok/s | 2.58 tok/pass | cycle  55.29 ms/pass | accept [89% 77%]  same tokens, same state at +64
+explain  K=4    56.79 tok/s | 3.41 tok/pass | cycle  60.06 ms/pass | accept [85% 77% 81% 75%]  same tokens, same state at +64
+explain  K=6    59.60 tok/s | 3.84 tok/pass | cycle  64.49 ms/pass | accept [87% 78% 73% 74% 73% 64%]  same tokens, same state at +64
+explain  K=7    58.41 tok/s | 3.90 tok/pass | cycle  66.79 ms/pass | accept [84% 79% 72% 76% 75% 69% 48%]  same tokens, same state at +64
+explain  K=8    54.35 tok/s | 3.96 tok/pass | cycle  72.89 ms/pass | accept [85% 77% 71% 75% 74% 65% 59% 92%]  same tokens, same state at +64
+explain  K=12   51.01 tok/s | 4.15 tok/pass | cycle  81.42 ms/pass | accept [84% 79% 74% 74% 73% 67% 59% 92% 75% 67% 50% 33%]  same tokens, same state at +64
+outputs identical across draft lengths: true
+code exit=0
+code     K=0    22.37 tok/s | 1.00 tok/pass | cycle  44.52 ms/pass | accept []
+code     K=2    49.51 tok/s | 2.74 tok/pass | cycle  55.41 ms/pass | accept [91% 91%]  same tokens, same state at +65
+code     K=4    68.47 tok/s | 4.15 tok/pass | cycle  60.54 ms/pass | accept [94% 90% 87% 85%]  same tokens, same state at +66
+code     K=6    73.83 tok/s | 4.80 tok/pass | cycle  65.06 ms/pass | accept [89% 92% 85% 86% 77% 78%]  same tokens, same state at +65
+code     K=7    74.68 tok/s | 5.04 tok/pass | cycle  67.48 ms/pass | accept [88% 91% 80% 86% 82% 81% 84%]  same tokens, same state at +65
+code     K=8    71.91 tok/s | 5.30 tok/pass | cycle  73.69 ms/pass | accept [88% 92% 86% 84% 82% 76% 80% 79%]  same tokens, same state at +66
+code     K=12   70.11 tok/s | 5.78 tok/pass | cycle  82.37 ms/pass | accept [87% 92% 83% 88% 87% 71% 78% 76% 95% 72% 62% 75%]  same tokens, same state at +64
+outputs identical across draft lengths: true
+proof exit=0
+proof    K=0    22.38 tok/s | 1.00 tok/pass | cycle  44.50 ms/pass | accept []
+proof    K=2    50.49 tok/s | 2.80 tok/pass | cycle  55.41 ms/pass | accept [95% 89%]  same tokens, same state at +64
+proof    K=4    68.65 tok/s | 4.15 tok/pass | cycle  60.50 ms/pass | accept [96% 87% 89% 81%]  same tokens, same state at +66
+proof    K=6    75.93 tok/s | 4.94 tok/pass | cycle  65.09 ms/pass | accept [93% 89% 86% 82% 82% 84%]  same tokens, same state at +64
+proof    K=7    76.42 tok/s | 5.16 tok/pass | cycle  67.52 ms/pass | accept [93% 88% 88% 81% 79% 78% 81%]  same tokens, same state at +64
+proof    K=8    72.43 tok/s | 5.34 tok/pass | cycle  73.73 ms/pass | accept [91% 92% 81% 80% 81% 84% 83% 80%]  same tokens, same state at +64
+proof    K=12   69.86 tok/s | 5.75 tok/pass | cycle  82.35 ms/pass | accept [91% 90% 86% 78% 78% 84% 75% 79% 84% 75% 83% 60%]  same tokens, same state at +64
+outputs identical across draft lengths: true
+story exit=0
+story    K=0    22.37 tok/s | 1.00 tok/pass | cycle  44.51 ms/pass | accept []
+story    K=2    38.50 tok/s | 2.12 tok/pass | cycle  54.95 ms/pass | accept [72% 55%]  same tokens, same state at +66
+story    K=4    40.18 tok/s | 2.39 tok/pass | cycle  59.39 ms/pass | accept [71% 56% 49% 43%]  same tokens, same state at +66
+story    K=6    37.72 tok/s | 2.40 tok/pass | cycle  63.55 ms/pass | accept [71% 56% 46% 46% 28% 20%]  same tokens, same state at +66
+story    K=7    36.56 tok/s | 2.41 tok/pass | cycle  65.87 ms/pass | accept [71% 56% 46% 46% 28% 20% 100%]  same tokens, same state at +66
+story    K=8    33.48 tok/s | 2.41 tok/pass | cycle  71.95 ms/pass | accept [71% 56% 46% 46% 28% 20% 100% 100%]  same tokens, same state at +66
+story    K=12   29.98 tok/s | 2.41 tok/pass | cycle  80.35 ms/pass | accept [71% 56% 46% 46% 28% 20% 100% 100% 0% 0% 0% 0%]  same tokens, same state at +66
+outputs identical across draft lengths: true
+## B. device chain + full head
+japanese exit=0
+japanese K=4    37.04 tok/s | 2.32 tok/pass | cycle  62.67 ms/pass | accept [64% 53% 61% 65%]  same tokens, same state at +65
+japanese K=6    36.09 tok/s | 2.48 tok/pass | cycle  68.60 ms/pass | accept [65% 50% 62% 69% 76% 50%]  same tokens, same state at +65
+japanese K=7    34.67 tok/s | 2.49 tok/pass | cycle  71.76 ms/pass | accept [65% 51% 59% 68% 81% 50% 55%]  same tokens, same state at +65
+explain exit=0
+explain  K=4    54.86 tok/s | 3.48 tok/pass | cycle  63.42 ms/pass | accept [88% 75% 82% 75%]  same tokens, same state at +64
+explain  K=6    56.14 tok/s | 3.90 tok/pass | cycle  69.50 ms/pass | accept [89% 76% 73% 74% 73% 67%]  same tokens, same state at +64
+explain  K=7    54.95 tok/s | 3.99 tok/pass | cycle  72.65 ms/pass | accept [88% 76% 74% 75% 75% 72% 50%]  same tokens, same state at +64
+code exit=0
+code     K=4    64.92 tok/s | 4.15 tok/pass | cycle  63.85 ms/pass | accept [94% 90% 87% 85%]  same tokens, same state at +66
+code     K=6    68.60 tok/s | 4.80 tok/pass | cycle  70.02 ms/pass | accept [89% 92% 85% 86% 77% 78%]  same tokens, same state at +65
+code     K=7    68.77 tok/s | 5.04 tok/pass | cycle  73.27 ms/pass | accept [88% 91% 80% 86% 82% 81% 84%]  same tokens, same state at +65
+proof exit=0
+proof    K=4    66.08 tok/s | 4.22 tok/pass | cycle  63.88 ms/pass | accept [97% 90% 87% 84%]  same tokens, same state at +66
+proof    K=6    71.17 tok/s | 4.99 tok/pass | cycle  70.12 ms/pass | accept [94% 89% 85% 85% 82% 82%]  same tokens, same state at +64
+proof    K=7    72.44 tok/s | 5.32 tok/pass | cycle  73.44 ms/pass | accept [95% 89% 89% 81% 80% 79% 78%]  same tokens, same state at +64
+story exit=0
+story    K=4    38.22 tok/s | 2.40 tok/pass | cycle  62.72 ms/pass | accept [71% 57% 47% 44%]  same tokens, same state at +66
+story    K=6    35.14 tok/s | 2.41 tok/pass | cycle  68.54 ms/pass | accept [71% 57% 44% 47% 22% 25%]  same tokens, same state at +66
+story    K=7    33.75 tok/s | 2.42 tok/pass | cycle  71.69 ms/pass | accept [72% 57% 44% 47% 22% 25% 100%]  same tokens, same state at +66
+## C. MTP weights (sketch g40)
+official japanese exit=0
+japanese K=6    38.75 tok/s | 2.46 tok/pass | cycle  63.58 ms/pass | accept [65% 50% 65% 64% 75% 48%]  same tokens, same state at +65
+japanese K=7    37.56 tok/s | 2.48 tok/pass | cycle  65.92 ms/pass | accept [64% 51% 62% 62% 81% 48% 60%]  same tokens, same state at +65
+official explain exit=0
+explain  K=6    59.59 tok/s | 3.84 tok/pass | cycle  64.49 ms/pass | accept [87% 78% 73% 74% 73% 64%]  same tokens, same state at +64
+explain  K=7    58.41 tok/s | 3.90 tok/pass | cycle  66.80 ms/pass | accept [84% 79% 72% 76% 75% 69% 48%]  same tokens, same state at +64
+official code exit=0
+code     K=6    73.83 tok/s | 4.80 tok/pass | cycle  65.07 ms/pass | accept [89% 92% 85% 86% 77% 78%]  same tokens, same state at +65
+code     K=7    74.64 tok/s | 5.04 tok/pass | cycle  67.51 ms/pass | accept [88% 91% 80% 86% 82% 81% 84%]  same tokens, same state at +65
+official proof exit=0
+proof    K=6    75.91 tok/s | 4.94 tok/pass | cycle  65.11 ms/pass | accept [93% 89% 86% 82% 82% 84%]  same tokens, same state at +64
+proof    K=7    76.40 tok/s | 5.16 tok/pass | cycle  67.54 ms/pass | accept [93% 88% 88% 81% 79% 78% 81%]  same tokens, same state at +64
+f_fc_fq4 japanese exit=0
+japanese K=6    38.94 tok/s | 2.48 tok/pass | cycle  63.58 ms/pass | accept [67% 51% 62% 59% 73% 42%]  same tokens, same state at +64
+japanese K=7    37.57 tok/s | 2.48 tok/pass | cycle  65.91 ms/pass | accept [66% 50% 64% 59% 73% 37% 57%]  same tokens, same state at +64
+f_fc_fq4 explain exit=0
+explain  K=6    56.76 tok/s | 3.65 tok/pass | cycle  64.35 ms/pass | accept [81% 75% 74% 77% 76% 65%]  same tokens, same state at +64
+explain  K=7    56.76 tok/s | 3.79 tok/pass | cycle  66.71 ms/pass | accept [79% 79% 74% 76% 73% 74% 54%]  same tokens, same state at +64
+f_fc_fq4 code exit=0
+code     K=6    75.17 tok/s | 4.90 tok/pass | cycle  65.12 ms/pass | accept [89% 92% 84% 86% 87% 78%]  same tokens, same state at +65
+code     K=7    78.32 tok/s | 5.30 tok/pass | cycle  67.66 ms/pass | accept [89% 93% 81% 89% 93% 74% 85%]  same tokens, same state at +65
+f_fc_fq4 proof exit=0
+proof    K=6    76.63 tok/s | 4.99 tok/pass | cycle  65.13 ms/pass | accept [93% 89% 88% 81% 87% 77%]  same tokens, same state at +64
+proof    K=7    75.70 tok/s | 5.11 tok/pass | cycle  67.49 ms/pass | accept [91% 92% 86% 78% 84% 73% 71%]  same tokens, same state at +64
+c_all_lr2e-6_long japanese exit=0
+japanese K=6    38.21 tok/s | 2.43 tok/pass | cycle  63.57 ms/pass | accept [65% 51% 61% 53% 87% 45%]  same tokens, same state at +64
+japanese K=7    37.38 tok/s | 2.46 tok/pass | cycle  65.92 ms/pass | accept [65% 52% 61% 56% 88% 38% 62%]  same tokens, same state at +64
+c_all_lr2e-6_long explain exit=0
+explain  K=6    58.57 tok/s | 3.77 tok/pass | cycle  64.43 ms/pass | accept [84% 75% 78% 76% 71% 69%]  same tokens, same state at +64
+explain  K=7    57.81 tok/s | 3.86 tok/pass | cycle  66.73 ms/pass | accept [81% 75% 78% 80% 71% 78% 46%]  same tokens, same state at +64
+c_all_lr2e-6_long code exit=0
+code     K=6    75.19 tok/s | 4.90 tok/pass | cycle  65.10 ms/pass | accept [86% 94% 86% 86% 86% 81%]  same tokens, same state at +65
+code     K=7    76.10 tok/s | 5.14 tok/pass | cycle  67.54 ms/pass | accept [86% 91% 85% 86% 95% 76% 78%]  same tokens, same state at +65
+c_all_lr2e-6_long proof exit=0
+proof    K=6    77.35 tok/s | 5.04 tok/pass | cycle  65.14 ms/pass | accept [93% 91% 86% 85% 83% 81%]  same tokens, same state at +64
+proof    K=7    77.17 tok/s | 5.21 tok/pass | cycle  67.54 ms/pass | accept [92% 91% 86% 79% 88% 78% 76%]  same tokens, same state at +64
+## D. profile
+  head sketch               4       0.1291
+  TOTAL requested        1522      16.2960
+driver free VRAM: 22.4843 GiB before, 6.1547 GiB after, difference 16.3295 GiB
+profile ( 1 tokens/pass, sync per stage, ms): norm 1.55 quant 3.11 gemm 35.58 gdn 4.40 attn 1.66 mlp 0.91 head 1.54 | total 48.75
+          unprofiled: 42.68 ms/pass
+profile ( 8 tokens/pass, sync per stage, ms): norm 1.59 quant 3.47 gemm 41.38 gdn 5.29 attn 1.76 mlp 1.44 head 1.82 | total 56.75
+          unprofiled: 50.34 ms/pass
+profile (16 tokens/pass, sync per stage, ms): norm 1.59 quant 3.56 gemm 45.74 gdn 8.11 attn 1.78 mlp 2.12 head 1.88 | total 64.77
+          unprofiled: 58.46 ms/pass
+profile (MTP step, 1 row, sync per stage, ms): norm 0.450 quant 0.057 gemm 0.549 gdn 0.000 attn 0.035 mlp 0.014 head 1.545 | total 2.650
+          unprofiled (includes argmax read-back): 2.517 ms/step
+profile (device chain, 1 fill row, 1 drafts, sketch head, ms): norm 0.423 quant 0.102 gemm 0.553 gdn 0.000 attn 0.032 mlp 0.015 head 0.704 | total 1.828
+          unprofiled: 1.674 ms per chain
+profile (device chain, 1 fill row, 7 drafts, sketch head, ms): norm 2.940 quant 0.674 gemm 3.861 gdn 0.000 attn 0.249 mlp 0.105 head 4.776 | total 12.605
+          unprofiled: 11.641 ms per chain
+## E. 8K context
+exit=0
+  TOTAL requested        1522      17.4077
+driver free VRAM: 22.4843 GiB before, 5.0450 GiB after, difference 17.4393 GiB
+long8000 K=0    18.17 tok/s | 1.00 tok/pass | trunk  49.74 ms/pass, MTP   0.00 ms/pass | prefill 173 tok/s | accept []
+long8000 K=6    33.71 tok/s | 4.00 tok/pass | trunk 118.64 ms/pass, MTP   0.00 ms/pass | prefill 159 tok/s | accept [78% 92% 70% 94% 60% 89%]  same tokens, same state at +69
+outputs identical across draft lengths: true

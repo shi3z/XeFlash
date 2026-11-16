@@ -96,6 +96,15 @@ pub struct xf_mtp {
     pub norm: *const f32,
 }
 
+#[repr(C)]
+pub struct xf_sketch {
+    pub a: xf_mat,
+    pub b: *const f32,
+    pub rank: i32,
+    pub groups: i32,
+}
+
+pub const XF_FWD_IDS_SLOT1: i32 = 4;
 pub const XF_LAYER_GDN: i32 = 0;
 pub const XF_LAYER_ATTN: i32 = 1;
 pub const XF_FWD_EMBED: i32 = 1;
@@ -112,6 +121,7 @@ unsafe extern "C" {
     pub fn xf_ws_offset(which: i32, ctx: i32) -> usize;
     pub fn xf_forward(ctx: *mut xf_ctx, md: *const xf_model, m: i32, pos0: i32, l0: i32, l1: i32, flags: i32, prof: *mut f64) -> i32;
     pub fn xf_mtp_step(ctx: *mut xf_ctx, md: *const xf_model, mtp: *const xf_mtp, m: i32, pos0: i32, src_row: i32, prof: *mut f64) -> i32;
+    pub fn xf_spec_draft(ctx: *mut xf_ctx, md: *const xf_model, mtp: *const xf_mtp, sk: *const xf_sketch, n: i32, pos0: i32, k: i32, prof: *mut f64) -> i32;
     pub fn xf_commit(ctx: *mut xf_ctx, md: *const xf_model, n: i32) -> i32;
     pub fn xf_copy(ctx: *mut xf_ctx, dst: *mut c_void, src: *const c_void, bytes: usize) -> i32;
     pub fn xf_zero(ctx: *mut xf_ctx, dst: *mut c_void, bytes: usize) -> i32;

@@ -73,7 +73,9 @@ ESIMD_INLINE void storef(float *p, float x) SYCL_ESIMD_FUNCTION {
 
 // ---------------------------------------------------------------- memory map
 struct WS {
-  int32_t *ids;
+  int32_t *ids; // io block: [0,16) pass ids, [16,32) verify ids (next + drafts), [32,48) greedy ids, [48,64) greedy logits (f32)
+  float *sk_z, *sk_s, *candv;
+  int32_t *cand, *candi;
   float *inv, *ts, *toff, *pmax, *psum, *h, *xn, *y;
   int8_t *xhi;
   uint8_t *xlo;
@@ -100,7 +102,7 @@ WS carve_ws(void *base, int ctx) {
   Bump b{static_cast<char *>(base)};
   const size_t nb = size_t(ctx) / 64 + 1;
   WS w;
-  w.ids = b.take<int32_t>(MAXM);
+  w.ids = b.take<int32_t>(64);
   w.inv = b.take<float>(MAXM);
   w.ts = b.take<float>(MAXM);
   w.toff = b.take<float>(MAXM);
@@ -132,6 +134,11 @@ WS carve_ws(void *base, int ctx) {
   w.pv = b.take<float>(MAXM * AH * nb * AD);
   w.mh = b.take<float>(MAXM * D);
   w.me = b.take<float>(MAXM * 2 * D);
+  w.sk_z = b.take<float>(2048);
+  w.sk_s = b.take<float>(VOCAB);
+  w.cand = b.take<int32_t>(4096);
+  w.candi = b.take<int32_t>(4096);
+  w.candv = b.take<float>(4096);
   w.total = b.off;
   return w;
 }
@@ -644,6 +651,165 @@ void k_argmax(Q &q, const float *logits, float *amv, int32_t *ami, int m) {
   });
 }
 
+template <int N> ESIMD_INLINE int32_t hmin_i(simd<int32_t, N> v) SYCL_ESIMD_FUNCTION {
+  if constexpr (N == 1) {
+    return v[0];
+  } else {
+    simd<int32_t, N / 2> a = v.template select<N / 2, 1>(0);
+    simd<int32_t, N / 2> b = v.template select<N / 2, 1>(N / 2);
+    return hmin_i<N / 2>(es::min(a, b));
+  }
+}
+ESIMD_INLINE void storei(int32_t *p, int32_t x) SYCL_ESIMD_FUNCTION {
+  simd<int32_t, 1> v(x);
+  v.copy_to(p);
+}
+// Largest value of 64 lanes and the smallest index that attains it.
+ESIMD_INLINE void lane_best(simd<float, 64> v, simd<int32_t, 64> idx, float &bv, int32_t &bi) SYCL_ESIMD_FUNCTION {
+  bv = hmax<64>(v);
+  idx.merge(simd<int32_t, 64>(0x7fffffff), v < bv);
+  bi = hmin_i<64>(idx);
+}
+
+// Finish the argmax on the device: one thread per token reduces the 97 x 64
+// partials of k_argmax to (token, logit); ties go to the lowest token id.
+// Optionally forwards row 0's token to two more places (draft chaining).
+void k_amax_final(Q &q, const float *amv, const int32_t *ami, int m, int32_t *out_i, float *out_v, int32_t *dst0,
+                  int32_t *dst1) {
+  q.parallel_for(sycl::range<1>(m), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const size_t mi = id[0];
+    simd<float, 64> bv;
+    simd<int32_t, 64> bi;
+    bv.copy_from(amv + mi * AMC * 64);
+    bi.copy_from(ami + mi * AMC * 64);
+    for (int c = 1; c < AMC; c++) {
+      simd<float, 64> v;
+      simd<int32_t, 64> i;
+      v.copy_from(amv + (mi * AMC + c) * 64);
+      i.copy_from(ami + (mi * AMC + c) * 64);
+      auto gt = v > bv; // within a lane indices only grow, so strict > keeps the first
+      bv.merge(v, gt);
+      bi.merge(i, gt);
+    }
+    float v;
+    int32_t i;
+    lane_best(bv, bi, v, i);
+    if (out_i) storei(out_i + mi, i);
+    if (out_v) storef(out_v + mi, v);
+    if (mi == 0) {
+      if (dst0) storei(dst0, i);
+      if (dst1) storei(dst1, i);
+    }
+  });
+}
+
+// pmax of a plain vector (one row), per 64 columns.
+void k_pmax(Q &q, const float *v, int n, float *pmax) {
+  q.parallel_for(sycl::range<1>(n / 64), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    simd<float, 64> x;
+    x.copy_from(v + id[0] * 64);
+    storef(pmax + id[0], hmax<64>(es::abs(x)));
+  });
+}
+
+// Sketch selection. The vocabulary is cut into `groups` contiguous parts; in
+// each part every lane (token id mod 64) keeps its best-scoring token, giving
+// groups * 64 candidates. Splitting by id mod 64 matters: tokens with adjacent
+// ids are often near-duplicates with similar scores, and one candidate per
+// contiguous range lets them knock each other out.
+void k_sk_select(Q &q, const float *scores, int groups, int32_t *cand) {
+  const int nb = VOCAB / 64 / groups; // 64-token blocks per group
+  q.parallel_for(sycl::range<1>(groups), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const size_t c = id[0];
+    const float *p = scores + c * nb * 64;
+    simd<float, 64> best;
+    best.copy_from(p);
+    simd<int32_t, 64> idx(int32_t(c * nb * 64), 1), cur = idx;
+    for (int b = 1; b < nb; b++) {
+      simd<float, 64> v;
+      v.copy_from(p + b * 64);
+      cur += 64;
+      auto gt = v > best;
+      best.merge(v, gt);
+      idx.merge(cur, gt);
+    }
+    idx.copy_to(cand + c * 64);
+  });
+}
+
+// Exact logits for the 16-row block of every candidate, with the same integer
+// arithmetic and the same finishing formula as the full lm_head GEMM
+// (s4 weights, 16-bit activations, one token). Threads past `n` pad the
+// result arrays so the picker can read whole vectors.
+void k_rescore(Q &q, const xf_mat &head, const int8_t *xhi, const uint8_t *xlo, const float *ts, const float *toff,
+               const int32_t *cand, int n, int npad, float *candv, int32_t *candi) {
+  namespace xmx = sycl::ext::intel::esimd::xmx;
+  using PT = xmx::dpas_argument_type;
+  const int32_t *W = static_cast<const int32_t *>(head.w);
+  const int32_t *XH = reinterpret_cast<const int32_t *>(xhi);
+  const int32_t *XL = reinterpret_cast<const int32_t *>(xlo);
+  const float *RS = head.rs, *RB = head.bias;
+  const size_t tiles = size_t(head.cols) / 32;
+  q.parallel_for(sycl::range<1>(npad), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const size_t c = id[0];
+    if (int(c) >= n) {
+      storef(candv + c, -3.0e38f);
+      storei(candi + c, 0x7fffffff);
+      return;
+    }
+    simd<int32_t, 1> tk;
+    tk.copy_from(cand + c);
+    const size_t rb = size_t(tk[0]) / 16;
+    const int32_t *wp = W + rb * tiles * 64;
+    simd<int32_t, 16> hi(0), lo(0);
+    for (size_t t = 0; t < tiles; t++) {
+      simd<int32_t, 64> w;
+      w.copy_from(wp + t * 64);
+      simd<int32_t, 8> a, b;
+      a.copy_from(XH + t * 8);
+      b.copy_from(XL + t * 8);
+      hi = xmx::dpas<8, 1, int32_t, int32_t, int32_t, int32_t, PT::s4, PT::s8>(hi, w, a);
+      lo = xmx::dpas<8, 1, int32_t, int32_t, int32_t, int32_t, PT::s4, PT::u8>(lo, w, b);
+    }
+    simd<float, 16> rsv, rbv(0.0f);
+    rsv.copy_from(RS + rb * 16);
+    if (RB) rbv.copy_from(RB + rb * 16);
+    simd<float, 16> f = es::convert<float>(hi);
+    f = f * 256.0f + es::convert<float>(lo);
+    f = f + loadf(toff);
+    f = f * rsv * loadf(ts) + rbv;
+    const float bv = hmax<16>(f);
+    simd<int32_t, 16> idx(int32_t(rb * 16), 1);
+    idx.merge(simd<int32_t, 16>(0x7fffffff), f < bv);
+    storef(candv + c, bv);
+    storei(candi + c, hmin_i<16>(idx));
+  });
+}
+
+// Best candidate (highest exact logit, lowest id on ties) -> token id.
+void k_pick(Q &q, const float *candv, const int32_t *candi, int npad, int32_t *dst0, int32_t *dst1, int32_t *dst2) {
+  q.single_task([=]() SYCL_ESIMD_KERNEL {
+    float bv = -3.0e38f;
+    int32_t bi = 0x7fffffff;
+    for (int k = 0; k < npad / 64; k++) {
+      simd<float, 64> v;
+      simd<int32_t, 64> i;
+      v.copy_from(candv + k * 64);
+      i.copy_from(candi + k * 64);
+      float cv;
+      int32_t ci;
+      lane_best(v, i, cv, ci);
+      if (cv > bv || (cv == bv && ci < bi)) {
+        bv = cv;
+        bi = ci;
+      }
+    }
+    if (dst0) storei(dst0, bi);
+    if (dst1) storei(dst1, bi);
+    if (dst2) storei(dst2, bi);
+  });
+}
+
 // -------------------------------------------------------------- pass driver
 struct Timer {
   Q &q;
@@ -674,12 +840,18 @@ struct Pass {
   int m, mpad, tpt;
   Timer tm;
   bool pending = false; // ws.y still has to be added to ws.h
+  int gemm_cat = P_GEMM; // profile category of the next GEMM (the head has its own)
 
   // y[m][rows] = mat (v[m][cols]) ; pmax must describe v.
   // `vs` is the row stride of v (0 = mat.cols). The output row stride is mat.rows.
-  int gemm(const xf_mat &mat, const float *v, float *y, size_t vs = 0) {
+  // `one` runs a single row (v points at it, pm at its pmax row) regardless of the pass size.
+  // `plain` = codes are plain integers (no +0.5 level offset), as in the head sketch table.
+  int gemm(const xf_mat &mat, const float *v, float *y, size_t vs = 0, bool one = false, const float *pm = nullptr,
+           bool plain = false) {
     Q &q = ctx->q;
-    k_quant(q, v, vs ? vs : size_t(mat.cols), mat.cols, mat.cs, mat.cmax, ws.pmax, m, mpad, ws.xhi, ws.xlo, ws.ts, ws.toff);
+    const int m = one ? 1 : this->m, mpad = one ? 1 : this->mpad, tpt = one ? 1 : this->tpt;
+    const float *pmax = pm ? pm : ws.pmax;
+    k_quant(q, v, vs ? vs : size_t(mat.cols), mat.cols, mat.cs, mat.cmax, pmax, m, mpad, ws.xhi, ws.xlo, ws.ts, ws.toff);
     tm.tick(P_QUANT);
     xf_gemm_desc d{};
     d.wfmt = mat.fmt;
@@ -696,11 +868,11 @@ struct Pass {
     d.ts = ws.ts;
     d.y = y;
     d.ypart = ws.ypart;
-    d.toff = ws.toff;
+    d.toff = plain ? nullptr : ws.toff;
     static const bool no_bias = std::getenv("XF_NO_BIAS") != nullptr; // diagnostic
     d.bias = no_bias ? nullptr : mat.bias;
     const int st = xf_gemm(ctx, &d);
-    tm.tick(P_GEMM);
+    tm.tick(gemm_cat);
     return st;
   }
 
@@ -823,6 +995,7 @@ size_t xf_ws_offset(int which, int ctx) {
 }
 
 int xf_forward(xf_ctx *ctx, const xf_model *md, int m, int pos0, int l0, int l1, int flags, double *prof) {
+  const int slot = (flags & XF_FWD_IDS_SLOT1) ? 16 : 0;
   if (!ctx || !md || m < 1 || m > MAXM || pos0 < 0 || pos0 + m > md->ctx || l0 < 0 || l1 > md->nlayers) {
     xf_set_error("xf_forward: invalid arguments (token count, position or layer range)");
     return XF_ERR_INVALID;
@@ -832,7 +1005,7 @@ int xf_forward(xf_ctx *ctx, const xf_model *md, int m, int pos0, int l0, int l1,
     Pass p{ctx, md, carve_ws(md->ws, md->ctx), m, tpt, tpt, Timer(ctx->q, prof)};
     Q &q = ctx->q;
     if (flags & XF_FWD_EMBED) {
-      k_embed(q, md->embed, p.ws.ids, p.ws.h, m);
+      k_embed(q, md->embed, p.ws.ids + slot, p.ws.h, m);
       p.tm.tick(P_NORM);
     }
     // XF_SYNC_LAYERS=n: wait for the queue every n layers (diagnostic / workaround knob).
@@ -849,8 +1022,10 @@ int xf_forward(xf_ctx *ctx, const xf_model *md, int m, int pos0, int l0, int l1,
     }
     if (flags & XF_FWD_HEAD) {
       p.norm(md->fnorm);
+      p.gemm_cat = P_HEAD;
       if (int st = p.gemm(md->head, p.ws.xn, p.ws.logits)) return st;
       k_argmax(q, p.ws.logits, p.ws.amv, p.ws.ami, m);
+      k_amax_final(q, p.ws.amv, p.ws.ami, m, p.ws.ids + 32, reinterpret_cast<float *>(p.ws.ids + 48), nullptr, nullptr);
       p.tm.tick(P_HEAD);
     }
     p.flush();
@@ -858,10 +1033,62 @@ int xf_forward(xf_ctx *ctx, const xf_model *md, int m, int pos0, int l0, int l1,
   });
 }
 
-// One MTP pass over m rows: row i pairs hidden state `src_row + i` of the last
-// pass (the final-norm output still in the workspace; src_row < 0 = zeros)
-// with the token id in the workspace, at MTP position pos0 + i. Leaves the
-// mtp.norm output in XF_WS_XN and logits / argmax partials like a trunk pass.
+} // extern "C"
+
+namespace {
+// One MTP pass over m rows. Row i pairs hidden state `src_row + i` of the
+// previous pass (the final-norm output still in the workspace; src_row < 0 =
+// zeros) with token ids[i], at MTP position pos0 + i. Then the draft head on
+// row `hrow` only: mtp.norm, logits, argmax.
+//   sk == nullptr: the full shared lm_head, argmax finished on the device.
+//   sk != nullptr: low-rank sketch scores -> groups * 64 candidates ->
+//                  exact lm_head logits for the candidates' row blocks.
+// The winning token goes to the greedy slot [32], and to dst0 / dst1 if given
+// (next step's input id, verify-pass id). No host round trip.
+int mtp_step(Pass &p, const xf_mtp *mtp, const xf_sketch *sk, int pos0, int src_row, int hrow, int32_t *dst0,
+             int32_t *dst1) {
+  Q &q = p.ctx->q;
+  WS &w = p.ws;
+  const xf_model *md = p.md;
+  const int m = p.m;
+  const float *hid = src_row < 0 ? nullptr : w.xn + size_t(src_row) * D;
+  k_embed(q, md->embed, w.ids, w.y, m);
+  k_rms(q, w.y, w.inv, m);
+  if (hid) k_rms(q, hid, w.toff, m);
+  k_mtp_cat(q, w.y, w.inv, mtp->gain_e, hid, w.toff, mtp->gain_h, w.me, m);
+  k_gemv_dense(q, mtp->fc, w.me, w.h, D, 2 * D, m);
+  p.tm.tick(P_NORM);
+  if (int st = p.attn(mtp->layer, pos0)) return st;
+  p.norm(mtp->norm);
+  const float *hv = w.xn + size_t(hrow) * D;
+  const float *hpm = w.pmax + size_t(hrow) * PS;
+  p.gemm_cat = P_HEAD;
+  if (!sk) {
+    if (int st = p.gemm(md->head, hv, w.logits, 0, true, hpm)) return st;
+    k_argmax(q, w.logits, w.amv, w.ami, 1);
+    k_amax_final(q, w.amv, w.ami, 1, w.ids + 32, reinterpret_cast<float *>(w.ids + 48), dst0, dst1);
+  } else {
+    // 1. sketch scores for the whole vocabulary: A (B h)
+    k_gemv_dense(q, sk->b, hv, w.sk_z, sk->rank, D, 1);
+    k_pmax(q, w.sk_z, sk->rank, w.psum); // psum is free scratch here
+    if (int st = p.gemm(sk->a, w.sk_z, w.sk_s, 0, true, w.psum, true)) return st;
+    // 2. one candidate per chunk
+    const int npad = sk->groups * 64;
+    k_sk_select(q, w.sk_s, sk->groups, w.cand);
+    // 3. exact logits of the candidates' row blocks, with the head's own quantised input
+    k_quant(q, hv, D, D, md->head.cs, md->head.cmax, hpm, 1, 1, w.xhi, w.xlo, w.ts, w.toff);
+    k_rescore(q, md->head, w.xhi, w.xlo, w.ts, w.toff, w.cand, npad, npad, w.candv, w.candi);
+    k_pick(q, w.candv, w.candi, npad, w.ids + 32, dst0, dst1);
+  }
+  p.gemm_cat = P_GEMM;
+  p.tm.tick(P_HEAD);
+  return XF_OK;
+}
+} // namespace
+
+extern "C" {
+
+// Host-driven single MTP pass (kept for tools and tests): head on the last row.
 int xf_mtp_step(xf_ctx *ctx, const xf_model *md, const xf_mtp *mtp, int m, int pos0, int src_row, double *prof) {
   if (!ctx || !md || !mtp || m < 1 || m > MAXM || pos0 < 0 || pos0 + m > md->ctx || src_row + m > MAXM) {
     xf_set_error("xf_mtp_step: invalid arguments");
@@ -870,20 +1097,43 @@ int xf_mtp_step(xf_ctx *ctx, const xf_model *md, const xf_mtp *mtp, int m, int p
   return xf_guard("xf_mtp_step", [&]() -> int {
     const int tpt = m == 1 ? 1 : m <= 8 ? 8 : 16;
     Pass p{ctx, md, carve_ws(md->ws, md->ctx), m, tpt, tpt, Timer(ctx->q, prof)};
-    Q &q = ctx->q;
-    WS &w = p.ws;
-    const float *hid = src_row < 0 ? nullptr : w.xn + size_t(src_row) * D;
-    k_embed(q, md->embed, w.ids, w.y, m);
-    k_rms(q, w.y, w.inv, m);
-    if (hid) k_rms(q, hid, w.toff, m);
-    k_mtp_cat(q, w.y, w.inv, mtp->gain_e, hid, w.toff, mtp->gain_h, w.me, m);
-    k_gemv_dense(q, mtp->fc, w.me, w.h, D, 2 * D, m);
-    p.tm.tick(P_NORM);
-    if (int st = p.attn(mtp->layer, pos0)) return st;
-    p.norm(mtp->norm);
-    if (int st = p.gemm(md->head, w.xn, w.logits)) return st;
-    k_argmax(q, w.logits, w.amv, w.ami, m);
-    p.tm.tick(P_HEAD);
+    return mtp_step(p, mtp, nullptr, pos0, src_row, m - 1, nullptr, nullptr);
+  });
+}
+
+// Whole draft phase of a speculative cycle in one submission.
+//   n      rows committed by the last trunk pass; their final-norm hidden
+//          states are still in the workspace, ids[0..n) hold the token that
+//          follows each row (the last one is the certain next token, which the
+//          host also put in the verify slot ids[16]).
+//   pos0   MTP position of the first of those rows.
+//   k      drafts to produce; draft j (1-based) is written to ids[16 + j].
+// Step 1 rewrites the MTP cache entries of the n committed rows from trunk
+// hidden states and drafts d1 from the last one; steps 2..k chain on the MTP's
+// own output with the token ids staying on the device.
+int xf_spec_draft(xf_ctx *ctx, const xf_model *md, const xf_mtp *mtp, const xf_sketch *sk, int n, int pos0, int k,
+                  double *prof) {
+  if (!ctx || !md || !mtp || n < 1 || n > MAXM || k < 1 || k > MAXM - 1 || pos0 < 0 || pos0 + n + k > md->ctx) {
+    xf_set_error("xf_spec_draft: invalid arguments");
+    return XF_ERR_INVALID;
+  }
+  if (sk && (md->head.fmt != XF_W_S4 || sk->groups < 1 || sk->groups > 64 || (VOCAB / 64) % sk->groups != 0 ||
+             sk->rank > 2048 || sk->rank % 128 != 0)) {
+    xf_set_error("xf_spec_draft: unsupported sketch configuration");
+    return XF_ERR_INVALID;
+  }
+  return xf_guard("xf_spec_draft", [&]() -> int {
+    WS w = carve_ws(md->ws, md->ctx);
+    {
+      const int tpt = n == 1 ? 1 : n <= 8 ? 8 : 16;
+      Pass p{ctx, md, w, n, tpt, tpt, Timer(ctx->q, prof)};
+      if (int st = mtp_step(p, mtp, sk, pos0, 0, n - 1, w.ids, w.ids + 16 + 1)) return st;
+    }
+    for (int j = 2; j <= k; j++) {
+      Pass p{ctx, md, w, 1, 1, 1, Timer(ctx->q, prof)};
+      // input: token d_{j-1} (in ids[0]) and the MTP hidden state that produced it
+      if (int st = mtp_step(p, mtp, sk, pos0 + n - 1 + (j - 1), j == 2 ? n - 1 : 0, 0, w.ids, w.ids + 16 + j)) return st;
+    }
     return XF_OK;
   });
 }

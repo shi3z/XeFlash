@@ -1,0 +1,7 @@
+<|im_start|>user
+日本の四季それぞれの特徴と、季節ごとの代表的な行事について、わかりやすく説明してください。<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+

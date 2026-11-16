@@ -4,6 +4,7 @@
 //!   xf-run dump <model.xfm> <ids.json> <out_dir> [--chunk 1|8|16] [--ctx N]
 //!   xf-run mtp-tf <model.xfm> <ids.json> [--out pred.json]
 //!   xf-run gen  <model.xfm> <ids.json>[,<ids2.json>..] <n_new> [--ctx N] [--mtp K[,K..]] [--profile]
+//!               [--sketch dir --rank 512 --groups 8] [--mtp-xfm other.xfm] [--host-chain]
 //!               [--json results.json] [--out prefix]
 //!
 //! `ids.json` is a JSON array of token ids. Run through scripts/b60run.
@@ -43,10 +44,28 @@ fn write_f32(path: &Path, data: &[f32]) -> Result<()> {
 }
 
 fn load(dev: &Device, model: &str, ctx: usize) -> Result<Engine> {
+    load_opts(dev, model, ctx, &[])
+}
+
+/// `--mtp-xfm <container>`: take the MTP block from another container.
+/// `--sketch <dir with head_sketch.safetensors> [--rank 512] [--groups 8]`: head sketch for drafting.
+fn load_opts(dev: &Device, model: &str, ctx: usize, args: &[String]) -> Result<Engine> {
     let before = dev.info()?.vram_free;
     let t = Instant::now();
     let xfm = Container::open(Path::new(model))?;
-    let engine = Engine::load(dev, &xfm, ctx)?;
+    let mtp_xfm = match opt(args, "--mtp-xfm") {
+        Some(p) => Some(Container::open(Path::new(&p))?),
+        None => None,
+    };
+    let mut engine = Engine::load_with_mtp(dev, &xfm, mtp_xfm.as_ref(), ctx)?;
+    if let Some(dir) = opt(args, "--sketch") {
+        let ck = xeflash_model::Checkpoint::open(Path::new(&dir))?;
+        let table = ck.get("head.sketch.table")?;
+        let table: &[i8] = unsafe { std::slice::from_raw_parts(table.bytes.as_ptr().cast(), table.bytes.len()) };
+        let scale = ck.get("head.sketch.scale")?.to_f32()?;
+        let proj = ck.get("head.sketch.proj")?.to_f32()?;
+        engine.set_sketch(table, &scale, &proj, opt_usize(args, "--rank", 512)?, opt_usize(args, "--groups", 8)?)?;
+    }
     dev.wait()?;
     let after = dev.info()?.vram_free;
     let mut by_cat: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
@@ -128,14 +147,10 @@ fn mtp_teacher_forced(dev: &Device, args: &[String]) -> Result<()> {
     let ids = read_ids(&args[2])?;
     let mut e = load(dev, &args[1], opt_usize(args, "--ctx", 8192)?)?;
     let mut pred = vec![e.mtp_pass(&ids[..1], 0, None, None)?[0].0];
-    for (ci, c) in ids.chunks(16).enumerate() {
-        let start = ci * 16;
-        e.forward(c, None)?;
-        e.commit(c.len())?;
-        let rows = c.len().min(ids.len() - 1 - start);
-        if rows > 0 {
-            pred.extend(e.mtp_pass(&ids[start + 1..start + 1 + rows], start + 1, Some(0), None)?.iter().map(|p| p.0));
-        }
+    for t in 0..ids.len() - 1 {
+        e.forward(&ids[t..t + 1], None)?;
+        e.commit(1)?;
+        pred.push(e.mtp_pass(&ids[t + 1..t + 2], t + 1, Some(0), None)?[0].0);
     }
     let t = ids.len();
     let hit = (1..t - 1).filter(|i| pred[*i] == ids[i + 1]).count();
@@ -147,6 +162,9 @@ fn mtp_teacher_forced(dev: &Device, args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// New tokens after which the committed state is hashed (see `RunStats::state`).
+const STATE_AT: usize = 64;
+
 struct RunStats {
     out: Vec<u32>,
     emitted: usize,
@@ -157,12 +175,19 @@ struct RunStats {
     t_mtp: f64,
     tried: Vec<usize>,
     accepted: Vec<usize>,
+    /// Hash of the committed state after exactly `n_new` generated tokens
+    /// cannot be taken (a cycle may overshoot), so it is taken at the first
+    /// commit boundary at or after 64 new tokens together with that length.
+    state: (usize, u64),
 }
 
 /// Prefill `prompt`, then decode `n_new` tokens greedily with `k` MTP draft
 /// tokens per cycle (0 = one token per trunk pass). `ignore_eos`-style: the
 /// run always produces `n_new` tokens, like the benchmark it is compared with.
-fn run_once(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, k: usize, pchunk: usize) -> Result<RunStats> {
+fn run_once(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, k: usize, pchunk: usize, host_chain: bool) -> Result<RunStats> {
+    if k > 0 && !host_chain {
+        return run_spec(dev, e, prompt, n_new, k, pchunk);
+    }
     let trace = std::env::var_os("XF_TRACE").is_some();
     macro_rules! tr {
         ($($a:tt)*) => { if trace { eprintln!($($a)*); dev.wait()?; eprintln!("   ok"); } };
@@ -197,6 +222,7 @@ fn run_once(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, k: usize
     let mut tried = vec![0usize; k + 1];
     let mut accepted = vec![0usize; k + 1];
     let mut passes = 0usize;
+    let mut state = (0usize, 0u64);
     let t1 = Instant::now();
     while out.len() < n_new {
         let pos = e.position();
@@ -235,6 +261,9 @@ fn run_once(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, k: usize
             }
         }
         out.extend_from_slice(&drafts[..n]);
+        if state.0 == 0 && out.len() >= STATE_AT {
+            state = (out.len(), e.state_hash()?);
+        }
         next = g[n - 1].0;
         passes += 1;
         if k > 0 {
@@ -251,7 +280,66 @@ fn run_once(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, k: usize
     let decode_s = t1.elapsed().as_secs_f64();
     let emitted = out.len();
     out.truncate(n_new);
-    Ok(RunStats { out, emitted, prefill_s, decode_s, passes, t_main, t_mtp, tried, accepted })
+    Ok(RunStats { out, emitted, prefill_s, decode_s, passes, t_main, t_mtp, tried, accepted, state })
+}
+
+/// Speculative decoding with the draft chain on the device: one submission
+/// (MTP steps + trunk verify pass) and one read-back per cycle.
+fn run_spec(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, k: usize, pchunk: usize) -> Result<RunStats> {
+    e.reset()?;
+    let t0 = Instant::now();
+    e.mtp_pass(&prompt[..1], 0, None, None)?; // MTP entry of the first token: zero hidden state
+    let mut next = 0u32;
+    let mut fill: Vec<u32> = Vec::new();
+    let nchunks = prompt.len().div_ceil(pchunk);
+    for (ci, c) in prompt.chunks(pchunk).enumerate() {
+        next = e.forward(c, None)?.last().unwrap().0;
+        e.commit(c.len())?;
+        let start = ci * pchunk;
+        fill = (0..c.len()).map(|i| *prompt.get(start + i + 1).unwrap_or(&next)).collect();
+        if ci + 1 < nchunks {
+            e.spec_draft(&fill, next, 1, None)?; // MTP cache rows of this chunk; the draft is not used
+        }
+    }
+    dev.wait()?;
+    let prefill_s = t0.elapsed().as_secs_f64();
+
+    let mut out: Vec<u32> = Vec::with_capacity(n_new + 16);
+    let mut tried = vec![0usize; k + 1];
+    let mut accepted = vec![0usize; k + 1];
+    let mut passes = 0usize;
+    let mut state = (0usize, 0u64);
+    let t1 = Instant::now();
+    while out.len() < n_new {
+        let (drafts, g) = e.spec_cycle(&fill, next, k)?;
+        debug_assert_eq!(drafts[0], next);
+        let mut n = 1;
+        while n < drafts.len() && g[n - 1].0 == drafts[n] {
+            n += 1;
+        }
+        e.commit(n)?;
+        for i in 1..drafts.len() {
+            if i <= n {
+                tried[i] += 1;
+            }
+            if i < n {
+                accepted[i] += 1;
+            }
+        }
+        out.extend_from_slice(&drafts[..n]);
+        if state.0 == 0 && out.len() >= STATE_AT {
+            state = (out.len(), e.state_hash()?);
+        }
+        next = g[n - 1].0;
+        fill = (0..n).map(|i| if i + 1 < n { drafts[i + 1] } else { next }).collect();
+        passes += 1;
+    }
+    dev.wait()?;
+    let decode_s = t1.elapsed().as_secs_f64();
+    let emitted = out.len();
+    out.truncate(n_new);
+    // The cycle is one submission, so trunk and MTP time are not separable here; see --profile.
+    Ok(RunStats { out, emitted, prefill_s, decode_s, passes, t_main: decode_s, t_mtp: 0.0, tried, accepted, state })
 }
 
 /// gen: `<ids.json>[,<ids2.json>...] <n_new> [--mtp K[,K2...]]`. Every prompt
@@ -269,7 +357,8 @@ fn generate(dev: &Device, args: &[String]) -> Result<()> {
     if ks.iter().any(|k| *k > 15) {
         return Err(Error::Invalid("--mtp must be at most 15 (a pass holds 16 tokens)".into()));
     }
-    let mut e = load(dev, &args[1], opt_usize(args, "--ctx", 8192)?)?;
+    let mut e = load_opts(dev, &args[1], opt_usize(args, "--ctx", 8192)?, args)?;
+    let host_chain = args.iter().any(|a| a == "--host-chain");
     if ks.iter().any(|k| *k > 0) && !e.has_mtp() {
         return Err(Error::Invalid("this container has no usable MTP block".into()));
     }
@@ -294,8 +383,26 @@ fn generate(dev: &Device, args: &[String]) -> Result<()> {
             }
         }
         let mut base: Option<Vec<u32>> = None;
+        let mut base_states: std::collections::HashMap<usize, u64> = std::collections::HashMap::new();
         for &k in &ks {
-            let r = run_once(dev, &mut e, &prompt, n_new, k, pchunk)?;
+            let r = run_once(dev, &mut e, &prompt, n_new, k, pchunk, host_chain)?;
+            if k == 0 && base.is_none() {
+                // Reference states at every length a speculative run could stop at.
+                e.reset()?;
+                let mut nx = 0u32;
+                for c in prompt.chunks(pchunk) {
+                    nx = e.forward(c, None)?.last().unwrap().0;
+                    e.commit(c.len())?;
+                }
+                for len in 1..=STATE_AT + 16 {
+                    nx = e.forward(&[nx], None)?[0].0;
+                    e.commit(1)?;
+                    if len >= STATE_AT {
+                        base_states.insert(len, e.state_hash()?);
+                    }
+                }
+            }
+            let state_ok = base_states.get(&r.state.0).map(|h| *h == r.state.1);
             let same = base.as_ref().is_none_or(|b| *b == r.out);
             all_equal &= same;
             let tps = r.emitted as f64 / r.decode_s;
@@ -308,7 +415,13 @@ fn generate(dev: &Device, args: &[String]) -> Result<()> {
                 r.t_mtp / r.passes as f64 * 1e3,
                 prompt.len() as f64 / r.prefill_s,
                 acc.join(" "),
-                if base.is_some() { if same { "  same tokens" } else { "  TOKENS DIFFER" } } else { "" }
+                match (base.is_some(), same, state_ok) {
+                    (false, _, _) => "".to_string(),
+                    (true, true, Some(true)) => format!("  same tokens, same state at +{}", r.state.0),
+                    (true, true, None) => "  same tokens (state not compared)".to_string(),
+                    (true, true, Some(false)) => "  same tokens, STATE DIFFERS".to_string(),
+                    (true, false, _) => "  TOKENS DIFFER".to_string(),
+                }
             );
             let _ = std::fmt::Write::write_fmt(
                 &mut json,
@@ -360,6 +473,50 @@ fn generate(dev: &Device, args: &[String]) -> Result<()> {
                 e.commit(0)?;
             }
             eprintln!("          unprofiled: {:.2} ms/pass", t.elapsed().as_secs_f64() / reps as f64 * 1e3);
+        }
+        if e.has_mtp() {
+            // One MTP draft step (1 row): categories as above; "norm" holds embedding,
+            // the two pre-fc norms and fc; "head" holds mtp.norm quantisation, lm_head and argmax.
+            let mut prof = [0f64; 7];
+            let reps = 20;
+            for _ in 0..reps {
+                e.mtp_pass(&[1000], 5, Some(0), Some(&mut prof))?;
+            }
+            let total: f64 = prof.iter().sum();
+            eprint!("profile (MTP step, 1 row, sync per stage, ms):");
+            for (n, v) in PROF_NAMES.iter().zip(prof) {
+                eprint!(" {n} {:.3}", v / reps as f64);
+            }
+            eprintln!(" | total {:.3}", total / reps as f64);
+            let t = Instant::now();
+            for _ in 0..reps {
+                e.mtp_pass(&[1000], 5, Some(0), None)?;
+            }
+            eprintln!("          unprofiled (includes argmax read-back): {:.3} ms/step", t.elapsed().as_secs_f64() / reps as f64 * 1e3);
+            // The device-side chain: 1 fill row + 6 drafts, per-stage and unprofiled.
+            let toks = [1000u32];
+            e.reset()?;
+            e.forward(&toks, None)?;
+            e.commit(1)?;
+            for kk in [1usize, 7] {
+                let mut prof = [0f64; 7];
+                for _ in 0..reps {
+                    e.spec_draft(&toks, 1000, kk, Some(&mut prof))?;
+                }
+                dev.wait()?;
+                let total: f64 = prof.iter().sum();
+                eprint!("profile (device chain, 1 fill row, {kk} drafts{}, ms):", if e.has_sketch() { ", sketch head" } else { ", full head" });
+                for (n, v) in PROF_NAMES.iter().zip(prof) {
+                    eprint!(" {n} {:.3}", v / reps as f64);
+                }
+                eprintln!(" | total {:.3}", total / reps as f64);
+                let t = Instant::now();
+                for _ in 0..reps {
+                    e.spec_draft(&toks, 1000, kk, None)?;
+                }
+                dev.wait()?;
+                eprintln!("          unprofiled: {:.3} ms per chain", t.elapsed().as_secs_f64() / reps as f64 * 1e3);
+            }
         }
     }
     Ok(())

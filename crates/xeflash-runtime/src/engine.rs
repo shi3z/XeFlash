@@ -36,6 +36,7 @@ pub struct Engine {
     states: Vec<DeviceBuf>,
     ws: DeviceBuf,
     mtp: Option<Box<ffi::xf_mtp>>,
+    sketch: Option<Box<ffi::xf_sketch>>,
     allocs: Vec<Alloc>,
     ctx: usize,
     pos: usize,
@@ -104,6 +105,12 @@ impl Engine {
     /// Put the whole text model on the device. `ctx` is the KV-cache capacity
     /// in tokens; all memory is allocated here, nothing later.
     pub fn load(dev: &Device, xfm: &Container, ctx: usize) -> Result<Engine> {
+        Self::load_with_mtp(dev, xfm, None, ctx)
+    }
+
+    /// Like [`load`], but take the MTP block from another container (for
+    /// comparing drafter weights on one trunk).
+    pub fn load_with_mtp(dev: &Device, xfm: &Container, mtp_xfm: Option<&Container>, ctx: usize) -> Result<Engine> {
         if ctx == 0 || ctx % 64 != 0 {
             return Err(Error::Invalid("context capacity must be a positive multiple of 64".into()));
         }
@@ -224,6 +231,9 @@ impl Engine {
         // The official MTP block, if the container carries it in usable form
         // (mtp.fc must be dense: it does not survive low-bit quantisation).
         let mut mtp = None;
+        let trunk_xfm = xfm;
+        let xfm = mtp_xfm.unwrap_or(trunk_xfm);
+        ld.xfm = xfm;
         if xfm.names().any(|(n, k)| n == "mtp.fc.weight" && k == "dense") {
             let p = "mtp.layers.0.";
             let mut m = [null_mat; 7];
@@ -294,7 +304,7 @@ impl Engine {
             rope_sin,
             ws: ws.ptr,
         });
-        let mut e = Engine { dev: dev.clone(), model, _layers: layers, bufs: ld.bufs, states, ws, mtp, allocs, ctx, pos: 0, last_m: 0 };
+        let mut e = Engine { dev: dev.clone(), model, _layers: layers, bufs: ld.bufs, states, ws, mtp, sketch: None, allocs, ctx, pos: 0, last_m: 0 };
         e.reset()?;
         Ok(e)
     }
@@ -397,7 +407,7 @@ impl Engine {
     /// One pass of the MTP block over `ids.len()` rows. Row `i` pairs the
     /// final-norm hidden state `src_row + i` left in the workspace by the
     /// previous pass (`None` = zero hidden state) with token `ids[i]`, at MTP
-    /// position `pos0 + i`. Returns the greedy draft token of every row.
+    /// position `pos0 + i`. Returns the greedy draft token of the last row.
     pub fn mtp_pass(&mut self, ids: &[u32], pos0: usize, src_row: Option<usize>, prof: Option<&mut [f64; 7]>) -> Result<Vec<(u32, f32)>> {
         let mtp = self.mtp.as_ref().ok_or_else(|| Error::Invalid("this container has no usable MTP block".into()))?;
         if ids.is_empty() || ids.len() > MAX_TOKENS || pos0 + ids.len() > self.ctx {
@@ -409,32 +419,136 @@ impl Engine {
         check(unsafe {
             ffi::xf_mtp_step(self.dev.ctx.0, &*self.model, &**mtp, ids.len() as i32, pos0 as i32, src_row.map_or(-1, |r| r as i32), prof)
         })?;
-        let keep = self.last_m;
-        self.last_m = ids.len();
-        let out = self.argmax();
-        self.last_m = keep;
-        out
+        // The draft head runs on the last row only.
+        let io = self.read_io()?;
+        Ok(vec![(io[32] as u32, f32::from_bits(io[48] as u32))])
     }
 
-    /// Finish the argmax on the host (ties go to the lowest token id).
+    /// Greedy token and logit of every row of the last pass. The argmax is
+    /// finished on the device (ties go to the lowest token id); this reads
+    /// 64 words.
     pub fn argmax(&self) -> Result<Vec<(u32, f32)>> {
-        const PER: usize = 97 * 64;
-        let m = self.last_m;
-        let mut v = vec![0f32; m * PER];
-        let mut i = vec![0i32; m * PER];
-        self.ws.read(self.ws_off(ffi::XF_WS_AMAX_V), &mut v)?;
-        self.ws.read(self.ws_off(ffi::XF_WS_AMAX_I), &mut i)?;
-        Ok((0..m)
-            .map(|t| {
-                let mut best = (0u32, f32::NEG_INFINITY);
-                for k in t * PER..(t + 1) * PER {
-                    if v[k] > best.1 || (v[k] == best.1 && (i[k] as u32) < best.0) {
-                        best = (i[k] as u32, v[k]);
-                    }
-                }
-                best
-            })
-            .collect())
+        let io = self.read_io()?;
+        Ok((0..self.last_m).map(|i| (io[32 + i] as u32, f32::from_bits(io[48 + i] as u32))).collect())
+    }
+
+    fn read_io(&self) -> Result<[i32; 64]> {
+        let mut io = [0i32; 64];
+        self.ws.read(self.ws_off(ffi::XF_WS_IDS), &mut io)?;
+        Ok(io)
+    }
+
+    /// Hash of the committed model state: every DeltaNet state matrix and
+    /// convolution history, and the KV rows of all committed positions.
+    /// Two runs that committed the same tokens must give the same value,
+    /// whatever pass sizes and draft lengths they used.
+    pub fn state_hash(&self) -> Result<u64> {
+        self.dev.wait()?;
+        let mut h = 0xcbf29ce484222325u64;
+        let mut eat = |v: &[u32]| {
+            for x in v {
+                h = (h ^ *x as u64).wrapping_mul(0x100000001b3);
+            }
+        };
+        for (l, st) in self.states.iter().take(LAYERS).enumerate() {
+            if l % 4 == 3 {
+                let rows = self.pos * 4 * 256;
+                let mut buf = vec![0u32; rows];
+                st.read(0, &mut buf)?; // K
+                eat(&buf);
+                st.read(self.ctx * 4 * 256 * 4, &mut buf)?; // V
+                eat(&buf);
+            } else {
+                let mut buf = vec![0u32; 48 * 128 * 128 + 3 * 10240]; // S, then the conv history
+                st.read(0, &mut buf)?;
+                eat(&buf);
+            }
+        }
+        eat(&[self.pos as u32]);
+        Ok(h)
+    }
+
+    pub fn has_sketch(&self) -> bool {
+        self.sketch.is_some()
+    }
+
+    /// Attach a head sketch for MTP drafting (never used for trunk logits).
+    /// `table` is `[vocab][rank_full]` int8 with one scale per row and `proj`
+    /// is `[rank_full][5120]`; the first `rank` principal directions are used.
+    /// `groups * 64` candidates are rescored exactly: the vocabulary is cut
+    /// into `groups` parts and each id-mod-64 class of a part contributes its
+    /// best token. `groups` must divide 3880 (e.g. 4, 8, 20, 40).
+    pub fn set_sketch(&mut self, table: &[i8], scale: &[f32], proj: &[f32], rank: usize, groups: usize) -> Result<()> {
+        let full = proj.len() / HIDDEN;
+        if table.len() != VOCAB * full || scale.len() != VOCAB || proj.len() != full * HIDDEN || rank > full || rank % 128 != 0 || groups == 0 || groups > 64 || 3880 % groups != 0 {
+            return Err(Error::Invalid("head sketch tensors have unexpected shapes, or bad rank / chunk size".into()));
+        }
+        let mut codes = vec![0i8; VOCAB * rank];
+        for (dst, src) in codes.chunks_exact_mut(rank).zip(table.chunks_exact(full)) {
+            dst.copy_from_slice(&src[..rank]);
+        }
+        let tiles = xeflash_quant::pack_weights(WeightFormat::S8, VOCAB, rank, &codes)?;
+        let w = self.dev.upload(&tiles)?;
+        let rs = self.dev.upload(scale)?;
+        let cs = self.dev.upload(&vec![1f32; rank])?;
+        let b = self.dev.upload(&proj[..rank * HIDDEN])?;
+        for (name, buf) in [("table (s8)", &w), ("row scale", &rs), ("col scale", &cs), ("proj", &b)] {
+            self.allocs.push(Alloc { category: "head sketch", name: name.into(), bytes: buf.len_bytes() });
+        }
+        self.sketch = Some(Box::new(ffi::xf_sketch {
+            a: ffi::xf_mat { w: w.ptr, rs: rs.ptr.cast(), cs: cs.ptr.cast(), bias: std::ptr::null(), cmax: 1.0, rows: VOCAB as i32, cols: rank as i32, fmt: WeightFormat::S8 as i32 },
+            b: b.ptr.cast(),
+            rank: rank as i32,
+            groups: groups as i32,
+        }));
+        self.bufs.extend([w, rs, cs, b]);
+        Ok(())
+    }
+
+    pub fn clear_sketch(&mut self) {
+        self.sketch = None; // buffers stay allocated until the engine is dropped
+    }
+
+    /// The draft phase alone: rewrite the MTP cache rows of the `fill.len()`
+    /// tokens committed by the last pass (`fill[i]` = token following row i)
+    /// and produce `k` drafts on the device. Used on its own during prefill.
+    pub fn spec_draft(&mut self, fill: &[u32], next: u32, k: usize, prof: Option<&mut [f64; 7]>) -> Result<()> {
+        let mtp = self.mtp.as_ref().ok_or_else(|| Error::Invalid("this container has no usable MTP block".into()))?;
+        let n = fill.len();
+        if n == 0 || n > MAX_TOKENS || k == 0 || k >= MAX_TOKENS || n > self.pos {
+            return Err(Error::Invalid("bad speculative draft shape".into()));
+        }
+        let mut io = [0i32; 32];
+        for (d, t) in io.iter_mut().zip(fill) {
+            *d = *t as i32;
+        }
+        io[16] = next as i32;
+        self.ws.write(self.ws_off(ffi::XF_WS_IDS), &io)?;
+        let sk = self.sketch.as_ref().map_or(std::ptr::null(), |s| &**s as *const ffi::xf_sketch);
+        let prof = prof.map_or(std::ptr::null_mut(), |p| p.as_mut_ptr());
+        check(unsafe {
+            ffi::xf_spec_draft(self.dev.ctx.0, &*self.model, &**mtp, sk, n as i32, (self.pos - n + 1) as i32, k as i32, prof)
+        })
+    }
+
+    /// One speculative cycle with a single host synchronisation: the draft
+    /// phase ([`spec_draft`]) and the trunk pass over `[next, d1..dk]` are
+    /// submitted together; then the drafts and the trunk's greedy tokens are
+    /// read back. The caller compares them and commits the agreeing prefix.
+    pub fn spec_cycle(&mut self, fill: &[u32], next: u32, k: usize) -> Result<(Vec<u32>, Vec<(u32, f32)>)> {
+        if self.pos + k + 1 > self.ctx {
+            return Err(Error::Invalid(format!("context capacity {} exceeded", self.ctx)));
+        }
+        self.spec_draft(fill, next, k, None)?;
+        self.last_m = k + 1;
+        let flags = ffi::XF_FWD_EMBED | ffi::XF_FWD_HEAD | ffi::XF_FWD_IDS_SLOT1;
+        check(unsafe {
+            ffi::xf_forward(self.dev.ctx.0, &*self.model, (k + 1) as i32, self.pos as i32, 0, LAYERS as i32, flags, std::ptr::null_mut())
+        })?;
+        let io = self.read_io()?;
+        let drafts = (0..=k).map(|j| io[16 + j] as u32).collect();
+        let greedy = (0..=k).map(|i| (io[32 + i] as u32, f32::from_bits(io[48 + i] as u32))).collect();
+        Ok((drafts, greedy))
     }
 
     /// Hidden states of the last pass, `[m][5120]` (after whatever layers ran).

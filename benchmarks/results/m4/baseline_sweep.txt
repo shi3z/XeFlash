@@ -1,0 +1,44 @@
+japanese exit=0
+japanese K=0    22.45 tok/s | 1.00 tok/pass | trunk  44.54 ms/pass, MTP   0.00 ms/pass | prefill 255 tok/s | accept []
+japanese K=2    36.38 tok/s | 2.06 tok/pass | trunk  49.04 ms/pass, MTP   7.47 ms/pass | prefill 222 tok/s | accept [67% 57%]  same tokens
+japanese K=4    37.03 tok/s | 2.32 tok/pass | trunk  49.90 ms/pass, MTP  12.78 ms/pass | prefill 222 tok/s | accept [64% 53% 61% 65%]  same tokens
+japanese K=6    36.03 tok/s | 2.48 tok/pass | trunk  50.66 ms/pass, MTP  18.06 ms/pass | prefill 222 tok/s | accept [65% 50% 62% 69% 76% 50%]  same tokens
+japanese K=7    34.58 tok/s | 2.49 tok/pass | trunk  51.28 ms/pass, MTP  20.67 ms/pass | prefill 222 tok/s | accept [65% 51% 59% 68% 81% 50% 55%]  same tokens
+japanese K=8    31.52 tok/s | 2.49 tok/pass | trunk  55.63 ms/pass, MTP  23.30 ms/pass | prefill 222 tok/s | accept [64% 50% 60% 68% 81% 50% 45% 60%]  same tokens
+japanese K=12   27.36 tok/s | 2.49 tok/pass | trunk  57.19 ms/pass, MTP  33.73 ms/pass | prefill 222 tok/s | accept [64% 50% 58% 67% 81% 48% 50% 60% 33% 100% 100% 100%]  same tokens
+outputs identical across draft lengths: true
+explain exit=0
+explain  K=0    22.44 tok/s | 1.00 tok/pass | trunk  44.56 ms/pass, MTP   0.00 ms/pass | prefill 249 tok/s | accept []
+explain  K=2    45.51 tok/s | 2.59 tok/pass | trunk  49.06 ms/pass, MTP   7.86 ms/pass | prefill 217 tok/s | accept [89% 78%]  same tokens
+explain  K=4    54.90 tok/s | 3.48 tok/pass | trunk  49.90 ms/pass, MTP  13.48 ms/pass | prefill 218 tok/s | accept [88% 75% 82% 75%]  same tokens
+explain  K=6    56.08 tok/s | 3.90 tok/pass | trunk  50.66 ms/pass, MTP  18.91 ms/pass | prefill 217 tok/s | accept [89% 76% 73% 74% 73% 67%]  same tokens
+explain  K=7    54.80 tok/s | 3.99 tok/pass | trunk  51.24 ms/pass, MTP  21.61 ms/pass | prefill 217 tok/s | accept [88% 76% 74% 75% 75% 72% 50%]  same tokens
+explain  K=8    50.77 tok/s | 4.06 tok/pass | trunk  55.59 ms/pass, MTP  24.28 ms/pass | prefill 217 tok/s | accept [88% 75% 73% 75% 74% 68% 65% 87%]  same tokens
+explain  K=12   46.66 tok/s | 4.29 tok/pass | trunk  57.12 ms/pass, MTP  34.86 ms/pass | prefill 217 tok/s | accept [88% 76% 78% 73% 73% 70% 61% 93% 77% 60% 50% 33%]  same tokens
+outputs identical across draft lengths: true
+code exit=0
+code     K=0    22.45 tok/s | 1.00 tok/pass | trunk  44.53 ms/pass, MTP   0.00 ms/pass | prefill 236 tok/s | accept []
+code     K=2    48.42 tok/s | 2.76 tok/pass | trunk  49.03 ms/pass, MTP   7.93 ms/pass | prefill 206 tok/s | accept [91% 92%]  same tokens
+code     K=4    65.14 tok/s | 4.15 tok/pass | trunk  49.87 ms/pass, MTP  13.76 ms/pass | prefill 206 tok/s | accept [94% 90% 87% 85%]  same tokens
+code     K=6    68.79 tok/s | 4.80 tok/pass | trunk  50.60 ms/pass, MTP  19.23 ms/pass | prefill 206 tok/s | accept [89% 92% 85% 86% 77% 78%]  same tokens
+code     K=7    68.93 tok/s | 5.04 tok/pass | trunk  51.18 ms/pass, MTP  21.93 ms/pass | prefill 206 tok/s | accept [88% 91% 80% 86% 82% 81% 84%]  same tokens
+code     K=8    66.09 tok/s | 5.30 tok/pass | trunk  55.52 ms/pass, MTP  24.66 ms/pass | prefill 206 tok/s | accept [88% 92% 86% 84% 80% 80% 78% 79%]  same tokens
+code     K=12   62.54 tok/s | 5.78 tok/pass | trunk  57.07 ms/pass, MTP  35.28 ms/pass | prefill 206 tok/s | accept [87% 92% 83% 88% 85% 75% 73% 75% 94% 82% 64% 78%]  same tokens
+outputs identical across draft lengths: true
+proof exit=0
+proof    K=0    22.46 tok/s | 1.00 tok/pass | trunk  44.53 ms/pass, MTP   0.00 ms/pass | prefill 212 tok/s | accept []
+proof    K=2    49.63 tok/s | 2.83 tok/pass | trunk  49.00 ms/pass, MTP   8.00 ms/pass | prefill 186 tok/s | accept [96% 90%]  same tokens
+proof    K=4    66.30 tok/s | 4.22 tok/pass | trunk  49.86 ms/pass, MTP  13.81 ms/pass | prefill 186 tok/s | accept [97% 90% 87% 84%]  same tokens
+proof    K=6    71.37 tok/s | 4.99 tok/pass | trunk  50.59 ms/pass, MTP  19.33 ms/pass | prefill 187 tok/s | accept [94% 89% 85% 85% 82% 82%]  same tokens
+proof    K=7    72.61 tok/s | 5.32 tok/pass | trunk  51.18 ms/pass, MTP  22.08 ms/pass | prefill 186 tok/s | accept [95% 89% 89% 81% 80% 79% 78%]  same tokens
+proof    K=8    67.87 tok/s | 5.45 tok/pass | trunk  55.58 ms/pass, MTP  24.76 ms/pass | prefill 186 tok/s | accept [93% 91% 82% 80% 83% 84% 81% 83%]  same tokens
+proof    K=12   63.64 tok/s | 5.89 tok/pass | trunk  57.12 ms/pass, MTP  35.35 ms/pass | prefill 187 tok/s | accept [93% 89% 89% 80% 76% 82% 72% 83% 84% 75% 83% 60%]  same tokens
+outputs identical across draft lengths: true
+profile ( 1 tokens/pass, sync per stage, ms): norm 1.57 quant 3.04 gemm 35.66 gdn 4.40 attn 1.37 mlp 0.94 head 1.53 | total 48.51
+          unprofiled: 42.39 ms/pass
+profile ( 8 tokens/pass, sync per stage, ms): norm 1.62 quant 3.52 gemm 41.33 gdn 5.31 attn 1.49 mlp 1.42 head 1.80 | total 56.50
+          unprofiled: 50.19 ms/pass
+profile (16 tokens/pass, sync per stage, ms): norm 1.64 quant 3.59 gemm 45.74 gdn 8.11 attn 1.55 mlp 2.06 head 1.87 | total 64.58
+          unprofiled: 58.55 ms/pass
+profile (MTP step, 1 row, sync per stage, ms): norm 0.446 quant 0.060 gemm 0.550 gdn 0.000 attn 0.035 mlp 0.015 head 1.532 | total 2.638
+          unprofiled (includes argmax read-back): 2.537 ms/step

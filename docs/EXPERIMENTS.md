@@ -240,6 +240,48 @@ benchmark prompts, identical tokens to plain greedy for every K.
 * Quality relative to YASAKANI Speed: unknown on equal terms; by published
   figures XeFlash s4 is still behind.
 
+## E17. Draft chain on the device
+
+*Expectation.* Removing one host read-back per draft should save the
+synchronisation, perhaps 0.1 to 0.3 ms per draft.
+
+*Result.* 69.6 -> 68.8 ms per cycle at K = 6. The read-backs were cheap; the
+gain is real but under 1 ms. Kept, because it is also what lets the whole
+cycle be one submission.
+
+## E18. Head sketch
+
+*Expectation.* The exact head is 1.5 ms of a 2.5 ms draft step; the sketch
+table is 127 MB instead of 636 MB, so about 1 ms per draft should disappear.
+
+*Result.* 0.85 ms per draft saved (2.52 -> 1.67 ms). First attempt (one
+candidate per 512 consecutive ids) was a net loss because acceptance fell by
+8 points; candidates per id-mod-64 class recovered it. 2560 candidates is the
+best of the settings tried; fewer candidates lose acceptance, the cost of
+rescoring more is small. Mean of four prompts 57.7 -> 61.8 tok/s.
+
+Not tried: exact global top-k selection on the device, a 4-bit table, `fc`
+through the bf16 DPAS kernel (0.42 ms per draft is embedding + norms + `fc`,
+which reads 210 MB of FP32), a confidence-based stop.
+
+## E19. Fine-tuned MTP weights
+
+Both exports convert unchanged and run; on four prompts they are within
++-0.5 % of the official weights. Not adopted.
+
+## E20. State comparison
+
+A hash of the committed DeltaNet states, convolution histories and KV rows is
+identical between speculative and plain runs at equal length for every
+configuration measured, including 8K context.
+
+## E21. Targets after this round
+
+61.8 tok/s mean on the benchmark prompts; YASAKANI on the B60 is 86.3. With a
+free drafter the same acceptance would give 79. The next gains have to come
+from the trunk pass (about 10 ms of non-GEMM time, and the cost of extra
+rows), from acceptance on prose, and, for long prompts, from attention.
+
 ## Things that did not work or were wrong
 
 * First guess of the low-precision DPAS layout (16-bit channels): wrong, see E1.

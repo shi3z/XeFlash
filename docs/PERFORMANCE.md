@@ -1,7 +1,8 @@
 # Performance
 
-Part A is the whole model on the B60 (Milestone 3). Part B is the earlier
-GEMM-only study it was built on.
+Part A is the whole model on the B60 (Milestone 3). Part C, after it, is the
+drafting speed-up that followed and holds the current best numbers. Part B is
+the earlier GEMM-only study.
 
 # Part A. Full model
 
@@ -205,6 +206,189 @@ with `fc` in FP32. The `fc` matrix cannot be stored at 4 or 8 bits at all
    same format, then the task suites, before any lower-bit experiment.
 5. s3 was not tried in the model; Part B says it only helps at one token per
    pass with the current kernel.
+
+# Part C. Cheaper drafts (MTP head sketch, device-side chain)
+
+Same card, model, container and prompts as Part A; code at the commit that
+adds this section. Raw outputs: `benchmarks/results/m4/`. 512 new tokens per
+prompt, greedy, context capacity 8192 unless stated. "Cycle" is the wall time
+of one speculative cycle (drafts + trunk verify + commit + host), measured as
+decode time / cycles.
+
+## C1. Where a draft step's time went (before)
+
+One MTP step, 1 row, host-driven (`baseline_sweep.txt`): 2.52 ms unprofiled.
+Per stage, with a wait after each: embedding + pre-fc norms + `fc` 0.45 ms,
+activation quantisation 0.06, MTP layer GEMMs 0.55, attention 0.04, MLP
+activation 0.02, **shared lm_head + argmax 1.53**. The lm_head was 58 % of a
+draft step. (The 6.2 ms per step of the RTX 5060 Ti PyTorch measurement does
+not apply here; on the B60 the exact head is 1.5 ms.)
+
+## C2. Changes, each measured on its own
+
+| change | explain, K = 6 | cycle | tokens/pass |
+|---|---|---|---|
+| baseline: host reads every draft token back | 56.1 tok/s | 69.6 ms | 3.90 |
+| draft chain on the device (ids, argmax, next embedding stay on the GPU; one submission and one read-back per cycle) | 56.1 to 56.7 | 68.8 to 69.5 | 3.90 |
+| + head sketch, one candidate per 512 consecutive tokens (485 candidates) | 54.8 | 62.2 | 3.41 |
+| + head sketch, candidates per id-mod-64 class, 512 candidates | 58.9 | 63.3 | 3.73 |
+| same, 1280 candidates | 59.9 | 63.2 | 3.79 |
+| **same, 2560 candidates (adopted)** | **59.6 to 60.3** | 63.8 to 64.5 | 3.84 |
+
+* Removing the per-token host round trip is worth under 1 ms per cycle. The
+  round trips were not the cost; the head was.
+* The sketch is the artefact exported by the drafter project
+  (`head_sketch.safetensors`: projection 512 x 5120 FP32, table 248320 x 512
+  int8 with one scale per row, basis fitted to MTP output states). XeFlash
+  stores the table as an s8 matrix in tile order and scores it with the
+  ordinary GEMM kernel on 16-bit activations; candidates are then rescored
+  with the real lm_head rows (same integer arithmetic as the full head), so a
+  draft equals the full-head draft whenever its row block is a candidate.
+* How candidates are chosen matters more than how many. One candidate per
+  contiguous id range lost 8 points of first-draft acceptance (89 % -> 81 %):
+  neighbouring ids are often near-duplicate tokens that eliminate each other.
+  Taking, in each of `groups` parts of the vocabulary, the best token of every
+  id-mod-64 class fixes most of it (87 % with 2560 candidates). It is still
+  below the full head by 1 to 2 points; the 99.7 % recall reported for exact
+  top-512 selection on the 5060 Ti is not reproduced by this selection rule.
+* No fallback to the full head is implemented. A margin computed inside the
+  candidate set cannot detect a missed candidate, and a miss only costs an
+  accepted token, never correctness.
+
+Sketch variants, K = 6 (`sketch_variants.txt`):
+
+| rank | candidates | explain tok/s (tok/pass) | code tok/s (tok/pass) |
+|---|---|---|---|
+| 256 | 512 | 59.7 (3.79) | 70.0 (4.47) |
+| 256 | 2560 | 59.3 (3.79) | 72.6 (4.67) |
+| 512 | 256 | 57.9 (3.76) | 72.0 (4.72) |
+| 512 | 512 | 58.9 (3.73) | - |
+| 512 | 1280 | 59.9 (3.79) | - |
+| 512 | 2560 | 59.6 to 60.3 (3.84) | 73.8 (4.80) |
+| full head | - | 56.1 (3.90) | 68.6 (4.80) |
+
+Rank 1024 does not exist in the exported file and was not built.
+
+Draft step after the change (`m4_runs.txt`, section D): 1.67 ms unprofiled
+(was 2.52). Per stage: embedding + norms + `fc` 0.42, quantisation 0.10, MTP
+layer GEMMs 0.55, sketch + selection + rescoring + pick 0.70. A 7-draft chain
+is 11.6 ms. The sketch adds 0.13 GiB (16.30 GiB resident in total).
+
+## C3. Draft length sweep with the adopted configuration
+
+Tokens per second (tokens committed per trunk pass):
+
+| K | explain | code | story | proof | mean of these four | japanese |
+|---|---|---|---|---|---|---|
+| 0 | 22.4 | 22.4 | 22.4 | 22.4 | 22.4 | 22.4 |
+| 2 | 46.6 (2.58) | 49.5 (2.74) | 38.5 (2.12) | 50.5 (2.80) | 46.3 | 37.4 (2.06) |
+| 4 | 56.8 (3.41) | 68.5 (4.15) | 40.2 (2.39) | 68.7 (4.15) | 58.5 | 39.0 (2.31) |
+| 6 | 59.6 (3.84) | 73.8 (4.80) | 37.7 (2.40) | 75.9 (4.94) | **61.8** | 38.8 (2.46) |
+| 7 | 58.4 (3.90) | 74.7 (5.04) | 36.6 (2.41) | 76.4 (5.16) | 61.5 | 37.6 (2.48) |
+| 8 | 54.4 (3.96) | 71.9 (5.30) | 33.5 (2.41) | 72.4 (5.34) | 58.0 | 34.4 (2.48) |
+| 12 | 51.0 (4.15) | 70.1 (5.78) | 30.0 (2.41) | 69.9 (5.75) | 55.2 | 30.8 (2.48) |
+| Part A (full head, host chain), best K | 56.1 | 68.9 | 38.8 | 72.6 | 57.7 at K = 6 | 37.0 |
+| YASAKANI on the B60 (its notes) | 66.5 | 118.1 | 41.8 | 118.7 | 86.3 | - |
+
+Cycle time grows from 55 ms (K = 2) to 65 ms (K = 6) and 82 ms (K = 12); the
+jump between K = 7 and K = 8 (67.5 -> 73.7 ms) is the trunk pass switching
+from the 8-token to the 16-token kernels.
+
+Result against the goals:
+
+* K = 2 baseline of 45.5 tok/s: passed (61.8 mean at K = 6; 46.3 at K = 2).
+* **YASAKANI on the B60 (86 tok/s): not reached. XeFlash is at 61.8, 72 % of
+  it** (was 67 %). Per prompt it is behind on all four.
+* 145 tok/s: not reached.
+
+Why, in numbers: at K = 6 a cycle is about 50 ms of trunk pass, 11 to 12 ms of
+drafting and 2 ms of host, commit and read-back. Even a drafter that cost
+nothing would give 3.84 / 4.80 / 2.40 / 4.94 tokens per 50.3 ms, i.e. 76 / 95
+/ 48 / 98 tok/s, a mean of 79. The remaining gap to 86 is therefore in the
+trunk pass and in acceptance on prose (story, Japanese: 2.4 tokens per pass),
+not in the drafter any more.
+
+## C4. Correctness
+
+Every speculative run above produced exactly the tokens of the K = 0 run. In
+addition the committed state is compared: a hash over all 48 DeltaNet state
+matrices and convolution histories, the KV rows of every committed position
+of the 16 attention layers, and the position, taken at the first commit
+boundary at or after 64 new tokens, against a non-speculative run stopped at
+the same length. All runs: same tokens, same state (K = 2 to 12, host chain
+and device chain, full head and sketch, three MTP weight sets, 8K context).
+
+EOS handling and prefix reuse are not implemented in the tool (runs ignore
+EOS, like the benchmark they mirror), so they are not covered.
+
+## C5. Official against fine-tuned MTP weights
+
+The two exported variants convert with the existing converter from their
+`checkpoint_overlay` directories (15 `mtp.*` tensors, same names, shapes and
+dtype as the official ones; `mtp.fc` kept in bf16, the four matrices data-free
+s4 at 18.4 to 18.8 dB, identical figures for all three sets). Same trunk,
+sketch head, 512 tokens (`m4_runs.txt`, section C):
+
+| MTP weights | K | japanese | explain | code | proof | mean |
+|---|---|---|---|---|---|---|
+| official | 6 | 38.8 | 59.6 | 73.8 | 75.9 | 62.0 |
+| fc only (`f_fc_fq4`) | 6 | 38.9 | 56.8 | 75.2 | 76.6 | 61.9 |
+| all (`c_all_lr2e-6_long`) | 6 | 38.2 | 58.6 | 75.2 | 77.4 | 62.3 |
+| official | 7 | 37.6 | 58.4 | 74.6 | 76.4 | 61.8 |
+| fc only | 7 | 37.6 | 56.8 | 78.3 | 75.7 | 62.1 |
+| all | 7 | 37.4 | 57.8 | 76.1 | 77.2 | 62.1 |
+
+Differences of -0.2 to +0.5 % on four prompts, with opposite signs per prompt:
+no measurable gain here. The official weights stay the default. (Four prompts
+cannot resolve the +1 % the drafter project measured on 112 sequences; this
+says only that nothing larger shows up on the B60.)
+
+## C6. 8K context
+
+8024-token prompt (a technical document plus "summarize"), capacity 16384,
+128 new tokens (`m4_runs.txt`, section E). Resident memory 17.41 GiB
+requested, 17.44 GiB by the driver.
+
+| | tok/s | cycle | tokens/pass |
+|---|---|---|---|
+| prefill (16-token passes) | 159 to 173 | | |
+| K = 0 | 18.2 | 55.0 ms | 1.00 |
+| K = 6, sketch | 33.7 | 118.6 ms | 4.00 |
+
+Same tokens and state as K = 0. A 7-row trunk pass plus drafts takes 119 ms
+at this depth against 65 ms at short context: the FP32, unfused attention
+baseline (and the MTP's own attention over 8K rows) dominates. Long-context
+attention is the largest single item for long prompts and has not been
+optimised.
+
+## C7. Main pass, remaining cost (analysis, no change made)
+
+Profile with a wait per stage, ms (`m4_runs.txt`, section D):
+
+| rows | unprofiled | body GEMM | lm_head | quant | GDN | norm | attention | MLP act |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 42.7 | 35.6 | 1.5 | 3.1 | 4.4 | 1.6 | 1.7 | 0.9 |
+| 8 | 50.3 | 41.4 | 1.8 | 3.5 | 5.3 | 1.6 | 1.8 | 1.4 |
+| 16 | 58.5 | 45.7 | 1.9 | 3.6 | 8.1 | 1.6 | 1.8 | 2.1 |
+
+* Weight bytes per pass: 11.34 GiB of body matrices plus 0.59 GiB head =
+  12.8 GB. At the 1-row unprofiled time, and taking GEMM as about 78 % of the
+  pass as in the profile, that is roughly 380 GB/s through the GEMMs: close to
+  what the isolated kernels reach (386 to 432 GB/s). The body GEMM is at the
+  memory bus; it gets faster only with fewer bytes.
+* Precision mix: 255 of 256 body matrices are s4, one is s8
+  (`layers.60.linear_attn.out_proj`), none is 16-bit. Weights are loaded once
+  per pass; nothing is read twice.
+* Not GEMM: about 10 ms at 1 row (quantisation 3.1, DeltaNet 4.4, norms 1.6,
+  attention 1.7, activation 0.9 as profiled, which overstates them). This is
+  the part kernel work can still remove.
+* Rows cost: 8 rows add 7.6 ms over 1 row, 16 rows another 8.2 ms; most of it
+  is in the GEMMs (XMX time of the 8-token DPAS, activation loads), the rest
+  in the DeltaNet state kernel, which walks tokens serially.
+* XMX utilisation in decode is a few percent (about 25 TOPS-equivalent at 8
+  rows against a 196 TOPS peak): compute is free, bytes are not.
+
+Nothing in the trunk was changed in this round.
 
 # Part B. GEMM study (before the model existed)
 

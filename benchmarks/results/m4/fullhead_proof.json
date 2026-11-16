@@ -1,0 +1,6 @@
+[
+  {"prompt":"proof","prompt_tokens":24,"new_tokens":512,"mtp_k":0,"tok_per_s":22.368,"tokens_per_pass":1.0000,"trunk_ms_per_pass":44.515,"mtp_ms_per_pass":0.000,"prefill_tok_per_s":213.30,"accepted":[],"tried":[],"same_as_first":true},
+  {"prompt":"proof","prompt_tokens":24,"new_tokens":515,"mtp_k":4,"tok_per_s":66.078,"tokens_per_pass":4.2213,"trunk_ms_per_pass":63.883,"mtp_ms_per_pass":0.000,"prefill_tok_per_s":196.50,"accepted":[118, 106, 92, 77],"tried":[122, 118, 106, 92],"same_as_first":true},
+  {"prompt":"proof","prompt_tokens":24,"new_tokens":514,"mtp_k":6,"tok_per_s":71.168,"tokens_per_pass":4.9903,"trunk_ms_per_pass":70.120,"mtp_ms_per_pass":0.000,"prefill_tok_per_s":196.41,"accepted":[97, 86, 73, 62, 51, 42],"tried":[103, 97, 86, 73, 62, 51],"same_as_first":true},
+  {"prompt":"proof","prompt_tokens":24,"new_tokens":516,"mtp_k":7,"tok_per_s":72.436,"tokens_per_pass":5.3196,"trunk_ms_per_pass":73.438,"mtp_ms_per_pass":0.000,"prefill_tok_per_s":196.61,"accepted":[92, 82, 73, 59, 47, 37, 29],"tried":[97, 92, 82, 73, 59, 47, 37],"same_as_first":true}
+]

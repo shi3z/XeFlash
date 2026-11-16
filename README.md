@@ -9,9 +9,10 @@ in the order DPAS reads them, so decoding a token is a memory stream feeding
 XMX with no unpacking, no table lookups and no shared local memory.
 
 **Status.** The whole model runs on the B60 and is verified against the
-official layer code: 22.4 tok/s greedy without speculation, 57.7 tok/s with
-the checkpoint's own MTP block as drafter (mean of four benchmark prompts,
-identical output), 16.2 GiB resident with an 8192-token cache. That is below
+official layer code: 22.4 tok/s greedy without speculation, 61.8 tok/s with
+the checkpoint's own MTP block as drafter and a sketch of the lm_head for the
+drafts (mean of four benchmark prompts, identical output and state), 16.3 GiB
+resident with an 8192-token cache. That is below
 the existing YASAKANI engine on the same card (86 tok/s), and fidelity to the
 original model (KL 0.069 on a held-out chat) is not yet at its published
 level. No tokenizer in Rust, no sampling other than greedy, no API yet. See

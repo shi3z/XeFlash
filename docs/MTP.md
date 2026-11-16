@@ -122,3 +122,28 @@ PERFORMANCE.md A4 has the full tables):
 
 Not measured: MTP in BF16 or s8, calibrated MTP weights, a confidence-based
 stop, combination with other draft sources.
+
+## Update: sketch head and device-side chain
+
+The drafter's lm_head is no longer the full matrix. Per draft step:
+
+```
+z      = proj (512 x 5120, FP32) . y              y = mtp.norm output
+score  = table (248320 x 512, s8, per-row scale) . z      ordinary GEMM, 16-bit activations
+cand   = in each of 40 parts of the vocabulary, the best token of every id-mod-64 class (2560)
+token  = argmax over the candidates' 16-row blocks of the real lm_head (exact integer logits)
+```
+
+The token id is written on the device into the next step's input slot and
+into the verify pass's id list; the host submits the whole chain and the
+trunk pass together and reads back once per cycle (`xf_spec_draft`,
+`Engine::spec_cycle`). The trunk's own logits always use the full head.
+
+Measured (PERFORMANCE.md Part C): draft step 2.52 -> 1.67 ms; mean of the four
+benchmark prompts 57.7 -> 61.8 tok/s at K = 6; outputs and committed state
+identical to non-speculative decoding. The two fine-tuned weight sets from
+`/data/xeflash-drafter` load through the normal converter and show no
+measurable difference from the official weights on these prompts.
+
+The MTP KV cache keeps every committed row (the handover's warning against
+"newest N only" does not arise). It is FP32, 8 KiB per token.
