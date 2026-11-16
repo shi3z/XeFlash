@@ -1,5 +1,213 @@
 # Performance
 
+Part A is the whole model on the B60 (Milestone 3). Part B is the earlier
+GEMM-only study it was built on.
+
+# Part A. Full model
+
+Setup for every number in this part: Arc Pro B60 24 GB, driver
+1.18.40196+15, oneAPI DPC++ 2026.2; model `Qwen/Qwen3.8-27B` revision
+`1d4bf0f2`, container `qwen38-27b-s4-cal.xfm` (s4, calibrated, bias-corrected,
+merged matrices, one matrix at s8); context capacity 8192; one job on the card
+under `/tmp/b60.lock`; code at commit `d3796fc`. Raw outputs: `benchmarks/results/m3/`.
+
+## A1. VRAM, measured
+
+`xf-run mem` allocates everything and lists it; the last line is the driver's
+own free-memory figure before and after.
+
+| category | allocations | GiB |
+|---|---|---|
+| body matrices (merged) | 256 | 11.343 |
+| lm_head | 1 | 0.592 |
+| embedding table (bf16) | 1 | 2.368 |
+| MTP block (4 matrices + `fc` in FP32) | 5 | 0.369 |
+| matrix scales and biases | 779 | 0.039 |
+| small tensors (norms, conv taps, gate projections) | 408 | 0.098 |
+| KV cache, 16 layers, FP32, 8192 tokens | 16 | 1.000 |
+| MTP KV cache | 1 | 0.063 |
+| DeltaNet state and per-pass records | 48 | 0.217 |
+| RoPE table | 2 | 0.002 |
+| workspace | 1 | 0.076 |
+| **total requested** | 1518 | **16.166** |
+| driver: free before / after | | 22.484 / 6.284 (difference 16.200) |
+
+The earlier "7.9 GiB" was never a measurement of residency. It was free VRAM
+minus the container's file size, i.e. the expected headroom. Nothing is left
+on the CPU: every matrix the engine uses is on the card. The file is 14.66 GiB;
+residency is larger because of the cache, state and FP32 copies of `mtp.fc`
+and the small tensors.
+
+Context scaling: the FP32 KV cache costs 128 KiB per token (8 KiB per
+attention layer), plus 8 KiB per token for the MTP cache.
+
+| context | KV + MTP cache | total resident | fits in 22.3 GiB usable |
+|---|---|---|---|
+| 8 K | 1.06 GiB | 16.2 GiB | yes |
+| 32 K | 4.25 GiB | 19.4 GiB | yes |
+| 60 K | 7.97 GiB | 23.1 GiB | no |
+
+The 32 K and 60 K rows are computed, not run. Long contexts need a 16-bit or
+compressed KV cache; that is not implemented.
+
+## A2. Correctness
+
+Reference: the official transformers layer classes (`Qwen3_5DecoderLayer`),
+one layer at a time on the CPU in FP32 (`tools/validation/ref_forward.py`).
+Two weight sets: the original BF16 weights, and the engine's own quantised
+weights reconstructed in floating point. The second isolates implementation
+errors from quantisation.
+
+**GPU against the same weights on the CPU** (30-token prompt, data-free
+container, `cmp_gpu_vs_int4ref_explain.txt`):
+
+| stage | max abs | RMS error | relative error | cosine |
+|---|---|---|---|---|
+| embedding | 0 | 0 | 0 | 1.000000 |
+| layer 0 | 2.4e-3 | 6.8e-5 | 2.7e-4 | 1.000000 |
+| layer 15 | 2.2e-2 | 3.5e-4 | 3.9e-4 | 1.000000 |
+| layer 31 | 1.6e-2 | 7.6e-4 | 7.3e-4 | 1.000000 |
+| layer 47 | 2.8e-2 | 2.0e-3 | 1.5e-3 | 0.999999 |
+| layer 63 | 7.9e-1 | 2.5e-2 | 4.9e-3 | 0.999988 |
+| logits | 2.4e-1 | 1.2e-2 | | KL 9.0e-5, top-1 30/30 |
+
+Greedy tokens identical. The error grows smoothly with depth and has no jump
+at any layer, so there is no layer-level bug; what remains is FP32 rounding,
+the engine's `exp` and 16-bit activations.
+
+**Pass size.** Passes of 1, 8 and 16 tokens over the same sequence give
+bit-identical final hidden states and logits (`cmp`, not a tolerance).
+
+**Against the original BF16 weights** (held-out 160-token chat, position 0
+excluded, `quality_chat0.txt`):
+
+| weights | KL mean | KL median | KL p90 | top-1 agreement | next-token accuracy |
+|---|---|---|---|---|---|
+| original (reference) | 0 | 0 | 0 | 100 % | 66.5 % |
+| s4 data-free | 0.280 | 0.085 | 0.410 | 83.7 % | 65.8 % |
+| s4 calibrated + bias correction | 0.069 | 0.023 | 0.124 | 88.7 % | 69.0 % |
+
+This is the difference caused by the weight format, not by the arithmetic.
+It is one short text. YASAKANI's published figures (Speed: KL 0.030, 93.0 %
+top-1; Quality: 0.012, 95.2 %) were measured on other text by its authors, so
+the two are not a like-for-like comparison yet; on the face of it XeFlash s4
+is still behind Speed in fidelity. No task-level evaluation (maths, code,
+reasoning, Japanese, long context) has been run.
+
+## A3. Decode without speculation
+
+512 new tokens after each of the four `yasakani bench` prompts (24 to 30
+prompt tokens, chat template, thinking off, greedy, no EOS stop).
+
+| | tok/s | ms per token |
+|---|---|---|
+| XeFlash, all four prompts | 22.44 to 22.45 | 44.5 |
+| YASAKANI on the B60, look-ahead off (its notes) | 18.1 to 18.6 | 55.8 |
+
+History of the XeFlash figure: first working version 19.7 tok/s (50.8 ms);
+fused norm and quantisation kernels 20.3 (49.3); merged matrices 22.4 (44.5).
+
+Profile of one pass (`profile_passes.txt`). The profiled run waits after every
+stage, which inflates it; the unprofiled time is the real one.
+
+| tokens in pass | unprofiled | GEMM | quant | GDN | norm | attention | MLP act | profiled total |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 42.4 ms | 37.3 | 3.2 | 4.4 | 1.6 | 1.4 | 1.0 | 48.9 |
+| 8 | 50.3 ms | 43.3 | 3.6 | 5.3 | 1.6 | 1.5 | 1.5 | 56.8 |
+| 16 | 58.6 ms | 47.6 | 3.7 | 8.1 | 1.7 | 1.6 | 2.2 | 64.9 |
+
+(GEMM includes the lm_head. Profiled on fixed dummy tokens at position 0.)
+
+Did the GEMM estimate of Part B hold? It predicted about 31 / 35 / 38 ms for
+1 / 8 / 16 tokens from isolated kernels, without the head. In the engine the
+profiled GEMM time is 37.3 / 43.3 / 47.6 ms including the head (about 1.6 ms)
+and the profiling waits. Scaling by unprofiled / profiled time and removing
+the head gives roughly 31 / 37 / 41 ms: the 1-token estimate held, the 8- and
+16-token passes are 5 to 10 % above it. YASAKANI reports 43 ms of GEMM in an
+8-row pass, but that is its own profile of a different pass, so the fair
+statement is at the level of whole passes: 50.3 ms for an 8-token XeFlash
+pass against 55.0 ms for an 8-row YASAKANI pass. That is a modest difference,
+not a decisive one.
+
+Prefill through 16-token passes runs at 186 to 249 tok/s on these short
+prompts. No prefill-specific path exists yet, and 8K / 30K / 60K prefill and
+decode have not been measured.
+
+## A4. MTP speculative decoding
+
+Official MTP block as drafter, `K` draft tokens per trunk pass, 512 tokens per
+prompt (`decode_mtp_sweep.txt`, `decode_mtp_*.json`). Every run produced
+exactly the tokens of the K = 0 run.
+
+Tokens per second:
+
+| K | explain | code | story | proof | mean |
+|---|---|---|---|---|---|
+| 0 | 22.4 | 22.4 | 22.5 | 22.5 | 22.4 |
+| 1 | 34.8 | 35.9 | 32.4 | 36.2 | 34.8 |
+| 2 | 45.5 | 48.4 | 37.4 | 49.6 | 45.2 |
+| 3 | 51.6 | 57.7 | 38.8 | 59.0 | 51.8 |
+| 4 | 54.9 | 65.1 | 38.1 | 66.2 | 56.1 |
+| 6 | 56.1 | 68.7 | 35.0 | 71.2 | **57.7** |
+| 8 | 50.8 | 66.0 | 30.6 | 67.8 | 53.8 |
+| 12 | 46.7 | 62.4 | 26.6 | 63.5 | 49.8 |
+| YASAKANI on the B60 (its notes) | 66.5 | 118.1 | 41.8 | 118.7 | 86.3 |
+| YASAKANI on the RTX 5060 Ti (its notes) | 121.7 | 197.1 | 71.2 | 189.8 | 144.9 |
+
+Tokens committed per trunk pass, and time per cycle:
+
+| K | explain | code | story | proof | trunk ms | MTP ms |
+|---|---|---|---|---|---|---|
+| 1 | 1.87 | 1.93 | 1.73 | 1.95 | 48.8 | 4.9 |
+| 2 | 2.59 | 2.76 | 2.12 | 2.83 | 49.1 | 7.8 |
+| 4 | 3.48 | 4.15 | 2.40 | 4.22 | 49.9 | 13.5 |
+| 6 | 3.90 | 4.80 | 2.41 | 4.99 | 50.7 | 18.9 |
+| 8 | 4.06 | 5.30 | 2.42 | 5.45 | 55.7 | 24.3 |
+| 12 | 4.29 | 5.78 | 2.42 | 5.89 | 57.2 | 34.8 |
+
+Acceptance of draft position `i` given that all earlier drafts were accepted
+(K = 6): explain 89 / 76 / 73 / 74 / 73 / 67 %, code 89 / 92 / 85 / 86 / 77 /
+78 %, story 71 / 57 / 44 / 47 / 22 / 25 %, proof 94 / 89 / 85 / 85 / 82 /
+82 %.
+
+Reading:
+
+* The official MTP block is a usable drafter as shipped: first-draft
+  acceptance of 71 to 97 % on the model's own output. Teacher-forced on a
+  human-written chat it predicts 63.3 % (GPU, s4) / 64.6 % (CPU, BF16) of the
+  next-next tokens; the GPU and CPU predictions agree at 141 of 160 positions.
+* Best fixed draft length is 6: 57.7 tok/s, 2.6 times the non-speculative
+  rate. Choosing K per prompt would give 58.7.
+* **This does not reach YASAKANI on the B60 (86.3 tok/s): XeFlash is at 67 %
+  of it**, and at 40 % of the RTX 5060 Ti figure. Milestone 4 is not met.
+* Why: each draft costs about 2.7 ms (the shared lm_head alone is 1.27 G
+  weights, about 1.6 ms, per draft), so six drafts cost 19 ms on top of a
+  51 ms trunk pass, for 2.4 to 5.0 tokens. YASAKANI's cycle is 55 ms + 2.2 ms
+  + 6.9 ms for 5.26 tokens. The deficit is in the drafter's cost and in
+  acceptance on prose, not in the trunk pass.
+* VRAM added by MTP: 0.43 GiB (0.369 weights including FP32 `fc`, 0.063 KV cache).
+
+MTP at other precisions (BF16, s8) was not measured; only s4 for the layer
+with `fc` in FP32. The `fc` matrix cannot be stored at 4 or 8 bits at all
+(MTP.md).
+
+## A5. What to do next, from these measurements
+
+1. Drafter cost. A draft step should not run the full lm_head: a shortlist or
+   a low-bit head would roughly halve the 2.7 ms. Draft tokens
+   could also stay on the device instead of one read-back per step.
+2. Stop drafting early. Acceptance falls with depth and differs by text;
+   a confidence threshold on the MTP logit margin should replace a fixed K.
+3. Trunk pass: 10 ms of a 42 ms pass is not GEMM. The DeltaNet gate
+   projections (FP32, serial rows) and the remaining small kernels are the
+   targets; the GEMM itself is at the memory bus.
+4. Quality: activation-aware rounding with full covariance (GPTQ-like) on the
+   same format, then the task suites, before any lower-bit experiment.
+5. s3 was not tried in the model; Part B says it only helps at one token per
+   pass with the current kernel.
+
+# Part B. GEMM study (before the model existed)
+
 Everything in sections 1 to 5 is measured on the Arc Pro B60. Section 6 is a
 projection and is labelled as such. There is no end-to-end tokens-per-second
 number yet: the model is not implemented beyond its GEMMs.

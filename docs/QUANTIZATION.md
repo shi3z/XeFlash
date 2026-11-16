@@ -1,8 +1,59 @@
 # Quantisation
 
-Status: data-free scalar quantisation is implemented and measured in weight
-space. Nothing here has been evaluated on generated text yet; that needs the
-full model to run (Milestone 3).
+Status: the model runs, so quantisation is now judged on the model's output
+(section "On the model" below). The data-free scheme described first turned
+out to be clearly worse than its weight-space error suggested; a calibrated
+variant with bias correction is the current default.
+
+## On the model
+
+Held-out 160-token chat, against the original BF16 weights (FP32 math):
+
+| weights | KL mean | KL median | top-1 agreement |
+|---|---|---|---|
+| s4 data-free | 0.280 | 0.085 | 83.7 % |
+| s4 calibrated + bias correction | 0.069 | 0.023 | 88.7 % |
+
+What was learned on the way (4-layer loop, `tools/validation/quick_eval.sh`,
+median per-token relative error of the hidden state after layers 0 to 3):
+
+| quantiser | L0 | L1 | L2 | L3 |
+|---|---|---|---|---|
+| data-free | 0.068 | 0.089 | 0.129 | 0.110 |
+| weighted by E[x^2] of each input channel | 0.300 | 0.210 | 0.194 | 0.107 |
+| same, each token normalised | 0.318 | 0.219 | 0.204 | 0.110 |
+| weighted by the centred variance | 0.052 | 0.064 | 0.073 | 0.174 |
+| centred variance + per-row bias correction | 0.016 | 0.024 | 0.041 | 0.032 |
+
+1. **Weight-space error is a poor predictor.** 11 % weight error per matrix
+   became 62 % hidden-state error after 64 layers with the data-free weights.
+2. **Second moments are the wrong weights.** Hidden states carry a large
+   component common to all tokens. E[x^2] is dominated by that mean, so the
+   quantiser spent its precision on channels that carry no token-specific
+   information, and the result was four times worse than data-free.
+3. **The mean is free to fix.** The quantisation error against the mean input
+   is the same for every token: a constant per output row. The converter
+   stores `bias[i] = sum_j (W - W^)[i][j] * mean[j]` and the kernel adds it
+   when it writes the output (16 floats loaded per thread). With the remaining
+   error weighted by the centred variance, layer-0 error drops from 0.068 to
+   0.016.
+4. One matrix needs more than 4 bits by this measure (`layers.60.linear_attn.
+   out_proj`, weighted error 0.205) and is stored at s8; `mtp.fc` is kept in
+   bf16. That is the whole extent of mixed precision so far.
+
+Calibration data: 7 short chats, 1289 tokens (`benchmarks/calib/chats.json`),
+statistics from the original weights (`tools/validation/calib_stats.py`).
+Only a mean and a variance per input channel are used. The evaluation text is
+separate (`benchmarks/calib/eval_chat.json`).
+
+Not done: full-covariance rounding (GPTQ-like), calibration of the MTP block
+(it is converted data-free), task-level evaluation, a same-text comparison
+with YASAKANI's files.
+
+## Data-free baseline
+
+The rest of this document describes the format and the first, data-free
+quantiser.
 
 ## The format is dictated by the hardware
 

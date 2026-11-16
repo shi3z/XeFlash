@@ -8,11 +8,14 @@ consumes packed 4-bit and 2-bit integer operands directly. Weights are stored
 in the order DPAS reads them, so decoding a token is a memory stream feeding
 XMX with no unpacking, no table lookups and no shared local memory.
 
-**Status: early.** The GEMM layer, the weight format, the converter and the
-measurement tools exist and are verified on the B60. The model itself
-(DeltaNet, attention, sampling), speculative decoding and the API do not exist
-yet, so there is no tokens-per-second figure. See `docs/PERFORMANCE.md` for
-what has been measured and what is only projected.
+**Status.** The whole model runs on the B60 and is verified against the
+official layer code: 22.4 tok/s greedy without speculation, 57.7 tok/s with
+the checkpoint's own MTP block as drafter (mean of four benchmark prompts,
+identical output), 16.2 GiB resident with an 8192-token cache. That is below
+the existing YASAKANI engine on the same card (86 tok/s), and fidelity to the
+original model (KL 0.069 on a held-out chat) is not yet at its published
+level. No tokenizer in Rust, no sampling other than greedy, no API yet. See
+`docs/PERFORMANCE.md` first.
 
 ## Layout
 
@@ -59,11 +62,21 @@ target/release/xf-convert verify   /path/to/Qwen3.8-27B model-s4.xfm
 # converted matrices on the GPU against the original weights
 scripts/b60run target/release/xf-validate gemm /path/to/Qwen3.8-27B model-s4.xfm layers.3.
 
+# calibrated conversion and a run
+python tools/validation/calib_stats.py /path/to/Qwen3.8-27B benchmarks/calib/chats.json stats/
+target/release/xf-convert convert /path/to/Qwen3.8-27B model.xfm --stats stats/ --merge
+python tools/validation/make_ids.py /path/to/Qwen3.8-27B benchmarks/prompts
+scripts/b60run target/release/xf-run mem model.xfm
+scripts/b60run target/release/xf-run gen model.xfm benchmarks/prompts/explain.json 512 --mtp 0,6
+
 # ISA dump and summary
 NEO_CACHE_PERSISTENT=0 SYCL_CACHE_PERSISTENT=0 IGC_ShaderDumpEnable=1 IGC_DumpToCustomDir=$PWD/isa/ \
   scripts/b60run target/release/xf-bench --quick --format s4
 tools/validation/isa_report.py isa/
 ```
+
+Keep GPU runs short or wrap them in `timeout`: the lock is shared, and a
+stuck kernel holds it until the process is killed.
 
 Benchmark on an idle host: a CPU-heavy job starves the submitting thread and
 inflates kernel times.

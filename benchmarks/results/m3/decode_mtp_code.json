@@ -1,0 +1,10 @@
+[
+  {"prompt":"code","prompt_tokens":28,"new_tokens":512,"mtp_k":0,"tok_per_s":22.445,"tokens_per_pass":1.0000,"trunk_ms_per_pass":44.551,"mtp_ms_per_pass":0.000,"prefill_tok_per_s":235.32,"accepted":[],"tried":[],"same_as_first":true},
+  {"prompt":"code","prompt_tokens":28,"new_tokens":512,"mtp_k":1,"tok_per_s":35.942,"tokens_per_pass":1.9321,"trunk_ms_per_pass":48.838,"mtp_ms_per_pass":4.917,"prefill_tok_per_s":205.90,"accepted":[247],"tried":[265],"same_as_first":true},
+  {"prompt":"code","prompt_tokens":28,"new_tokens":513,"mtp_k":2,"tok_per_s":48.378,"tokens_per_pass":2.7581,"trunk_ms_per_pass":49.090,"mtp_ms_per_pass":7.920,"prefill_tok_per_s":205.74,"accepted":[170, 157],"tried":[186, 170],"same_as_first":true},
+  {"prompt":"code","prompt_tokens":28,"new_tokens":514,"mtp_k":3,"tok_per_s":57.672,"tokens_per_pass":3.4730,"trunk_ms_per_pass":49.351,"mtp_ms_per_pass":10.868,"prefill_tok_per_s":205.68,"accepted":[138, 123, 105],"tried":[148, 138, 123],"same_as_first":true},
+  {"prompt":"code","prompt_tokens":28,"new_tokens":514,"mtp_k":4,"tok_per_s":65.060,"tokens_per_pass":4.1452,"trunk_ms_per_pass":49.936,"mtp_ms_per_pass":13.777,"prefill_tok_per_s":205.82,"accepted":[117, 105, 91, 77],"tried":[124, 117, 105, 91],"same_as_first":true},
+  {"prompt":"code","prompt_tokens":28,"new_tokens":514,"mtp_k":6,"tok_per_s":68.702,"tokens_per_pass":4.8037,"trunk_ms_per_pass":50.681,"mtp_ms_per_pass":19.240,"prefill_tok_per_s":205.82,"accepted":[95, 87, 74, 64, 49, 38],"tried":[107, 95, 87, 74, 64, 49],"same_as_first":true},
+  {"prompt":"code","prompt_tokens":28,"new_tokens":514,"mtp_k":8,"tok_per_s":65.960,"tokens_per_pass":5.2990,"trunk_ms_per_pass":55.635,"mtp_ms_per_pass":24.701,"prefill_tok_per_s":205.70,"accepted":[85, 78, 67, 56, 45, 36, 28, 22],"tried":[97, 85, 78, 67, 56, 45, 36, 28],"same_as_first":true},
+  {"prompt":"code","prompt_tokens":28,"new_tokens":514,"mtp_k":12,"tok_per_s":62.398,"tokens_per_pass":5.7753,"trunk_ms_per_pass":57.204,"mtp_ms_per_pass":35.352,"prefill_tok_per_s":205.81,"accepted":[77, 71, 59, 52, 44, 33, 24, 18, 17, 14, 9, 7],"tried":[89, 77, 71, 59, 52, 44, 33, 24, 18, 17, 14, 9],"same_as_first":true}
+]

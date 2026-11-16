@@ -146,6 +146,100 @@ extension; the offset joins the per-token scalar.
 expanded the tile once per activation plane, which made 16-bit activations
 30 % slower than 8-bit; expanding once per tile fixed the structure.
 
+## E9. VRAM: what "7.9 GiB" was
+
+The earlier report's 7.9 GiB was free VRAM (22.48) minus the container size
+(14.56): expected headroom, computed, never a measurement, and at that time
+no more than one matrix had ever been on the card. `xf-run mem` now allocates
+everything and prints each category and the driver's own figure: 16.17 GiB
+requested, 16.20 GiB by the driver, with MTP and an 8192-token KV cache.
+All matrices are resident; nothing is served from host memory.
+
+## E10. Full forward pass
+
+*Method.* `xf-run dump` (layer by layer on the GPU) against
+`ref_forward.py --xfm` (official transformers layer classes on the CPU with
+the same quantised weights).
+
+*Result.* First run: relative error 2.7e-4 after layer 0, 4.9e-3 after layer
+63, logits KL 9e-5, top-1 30/30, greedy tokens identical. No layer stands
+out. Passes of 1, 8 and 16 tokens are bit-identical to each other.
+
+## E11. Data-free weights fail on the model
+
+Against the original weights the same run gave KL 1.18 on the prompt
+positions and a hidden-state cosine of 0.76 at the last layer; positions with
+very large hidden states (chat markers) were predicted wrongly. On a held-out
+chat: KL 0.28, top-1 agreement 83.7 %. The 11 % weight error of E5/E7 said
+nothing about this.
+
+## E12. Calibration: three wrong turns and one fix
+
+4-layer loop on a held-out chat (`quick_eval.sh`), details in QUANTIZATION.md.
+
+* Weighting the error by E[x^2] per input channel made layer 0 worse by a
+  factor of 4.4 (0.068 -> 0.300). Expected an improvement.
+* Normalising every token before taking statistics: no change (0.318). The
+  hypothesis that a few huge tokens dominated was wrong, or not the main cause.
+* Hypothesis that held: the mean of the hidden states dominates E[x^2] and its
+  quantisation error is a constant per row. Centred variance as weights plus a
+  per-row bias: 0.016 at layer 0, 0.032 at layer 3.
+* With energy-weighted statistics `layers.2.mlp.down_proj` had a weighted
+  error of 0.41 and was (wrongly, by the fallback rule) left unquantised,
+  which made that container unloadable. With centred statistics it is
+  ordinary. The fallback now escalates to 8 bits first.
+
+Full model, held-out chat: KL 0.069, top-1 agreement 88.7 %.
+
+## E13. A GEMM variant that never returns
+
+*Symptom.* With the calibrated container, decoding stopped after a few dozen
+passes: GPU at full clock, host spinning in a blocking copy, engine reset
+logged only when the process was killed. Two earlier runs held the GPU lock
+for 83 and 15 minutes because of this before the in-lock timeout was
+shortened; that was a mistake in how the runs were launched.
+
+*Search.* Not queue depth (waiting after every layer did not help), not the
+bias path, not MTP, not the merged shapes (benchmarked alone: fine). The stage
+trace always stopped inside a GEMM.
+
+*Cause.* The calibrated container has one s8 matrix, and s8 weights with
+16-bit activations at one token per pass used the 4-tiles-per-trip kernel
+(32 weight registers plus two activation planes), a variant the benchmark had
+never run. `xf-bench --format s8` with 16-bit activations reproduces the hang
+in isolation.
+
+*Fix.* That variant now processes one tile per trip; it is exact and runs at
+380 Gw/s. Why the 4-tile version spins is not known (the s4 version with the
+same structure is fine); the ISA has not been examined.
+
+*Lesson.* Every kernel variant the engine can select must be in the benchmark.
+
+## E14. Merging matrices that share an input
+
+`--merge` stacks qkv+z, q+k+v and gate+up row-wise: 400 body matrices become
+256, with one activation quantisation and one launch per group. Non-speculative
+decode went from 49.3 to 44.5 ms per token. Fusing residual add + RMSNorm and
+quantisation + offset sum (SLM, one barrier) had given 50.8 -> 49.3 ms before.
+
+## E15. MTP
+
+Graph from vLLM and llama.cpp, confirmed by accuracy on the CPU (64.6 % for
+the documented reading, 0 % with the concatenation swapped). Decode sweep in
+PERFORMANCE.md A4: best fixed draft length 6, 57.7 tok/s mean over the four
+benchmark prompts, identical tokens to plain greedy for every K.
+
+## E16. Where this leaves the targets
+
+* Goal 1 (correct full forward on the B60): met.
+* Goal 2 (fair non-speculative benchmark): 22.4 tok/s against YASAKANI's
+  reported 18.1 to 18.6 on the same card and prompts. YASAKANI was not re-run.
+* Goal 3 (official MTP speculation): met, exact.
+* Goal 4 (beat 86 tok/s): **not met, 57.7 tok/s.**
+* Final goal (145 tok/s): not met.
+* Quality relative to YASAKANI Speed: unknown on equal terms; by published
+  figures XeFlash s4 is still behind.
+
 ## Things that did not work or were wrong
 
 * First guess of the low-precision DPAS layout (16-bit channels): wrong, see E1.
@@ -154,6 +248,8 @@ expanded the tile once per activation plane, which made 16-bit activations
 * `quant_sqnr_v1`: tensor lookup by suffix matched `mtp.layers.0.self_attn.*`
   for "layer 0 self_attn" (layer 0 is a DeltaNet layer). Fixed; the affected
   rows are labelled in QUANTIZATION.md.
+* `pkill -f calib_stats.py` inside a shell command whose own text contained
+  that string killed the shell before the edits it was about to make.
 * Benchmarks taken while a 12-thread conversion was running on the host are
   not reliable: the submitting thread gets descheduled (launch-with-wait
   rises from 8 us to over 100 us). Final numbers are taken on an idle host.

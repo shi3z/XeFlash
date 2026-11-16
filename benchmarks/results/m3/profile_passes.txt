@@ -1,0 +1,6 @@
+profile ( 1 tokens/pass, sync per stage, ms): norm 1.59 quant 3.20 gemm 37.31 gdn 4.43 attn 1.38 mlp 0.96 head 0.03 | total 48.90
+          unprofiled: 42.40 ms/pass
+profile ( 8 tokens/pass, sync per stage, ms): norm 1.63 quant 3.57 gemm 43.26 gdn 5.31 attn 1.51 mlp 1.49 head 0.03 | total 56.79
+          unprofiled: 50.25 ms/pass
+profile (16 tokens/pass, sync per stage, ms): norm 1.70 quant 3.72 gemm 47.62 gdn 8.12 attn 1.57 mlp 2.15 head 0.06 | total 64.94
+          unprofiled: 58.63 ms/pass

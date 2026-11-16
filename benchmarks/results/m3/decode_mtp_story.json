@@ -1,0 +1,10 @@
+[
+  {"prompt":"story","prompt_tokens":29,"new_tokens":512,"mtp_k":0,"tok_per_s":22.446,"tokens_per_pass":1.0000,"trunk_ms_per_pass":44.549,"mtp_ms_per_pass":0.000,"prefill_tok_per_s":243.37,"accepted":[],"tried":[],"same_as_first":true},
+  {"prompt":"story","prompt_tokens":29,"new_tokens":513,"mtp_k":1,"tok_per_s":32.355,"tokens_per_pass":1.7331,"trunk_ms_per_pass":48.831,"mtp_ms_per_pass":4.734,"prefill_tok_per_s":212.17,"accepted":[217],"tried":[296],"same_as_first":true},
+  {"prompt":"story","prompt_tokens":29,"new_tokens":512,"mtp_k":2,"tok_per_s":37.371,"tokens_per_pass":2.1157,"trunk_ms_per_pass":49.073,"mtp_ms_per_pass":7.541,"prefill_tok_per_s":212.26,"accepted":[173, 97],"tried":[242, 173],"same_as_first":true},
+  {"prompt":"story","prompt_tokens":29,"new_tokens":513,"mtp_k":3,"tok_per_s":38.786,"tokens_per_pass":2.3108,"trunk_ms_per_pass":49.349,"mtp_ms_per_pass":10.229,"prefill_tok_per_s":212.25,"accepted":[157, 93, 41],"tried":[222, 157, 93],"same_as_first":true},
+  {"prompt":"story","prompt_tokens":29,"new_tokens":513,"mtp_k":4,"tok_per_s":38.144,"tokens_per_pass":2.3972,"trunk_ms_per_pass":49.942,"mtp_ms_per_pass":12.903,"prefill_tok_per_s":212.31,"accepted":[153, 87, 41, 18],"tried":[214, 153, 87, 41],"same_as_first":true},
+  {"prompt":"story","prompt_tokens":29,"new_tokens":513,"mtp_k":6,"tok_per_s":34.989,"tokens_per_pass":2.4085,"trunk_ms_per_pass":50.695,"mtp_ms_per_pass":18.138,"prefill_tok_per_s":211.89,"accepted":[152, 87, 38, 18, 4, 1],"tried":[213, 152, 87, 38, 18, 4],"same_as_first":true},
+  {"prompt":"story","prompt_tokens":29,"new_tokens":513,"mtp_k":8,"tok_per_s":30.632,"tokens_per_pass":2.4198,"trunk_ms_per_pass":55.665,"mtp_ms_per_pass":23.332,"prefill_tok_per_s":212.14,"accepted":[152, 86, 38, 18, 4, 1, 1, 1],"tried":[212, 152, 86, 38, 18, 4, 1, 1],"same_as_first":true},
+  {"prompt":"story","prompt_tokens":29,"new_tokens":513,"mtp_k":12,"tok_per_s":26.572,"tokens_per_pass":2.4198,"trunk_ms_per_pass":57.278,"mtp_ms_per_pass":33.787,"prefill_tok_per_s":212.34,"accepted":[152, 86, 38, 18, 4, 1, 1, 1, 0, 0, 0, 0],"tried":[212, 152, 86, 38, 18, 4, 1, 1, 1, 0, 0, 0],"same_as_first":true}
+]

@@ -84,4 +84,41 @@ plain greedy decoding. This is checked, not assumed: see EXPERIMENTS.md.
 
 ## Results
 
-See PERFORMANCE.md (acceptance by draft position, draft length sweep, cost).
+**Is the graph right?** Teacher-forced on a held-out 160-token chat with the
+original weights on the CPU (`tools/validation/ref_mtp.py`), fraction of
+positions where the MTP block predicts the token after next:
+
+| reading of the graph | accuracy |
+|---|---|
+| embedding first, hidden after the final norm (vLLM, llama.cpp) | 64.6 % |
+| embedding first, hidden before the final norm (mlx-lm PR) | 62.7 % |
+| hidden first | 0.0 % |
+
+The engine (s4 trunk and MTP layer, FP32 `fc`) scores 63.3 % on the same text
+and makes the same prediction as the CPU reference at 141 of 160 positions.
+
+**Speculative decoding** (four benchmark prompts, 512 tokens each, greedy;
+PERFORMANCE.md A4 has the full tables):
+
+| draft length K | mean tok/s | tokens per trunk pass | MTP ms per cycle |
+|---|---|---|---|
+| 0 | 22.4 | 1.00 | 0 |
+| 1 | 34.8 | 1.73 to 1.95 | 4.9 |
+| 2 | 45.2 | 2.12 to 2.83 | 7.8 |
+| 4 | 56.1 | 2.40 to 4.22 | 13.5 |
+| 6 | 57.7 | 2.41 to 4.99 | 18.9 |
+| 8 | 53.8 | 2.42 to 5.45 | 24.3 |
+| 12 | 49.8 | 2.42 to 5.89 | 34.8 |
+
+* First-draft acceptance is 71 to 97 % on the model's own output; it decays
+  with depth, quickly on prose (story: 71, 57, 44, 47, 22, 25 %) and slowly on
+  code and proofs (about 80 % at depth 6).
+* Output is identical to non-speculative greedy decoding for every K and
+  every prompt (checked token by token in each run).
+* Each extra draft costs about 2.7 ms, most of it the shared lm_head. That
+  cost, not acceptance, is what makes K above 6 a loss.
+* No commit or rollback time is visible: rejected rows are simply not
+  committed.
+
+Not measured: MTP in BF16 or s8, calibrated MTP weights, a confidence-based
+stop, combination with other draft sources.
