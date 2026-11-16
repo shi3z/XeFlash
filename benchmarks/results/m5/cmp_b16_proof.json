@@ -1,0 +1,5 @@
+[
+  {"prompt":"proof","drafter":"mtp","block":16,"tok_per_s":65.673,"tokens_per_pass":5.9535,"cycle_ms":90.654,"main_ms":-1.000,"draft_ms":-1.000,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"proof","drafter":"bdraft2","block":16,"tok_per_s":113.984,"tokens_per_pass":8.1250,"cycle_ms":71.282,"main_ms":59.716,"draft_ms":10.023,"taps_ms":2.765,"same_tokens":true,"same_state":true},
+  {"prompt":"proof","drafter":"d0d1","block":16,"tok_per_s":24.972,"tokens_per_pass":1.3801,"cycle_ms":55.264,"main_ms":54.997,"draft_ms":0.002,"taps_ms":0.000,"same_tokens":true,"same_state":true}
+]

@@ -1,0 +1,5 @@
+[
+  {"prompt":"story","drafter":"mtp","block":8,"tok_per_s":36.550,"tokens_per_pass":2.4085,"cycle_ms":65.894,"main_ms":-1.000,"draft_ms":-1.000,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"story","drafter":"bdraft2","block":8,"tok_per_s":40.456,"tokens_per_pass":2.4734,"cycle_ms":61.138,"main_ms":51.101,"draft_ms":9.562,"taps_ms":2.229,"same_tokens":true,"same_state":true},
+  {"prompt":"story","drafter":"d0d1","block":8,"tok_per_s":22.064,"tokens_per_pass":1.0710,"cycle_ms":48.539,"main_ms":48.331,"draft_ms":0.001,"taps_ms":0.000,"same_tokens":true,"same_state":true}
+]

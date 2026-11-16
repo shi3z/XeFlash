@@ -1,0 +1,5 @@
+[
+  {"prompt":"japanese","drafter":"mtp","block":8,"tok_per_s":37.561,"tokens_per_pass":2.4760,"cycle_ms":65.918,"main_ms":-1.000,"draft_ms":-1.000,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"japanese","drafter":"bdraft2","block":8,"tok_per_s":32.298,"tokens_per_pass":2.0039,"cycle_ms":62.044,"main_ms":51.137,"draft_ms":10.521,"taps_ms":2.141,"same_tokens":true,"same_state":true},
+  {"prompt":"japanese","drafter":"d0d1","block":8,"tok_per_s":24.393,"tokens_per_pass":1.1871,"cycle_ms":48.664,"main_ms":48.435,"draft_ms":0.001,"taps_ms":0.000,"same_tokens":true,"same_state":true}
+]

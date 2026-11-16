@@ -1,5 +1,6 @@
 [package]
 name = "xf-run"
+build = "build.rs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,6 +8,10 @@ license.workspace = true
 [[bin]]
 name = "xf-run"
 path = "src/main.rs"
+
+[features]
+# Experimental: YASAKANI bdraft2 drafter through experimental/bdraft2 (needs ~/yasakani-src).
+bdraft2 = []
 
 [dependencies]
 xeflash-core.workspace = true

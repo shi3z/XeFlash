@@ -282,6 +282,25 @@ free drafter the same acceptance would give 79. The next gains have to come
 from the trunk pass (about 10 ms of non-GEMM time, and the cost of extra
 rows), from acceptance on prose, and, for long prompts, from attention.
 
+## E22. YASAKANI's bdraft2 on XeFlash's main model
+
+*Question.* The drafter was trained against YASAKANI's 3-bit main model. Does
+it still draft well from XeFlash's INT4 hidden states, and is it faster than
+the official MTP?
+
+*Method.* Out-of-tree shim over the YASAKANI port's headers (BDRAFT2.md), tap
+capture in XeFlash, `xf-run cmp`.
+
+*Result.* Worked on the first run. 8-row block: 4.4 / 6.2 / 2.5 / 6.0 tokens
+per pass on explain / code / story / proof against 3.9 / 5.0 / 2.4 / 5.2 for
+the official MTP. Taps device-to-device instead of through host: drafter time
+9.6 -> 5.8 ms per cycle. Adaptive 8/16 rows: mean 80.0 -> 86.6 tok/s.
+Japanese is the exception (worse than MTP). Lookup-only: 1.1 to 1.5 tokens per
+pass. All outputs and states identical to plain greedy.
+
+*Expectation that was wrong.* I expected a clear acceptance loss from the
+main-model mismatch. There is none visible on English, code and proofs.
+
 ## Things that did not work or were wrong
 
 * First guess of the low-precision DPAS layout (16-bit channels): wrong, see E1.

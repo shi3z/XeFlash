@@ -75,6 +75,7 @@ ESIMD_INLINE void storef(float *p, float x) SYCL_ESIMD_FUNCTION {
 struct WS {
   int32_t *ids; // io block: [0,16) pass ids, [16,32) verify ids (next + drafts), [32,48) greedy ids, [48,64) greedy logits (f32)
   float *sk_z, *sk_s, *candv;
+  float *cap; // residual stream after layers 5, 19, 33, 47, 61: [5][MAXM][D]
   int32_t *cand, *candi;
   float *inv, *ts, *toff, *pmax, *psum, *h, *xn, *y;
   int8_t *xhi;
@@ -134,6 +135,7 @@ WS carve_ws(void *base, int ctx) {
   w.pv = b.take<float>(MAXM * AH * nb * AD);
   w.mh = b.take<float>(MAXM * D);
   w.me = b.take<float>(MAXM * 2 * D);
+  w.cap = b.take<float>(size_t(5) * MAXM * D);
   w.sk_z = b.take<float>(2048);
   w.sk_s = b.take<float>(VOCAB);
   w.cand = b.take<int32_t>(4096);
@@ -357,6 +359,20 @@ void k_mtp_cat(Q &q, const float *emb, const float *inv_e, const float *ge, cons
       v = v * loadf(inv_h + mi) * g;
     }
     v.copy_to(cat + mi * 2 * D + c * 64);
+  });
+}
+
+// dst = h (+ y): a copy of the residual stream for an external consumer.
+void k_capture(Q &q, const float *h, const float *y, float *dst, int m) {
+  q.parallel_for(sycl::range<1>(size_t(m) * (D / 64)), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    simd<float, 64> a;
+    a.copy_from(h + id[0] * 64);
+    if (y) {
+      simd<float, 64> b;
+      b.copy_from(y + id[0] * 64);
+      a += b;
+    }
+    a.copy_to(dst + id[0] * 64);
   });
 }
 
@@ -989,6 +1005,7 @@ size_t xf_ws_offset(int which, int ctx) {
   case XF_WS_AMAX_V: p = w.amv; break;
   case XF_WS_AMAX_I: p = w.ami; break;
   case XF_WS_MTP_H: p = w.mh; break;
+  case XF_WS_CAP: p = w.cap; break;
   default: return SIZE_MAX;
   }
   return size_t(static_cast<const char *>(p) - static_cast<const char *>(nullptr));
@@ -1018,6 +1035,8 @@ int xf_forward(xf_ctx *ctx, const xf_model *md, int m, int pos0, int l0, int l1,
       if (p.tm.trace) std::fprintf(stderr, "\nL%d: ", l);
       const int st = L.kind == XF_LAYER_GDN ? p.gdn(L) : p.attn(L, pos0);
       if (st != XF_OK) return st;
+      if ((flags & XF_FWD_CAPTURE) && l % 14 == 5) // hidden_states[l + 1] for l = 5, 19, 33, 47, 61
+        k_capture(q, p.ws.h, p.pending ? p.ws.y : nullptr, p.ws.cap + size_t(l / 14) * MAXM * D, m);
       if (sync_every > 0 && (l + 1) % sync_every == 0) q.wait_and_throw();
     }
     if (flags & XF_FWD_HEAD) {

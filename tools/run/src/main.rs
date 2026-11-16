@@ -2,12 +2,16 @@
 //!
 //!   xf-run mem  <model.xfm> [--ctx N]
 //!   xf-run dump <model.xfm> <ids.json> <out_dir> [--chunk 1|8|16] [--ctx N]
+//!   xf-run cmp  <model.xfm> <ids.json>[,..] <n_new> [--block 8|16|0=adaptive] [--sketch dir ..] [--bdraft main.yskn,draft.yskn]
+//!               compare draft sources on the same main model: official MTP, bdraft2 (feature), D0/D1-style lookup
 //!   xf-run mtp-tf <model.xfm> <ids.json> [--out pred.json]
 //!   xf-run gen  <model.xfm> <ids.json>[,<ids2.json>..] <n_new> [--ctx N] [--mtp K[,K..]] [--profile]
 //!               [--sketch dir --rank 512 --groups 8] [--mtp-xfm other.xfm] [--host-chain]
 //!               [--json results.json] [--out prefix]
 //!
 //! `ids.json` is a JSON array of token ids. Run through scripts/b60run.
+
+mod ext;
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -100,6 +104,7 @@ fn main() -> Result<()> {
         }
         Some("dump") if args.len() >= 4 => dump(&dev, &args),
         Some("gen") if args.len() >= 4 => generate(&dev, &args),
+        Some("cmp") if args.len() >= 4 => compare(&dev, &args),
         Some("mtp-tf") if args.len() >= 3 => mtp_teacher_forced(&dev, &args),
         _ => Err(Error::Invalid("usage: xf-run mem|dump|gen ... (see the source header)".into())),
     }
@@ -518,6 +523,273 @@ fn generate(dev: &Device, args: &[String]) -> Result<()> {
                 eprintln!("          unprofiled: {:.3} ms per chain", t.elapsed().as_secs_f64() / reps as f64 * 1e3);
             }
         }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "bdraft2")]
+type Bd = ext::bdraft2::Bdraft2;
+#[cfg(not(feature = "bdraft2"))]
+struct Bd;
+#[cfg(not(feature = "bdraft2"))]
+impl Bd {
+    fn reset(&mut self) -> Result<()> { Ok(()) }
+    fn ctx(&mut self, _: &[f32], _: usize, _: usize) -> Result<()> { Ok(()) }
+    fn step(&mut self, _: &[f32], _: usize, _: usize, _: usize, _: u32, _: usize) -> Result<Vec<u32>> { Ok(Vec::new()) }
+    fn step_dev(&mut self, _: *const f32, _: usize, _: usize, _: usize, _: u32, _: usize) -> Result<Option<Vec<u32>>> { Ok(None) }
+}
+
+/// Speculative decoding with a host-driven draft source: `bd = Some` uses the
+/// bdraft2 backend fed with captured tap states, `None` the D0/D1-style lookup.
+/// Verify block is `k + 1` rows. Returns the stats plus seconds spent moving taps.
+/// `block` = 8 or 16 rows per verify pass, or 0 for the adaptive rule (see `Adapt`).
+fn run_ext(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, block: usize, mut bd: Option<&mut Bd>) -> Result<(RunStats, f64)> {
+    let k = if block == 0 { 15 } else { block - 1 };
+    let mut adapt = Adapt::new();
+    let mut zero_copy = bd.is_some();
+    let mut n16 = 0usize;
+    e.reset()?;
+    e.set_capture(bd.is_some());
+    if let Some(b) = bd.as_deref_mut() {
+        b.reset()?;
+    }
+    let mut lk = ext::Lookup::new();
+    let mut taps = vec![0f32; 5 * 16 * HIDDEN];
+    let t0 = Instant::now();
+    let mut next = 0u32;
+    let mut pend = (0usize, 0usize); // rows of the last committed pass not yet in the drafter's ring
+    let nchunks = prompt.len().div_ceil(16);
+    for (ci, c) in prompt.chunks(16).enumerate() {
+        let g = e.forward(c, None)?;
+        e.commit(c.len())?;
+        for (t, gi) in c.iter().zip(&g) {
+            lk.push(*t, gi.0);
+        }
+        next = g.last().unwrap().0;
+        if let Some(b) = bd.as_deref_mut() {
+            e.read_taps(&mut taps)?;
+            if ci + 1 < nchunks {
+                b.ctx(&taps, c.len(), ci * 16)?;
+            } else {
+                pend = (c.len(), ci * 16);
+            }
+        }
+    }
+    dev.wait()?;
+    let prefill_s = t0.elapsed().as_secs_f64();
+
+    let mut out: Vec<u32> = Vec::with_capacity(n_new + 16);
+    let (mut t_draft, mut t_main, mut t_taps) = (0f64, 0f64, 0f64);
+    let mut tried = vec![0usize; k + 1];
+    let mut accepted = vec![0usize; k + 1];
+    let mut passes = 0usize;
+    let mut state = (0usize, 0u64);
+    let t1 = Instant::now();
+    while out.len() < n_new {
+        let pos = e.position();
+        if zero_copy {
+            dev.wait()?; // the commit of the last pass and its tap writes are done
+        }
+        let td = Instant::now();
+        let mut ids = vec![next];
+        let rows = match block {
+            0 if adapt.use16() => 16,
+            0 => 8,
+            b => b,
+        };
+        n16 += (rows == 16) as usize;
+        match bd.as_deref_mut() {
+            Some(b) => {
+                // Taps straight from the main engine's device buffer when both
+                // engines share a SYCL context; through host memory otherwise.
+                let mut d = None;
+                if zero_copy {
+                    d = b.step_dev(e.taps_device_ptr(), pend.0, pend.1, rows, next, pos)?;
+                    zero_copy = d.is_some();
+                }
+                if d.is_none() {
+                    if pend.0 > 0 {
+                        e.read_taps(&mut taps)?;
+                    }
+                    d = Some(b.step(&taps, pend.0, pend.1, rows, next, pos)?);
+                }
+                ids.extend(d.unwrap());
+            }
+            None => ids.extend(lk.draft(next, rows - 1).0),
+        }
+        t_draft += td.elapsed().as_secs_f64();
+        let tv = Instant::now();
+        let g = e.forward(&ids, None)?;
+        let mut n = 1;
+        while n < ids.len() && g[n - 1].0 == ids[n] {
+            n += 1;
+        }
+        e.commit(n)?;
+        t_main += tv.elapsed().as_secs_f64();
+        adapt.update(rows, n - 1);
+        for i in 1..ids.len() {
+            if i <= n {
+                tried[i] += 1;
+            }
+            if i < n {
+                accepted[i] += 1;
+            }
+        }
+        for i in 0..n {
+            lk.push(ids[i], g[i].0);
+        }
+        out.extend_from_slice(&ids[..n]);
+        if state.0 == 0 && out.len() >= STATE_AT {
+            state = (out.len(), e.state_hash()?);
+        }
+        next = g[n - 1].0;
+        passes += 1;
+        if bd.is_some() {
+            pend = (n, pos);
+        }
+    }
+    dev.wait()?;
+    let decode_s = t1.elapsed().as_secs_f64();
+    let emitted = out.len();
+    out.truncate(n_new);
+    e.set_capture(false);
+    if block == 0 {
+        eprintln!("          adaptive block: {n16} of {passes} passes used 16 rows; taps {}", if zero_copy { "device-to-device" } else { "through host" });
+    } else if bd.is_some() {
+        eprintln!("          taps {}", if zero_copy { "device-to-device" } else { "through host" });
+    }
+    t_taps += 0.0;
+    Ok((RunStats { out, emitted, prefill_s, decode_s, passes, t_main, t_mtp: t_draft, tried, accepted, state }, t_taps))
+}
+
+/// YASAKANI's rule for choosing between 8 and 16 verify rows (from its port
+/// notes): go to 16 when the tokens a 16-row pass is expected to add beyond
+/// the first 7 outweigh its extra cost. `c16` is the cost of a 16-row cycle
+/// relative to an 8-row one; measured here as 71 ms / 61.5 ms.
+struct Adapt {
+    g16: f64,
+    extra: f64,
+    t8: f64,
+}
+
+impl Adapt {
+    const C16: f64 = 1.16;
+    fn new() -> Self {
+        Adapt { g16: 0.0, extra: 3.0, t8: 4.0 }
+    }
+    fn use16(&self) -> bool {
+        self.g16 > (Self::C16 - 1.0) * self.t8
+    }
+    /// `a` = drafts accepted in a pass of `rows` rows.
+    fn update(&mut self, rows: usize, a: usize) {
+        self.t8 = 0.85 * self.t8 + 0.15 * (a.min(7) + 1) as f64;
+        let gobs = if rows == 16 {
+            if a >= 7 {
+                self.extra = 0.8 * self.extra + 0.2 * (a - 7) as f64;
+            }
+            a.saturating_sub(7) as f64
+        } else if a >= 7 {
+            self.extra
+        } else {
+            0.0
+        };
+        self.g16 = 0.85 * self.g16 + 0.15 * gobs;
+    }
+}
+
+/// cmp: the same main model, prompts and verify block, three draft sources.
+fn compare(dev: &Device, args: &[String]) -> Result<()> {
+    let n_new: usize = args[3].parse().map_err(|_| Error::Invalid("bad token count".into()))?;
+    let block = opt_usize(args, "--block", 8)?;
+    if block != 8 && block != 16 && block != 0 {
+        return Err(Error::Invalid("--block must be 8, 16 or 0 (adaptive, external drafters only)".into()));
+    }
+    let k = if block == 0 { 7 } else { block - 1 }; // MTP has no adaptive rule: 7 drafts
+    let mut e = load_opts(dev, &args[1], opt_usize(args, "--ctx", 8192)?, args)?;
+    #[allow(unused_mut)]
+    let mut bd: Option<Bd> = None;
+    #[cfg(feature = "bdraft2")]
+    if let Some(paths) = opt(args, "--bdraft") {
+        let (m, d) = paths.split_once(',').ok_or_else(|| Error::Invalid("--bdraft main.yskn,draft.yskn".into()))?;
+        let before = dev.info()?.vram_free;
+        bd = Some(Bd::open(m, d, e.capacity())?);
+        let after = dev.info()?.vram_free;
+        eprintln!("bdraft2 backend loaded: +{:.3} GiB device memory (driver)", (before as f64 - after as f64) / GIB);
+    }
+    let mut json = String::from("[\n");
+    for (pi, path) in args[2].split(',').enumerate() {
+        let prompt = read_ids(path)?;
+        let name = Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or(path).to_string();
+        if pi == 0 {
+            for m in [1usize, 2, 16] {
+                e.forward(&prompt[..m.min(prompt.len())], None)?;
+                e.commit(0)?;
+            }
+        }
+        // Reference: plain greedy, plus state hashes at every length a speculative run may stop at.
+        let base = run_once(dev, &mut e, &prompt, n_new, 0, 16, true)?;
+        let mut base_states = std::collections::HashMap::new();
+        e.reset()?;
+        let mut nx = 0u32;
+        for c in prompt.chunks(16) {
+            nx = e.forward(c, None)?.last().unwrap().0;
+            e.commit(c.len())?;
+        }
+        for len in 1..=STATE_AT + 16 {
+            nx = e.forward(&[nx], None)?[0].0;
+            e.commit(1)?;
+            if len >= STATE_AT {
+                base_states.insert(len, e.state_hash()?);
+            }
+        }
+        eprintln!("{name:<9} none      {:>7.2} tok/s | 1.00 tok/pass | main {:>6.2} ms/pass", base.emitted as f64 / base.decode_s, base.t_main / base.passes as f64 * 1e3);
+        let mut report = |label: &str, r: &RunStats, taps_s: f64, split: bool| {
+            let tps = r.emitted as f64 / r.decode_s;
+            let cyc = r.decode_s / r.passes as f64 * 1e3;
+            let same = r.out == base.out;
+            let st = base_states.get(&r.state.0).map(|h| *h == r.state.1);
+            let acc: Vec<String> = (1..r.tried.len()).map(|i| format!("{:.0}", 100.0 * r.accepted[i] as f64 / r.tried[i].max(1) as f64)).collect();
+            let parts = if split {
+                format!("main {:>6.2}, draft {:>6.2} (of which taps {:.2}) ms/pass", r.t_main / r.passes as f64 * 1e3, (r.t_mtp + taps_s) / r.passes as f64 * 1e3, taps_s / r.passes as f64 * 1e3)
+            } else {
+                "one submission per cycle".to_string()
+            };
+            eprintln!(
+                "{name:<9} {label:<9} {tps:>7.2} tok/s | {:.2} tok/pass | cycle {cyc:>6.2} ms | {parts} | accept% [{}] | {}",
+                r.emitted as f64 / r.passes as f64,
+                acc.join(" "),
+                match (same, st) {
+                    (true, Some(true)) => "same tokens, same state",
+                    (true, None) => "same tokens (state not compared)",
+                    (true, Some(false)) => "same tokens, STATE DIFFERS",
+                    (false, _) => "TOKENS DIFFER",
+                }
+            );
+            let _ = std::fmt::Write::write_fmt(
+                &mut json,
+                format_args!(
+                    "  {{\"prompt\":\"{name}\",\"drafter\":\"{label}\",\"block\":{block},\"tok_per_s\":{tps:.3},\"tokens_per_pass\":{:.4},\"cycle_ms\":{cyc:.3},\"main_ms\":{:.3},\"draft_ms\":{:.3},\"taps_ms\":{:.3},\"same_tokens\":{same},\"same_state\":{}}},\n",
+                    r.emitted as f64 / r.passes as f64,
+                    if split { r.t_main / r.passes as f64 * 1e3 } else { -1.0 },
+                    if split { (r.t_mtp + taps_s) / r.passes as f64 * 1e3 } else { -1.0 },
+                    taps_s / r.passes as f64 * 1e3,
+                    st.unwrap_or(false)
+                ),
+            );
+        };
+        if e.has_mtp() {
+            let r = run_spec(dev, &mut e, &prompt, n_new, k, 16)?;
+            report("mtp", &r, 0.0, false);
+        }
+        if let Some(b) = bd.as_mut() {
+            let (r, taps_s) = run_ext(dev, &mut e, &prompt, n_new, block, Some(b))?;
+            report("bdraft2", &r, taps_s, true);
+        }
+        let (r, _) = run_ext(dev, &mut e, &prompt, n_new, block, None)?;
+        report("d0d1", &r, 0.0, true);
+    }
+    if let Some(path) = opt(args, "--json") {
+        std::fs::write(&path, json.trim_end().trim_end_matches(',').to_string() + "\n]\n")?;
     }
     Ok(())
 }

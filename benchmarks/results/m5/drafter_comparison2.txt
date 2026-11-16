@@ -1,0 +1,37 @@
+## verify block 8 (0 = adaptive 8/16), taps device-to-device where possible
+explain exit=0
+          taps device-to-device
+explain   bdraft2     74.56 tok/s | 4.44 tok/pass | cycle  59.54 ms | main  51.07, draft   5.78 (of which taps 0.00) ms/pass | accept% [84 84 84 82 80 71 62] | same tokens, same state
+code exit=0
+          taps device-to-device
+code      bdraft2    104.03 tok/s | 6.24 tok/pass | cycle  60.02 ms | main  51.04, draft   5.76 (of which taps 0.00) ms/pass | accept% [91 93 96 96 91 88 88] | same tokens, same state
+story exit=0
+          taps device-to-device
+story     bdraft2     41.97 tok/s | 2.47 tok/pass | cycle  58.94 ms | main  51.10, draft   5.75 (of which taps 0.00) ms/pass | accept% [68 59 55 39 56 40 75] | same tokens, same state
+proof exit=0
+          taps device-to-device
+proof     bdraft2     99.27 tok/s | 5.95 tok/pass | cycle  59.97 ms | main  51.04, draft   5.79 (of which taps 0.00) ms/pass | accept% [97 89 89 91 93 86 81] | same tokens, same state
+japanese exit=0
+          taps device-to-device
+japanese  bdraft2     34.08 tok/s | 2.00 tok/pass | cycle  58.80 ms | main  51.14, draft   5.75 (of which taps 0.00) ms/pass | accept% [47 47 53 63 84 50 75] | same tokens, same state
+## verify block 0 (0 = adaptive 8/16), taps device-to-device where possible
+explain exit=0
+          adaptive block: 5 of 114 passes used 16 rows; taps device-to-device
+explain   bdraft2     75.24 tok/s | 4.52 tok/pass | cycle  60.04 ms | main  51.48, draft   5.85 (of which taps 0.00) ms/pass | accept% [85 84 83 82 80 75 64 33 100 100 0 0 0 0 0] | same tokens, same state
+          adaptive block: 3 of 435 passes used 16 rows; taps through host
+code exit=0
+          adaptive block: 52 of 66 passes used 16 rows; taps device-to-device
+code      bdraft2    115.14 tok/s | 7.83 tok/pass | cycle  68.03 ms | main  58.06, draft   6.33 (of which taps 0.00) ms/pass | accept% [89 93 93 94 90 84 86 84 95 90 89 94 100 80 92] | same tokens, same state
+          adaptive block: 15 of 334 passes used 16 rows; taps through host
+story exit=0
+          adaptive block: 0 of 207 passes used 16 rows; taps device-to-device
+story     bdraft2     41.97 tok/s | 2.47 tok/pass | cycle  58.93 ms | main  51.10, draft   5.75 (of which taps 0.00) ms/pass | accept% [68 59 55 39 56 40 75 0 0 0 0 0 0 0 0] | same tokens, same state
+          adaptive block: 0 of 479 passes used 16 rows; taps through host
+proof exit=0
+          adaptive block: 41 of 69 passes used 16 rows; taps device-to-device
+proof     bdraft2    113.95 tok/s | 7.54 tok/pass | cycle  66.13 ms | main  56.33, draft   6.23 (of which taps 0.00) ms/pass | accept% [96 88 88 92 96 80 81 95 95 100 89 88 100 86 67] | same tokens, same state
+          adaptive block: 0 of 371 passes used 16 rows; taps through host
+japanese exit=0
+          adaptive block: 3 of 257 passes used 16 rows; taps device-to-device
+japanese  bdraft2     34.00 tok/s | 2.00 tok/pass | cycle  58.94 ms | main  51.23, draft   5.78 (of which taps 0.00) ms/pass | accept% [47 46 54 63 84 50 75 100 0 0 0 0 0 0 0] | same tokens, same state
+          adaptive block: 1 of 433 passes used 16 rows; taps through host

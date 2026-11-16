@@ -1,0 +1,62 @@
+## verify block 8 rows
+explain exit=0
+bdraft2 backend loaded: +2.798 GiB device memory (driver)
+explain   none        22.37 tok/s | 1.00 tok/pass | main  44.51 ms/pass
+explain   mtp         58.40 tok/s | 3.90 tok/pass | cycle  66.81 ms | one submission per cycle | accept% [84 79 72 76 75 69 48] | same tokens, same state
+explain   bdraft2     72.20 tok/s | 4.44 tok/pass | cycle  61.49 ms | main  51.06, draft   9.57 (of which taps 2.43) ms/pass | accept% [84 84 84 82 80 71 62] | same tokens, same state
+explain   d0d1        23.86 tok/s | 1.18 tok/pass | cycle  49.33 ms | main  49.10, draft   0.00 (of which taps 0.00) ms/pass | accept% [18 39 47 62 20 100 100] | same tokens, same state
+code exit=0
+bdraft2 backend loaded: +2.798 GiB device memory (driver)
+code      none        22.37 tok/s | 1.00 tok/pass | main  44.51 ms/pass
+code      mtp         74.67 tok/s | 5.04 tok/pass | cycle  67.49 ms | one submission per cycle | accept% [88 91 80 86 82 81 84] | same tokens, same state
+code      bdraft2    100.28 tok/s | 6.24 tok/pass | cycle  62.26 ms | main  51.06, draft  10.01 (of which taps 2.61) ms/pass | accept% [91 93 96 96 91 88 88] | same tokens, same state
+code      d0d1        30.88 tok/s | 1.53 tok/pass | cycle  49.68 ms | main  49.39, draft   0.00 (of which taps 0.00) ms/pass | accept% [33 47 62 80 100 94 80] | same tokens, same state
+story exit=0
+bdraft2 backend loaded: +2.798 GiB device memory (driver)
+story     none        22.37 tok/s | 1.00 tok/pass | main  44.51 ms/pass
+story     mtp         36.55 tok/s | 2.41 tok/pass | cycle  65.89 ms | one submission per cycle | accept% [71 56 46 46 28 20 100] | same tokens, same state
+story     bdraft2     40.46 tok/s | 2.47 tok/pass | cycle  61.14 ms | main  51.10, draft   9.56 (of which taps 2.23) ms/pass | accept% [68 59 55 39 56 40 75] | same tokens, same state
+story     d0d1        22.06 tok/s | 1.07 tok/pass | cycle  48.54 ms | main  48.33, draft   0.00 (of which taps 0.00) ms/pass | accept% [11 24 33 50 0 0 0] | same tokens, same state
+proof exit=0
+bdraft2 backend loaded: +2.798 GiB device memory (driver)
+proof     none        22.38 tok/s | 1.00 tok/pass | main  44.50 ms/pass
+proof     mtp         76.41 tok/s | 5.16 tok/pass | cycle  67.53 ms | one submission per cycle | accept% [93 88 88 81 79 78 81] | same tokens, same state
+proof     bdraft2     96.18 tok/s | 5.95 tok/pass | cycle  61.90 ms | main  51.05, draft   9.70 (of which taps 2.57) ms/pass | accept% [97 89 89 91 93 86 81] | same tokens, same state
+proof     d0d1        27.73 tok/s | 1.38 tok/pass | cycle  49.77 ms | main  49.50, draft   0.00 (of which taps 0.00) ms/pass | accept% [32 42 52 75 50 33 0] | same tokens, same state
+japanese exit=0
+bdraft2 backend loaded: +2.798 GiB device memory (driver)
+japanese  none        22.37 tok/s | 1.00 tok/pass | main  44.51 ms/pass
+japanese  mtp         37.56 tok/s | 2.48 tok/pass | cycle  65.92 ms | one submission per cycle | accept% [64 51 62 62 81 48 60] | same tokens, same state
+japanese  bdraft2     32.30 tok/s | 2.00 tok/pass | cycle  62.04 ms | main  51.14, draft  10.52 (of which taps 2.14) ms/pass | accept% [47 47 53 63 84 50 75] | same tokens, same state
+japanese  d0d1        24.39 tok/s | 1.19 tok/pass | cycle  48.66 ms | main  48.43, draft   0.00 (of which taps 0.00) ms/pass | accept% [20 40 65 45 40 100 50] | same tokens, same state
+## verify block 16 rows
+explain exit=0
+bdraft2 backend loaded: +2.798 GiB device memory (driver)
+explain   none        22.37 tok/s | 1.00 tok/pass | main  44.51 ms/pass
+explain   mtp         46.34 tok/s | 4.15 tok/pass | cycle  89.63 ms | one submission per cycle | accept% [84 79 74 74 73 67 59 92 75 67 50 33 0 0 0] | same tokens, same state
+explain   bdraft2     70.89 tok/s | 5.00 tok/pass | cycle  70.54 ms | main  59.95, draft   9.63 (of which taps 2.48) ms/pass | accept% [84 85 84 89 76 83 57 75 73 55 50 33 100 0 0] | same tokens, same state
+explain   d0d1        21.64 tok/s | 1.18 tok/pass | cycle  54.38 ms | main  54.15, draft   0.00 (of which taps 0.00) ms/pass | accept% [18 39 47 62 20 100 100 0 0 0 0 0 0 0 0] | same tokens, same state
+code exit=0
+bdraft2 backend loaded: +2.798 GiB device memory (driver)
+code      none        22.37 tok/s | 1.00 tok/pass | main  44.50 ms/pass
+code      mtp         63.75 tok/s | 5.78 tok/pass | cycle  90.60 ms | one submission per cycle | accept% [87 92 82 88 84 70 80 71 100 71 58 86 67 100 100] | same tokens, same state
+code      bdraft2    114.99 tok/s | 8.21 tok/pass | cycle  71.37 ms | main  59.84, draft   9.94 (of which taps 2.76) ms/pass | accept% [92 93 89 92 93 85 89 87 96 81 76 94 100 80 92] | same tokens, same state
+code      d0d1        28.15 tok/s | 1.55 tok/pass | cycle  54.99 ms | main  54.69, draft   0.00 (of which taps 0.00) ms/pass | accept% [33 45 63 79 100 93 79 27 67 100 50 100 100 100 100] | same tokens, same state
+story exit=0
+bdraft2 backend loaded: +2.798 GiB device memory (driver)
+story     none        22.37 tok/s | 1.00 tok/pass | main  44.51 ms/pass
+story     mtp         27.18 tok/s | 2.41 tok/pass | cycle  88.60 ms | one submission per cycle | accept% [71 56 46 46 28 20 100 100 0 0 0 0 0 0 0] | same tokens, same state
+story     bdraft2     35.30 tok/s | 2.46 tok/pass | cycle  69.74 ms | main  59.97, draft   9.29 (of which taps 2.21) ms/pass | accept% [68 58 55 38 65 45 60 0 0 0 0 0 0 0 0] | same tokens, same state
+story     d0d1        20.29 tok/s | 1.07 tok/pass | cycle  52.77 ms | main  52.56, draft   0.00 (of which taps 0.00) ms/pass | accept% [11 24 33 50 0 0 0 0 0 0 0 0 0 0 0] | same tokens, same state
+proof exit=0
+bdraft2 backend loaded: +2.798 GiB device memory (driver)
+proof     none        22.37 tok/s | 1.00 tok/pass | main  44.52 ms/pass
+proof     mtp         65.67 tok/s | 5.95 tok/pass | cycle  90.65 ms | one submission per cycle | accept% [91 90 87 79 81 85 79 73 84 81 69 67 67 75 33] | same tokens, same state
+proof     bdraft2    113.98 tok/s | 8.12 tok/pass | cycle  71.28 ms | main  59.72, draft  10.02 (of which taps 2.76) ms/pass | accept% [97 89 89 90 93 83 82 93 85 100 86 84 94 87 77] | same tokens, same state
+proof     d0d1        24.97 tok/s | 1.38 tok/pass | cycle  55.26 ms | main  55.00, draft   0.00 (of which taps 0.00) ms/pass | accept% [32 42 52 75 50 33 0 0 0 0 0 0 0 0 0] | same tokens, same state
+japanese exit=0
+bdraft2 backend loaded: +2.798 GiB device memory (driver)
+japanese  none        22.36 tok/s | 1.00 tok/pass | main  44.53 ms/pass
+japanese  mtp         28.07 tok/s | 2.49 tok/pass | cycle  88.62 ms | one submission per cycle | accept% [64 50 62 61 80 45 56 60 33 100 100 100 100 100 100] | same tokens, same state
+japanese  bdraft2     28.69 tok/s | 2.00 tok/pass | cycle  69.83 ms | main  60.00, draft   9.45 (of which taps 2.15) ms/pass | accept% [48 48 51 57 71 58 71 60 33 100 0 0 0 0 0] | same tokens, same state
+japanese  d0d1        22.47 tok/s | 1.19 tok/pass | cycle  52.96 ms | main  52.73, draft   0.00 (of which taps 0.00) ms/pass | accept% [20 38 62 40 50 100 50 100 100 100 100 100 0 0 0] | same tokens, same state

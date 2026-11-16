@@ -1,0 +1,8 @@
+Tap states (residual stream after layer l = hidden_states[l+1]), held-out chat0, 160 tokens, position 0 excluded.
+XeFlash calibrated s4 on the B60 vs the original BF16 weights (FP32 reference).
+tap layer | relative error (all tokens) | per-token rel err median / max | per-token cosine median / min | |h| mean
+        5 | 0.0499 | 0.0388 / 0.1023 | 0.99965 / 0.99876 | 27.0
+       19 | 0.0781 | 0.0721 / 0.1311 | 0.99788 / 0.99375 | 61.3
+       33 | 0.1245 | 0.1096 / 0.3483 | 0.99445 / 0.93742 | 83.4
+       47 | 0.1604 | 0.1393 / 0.4639 | 0.99053 / 0.88835 | 122.9
+       61 | 0.2174 | 0.1934 / 0.6642 | 0.98137 / 0.75873 | 341.6

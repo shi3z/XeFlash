@@ -41,6 +41,7 @@ pub struct Engine {
     ctx: usize,
     pos: usize,
     last_m: usize,
+    capture: bool,
 }
 
 // The raw pointers inside `model` point into buffers owned by the same struct.
@@ -304,7 +305,7 @@ impl Engine {
             rope_sin,
             ws: ws.ptr,
         });
-        let mut e = Engine { dev: dev.clone(), model, _layers: layers, bufs: ld.bufs, states, ws, mtp, sketch: None, allocs, ctx, pos: 0, last_m: 0 };
+        let mut e = Engine { dev: dev.clone(), model, _layers: layers, bufs: ld.bufs, states, ws, mtp, sketch: None, allocs, ctx, pos: 0, last_m: 0, capture: false };
         e.reset()?;
         Ok(e)
     }
@@ -359,7 +360,9 @@ impl Engine {
     /// runs the embedding lookup first, `head` the final norm, lm_head and
     /// argmax partials. With `prof` the pass synchronises per stage.
     pub fn run_layers(&mut self, l0: usize, l1: usize, embed: bool, head: bool, prof: Option<&mut [f64; 7]>) -> Result<()> {
-        let flags = if embed { ffi::XF_FWD_EMBED } else { 0 } | if head { ffi::XF_FWD_HEAD } else { 0 };
+        let flags = if embed { ffi::XF_FWD_EMBED } else { 0 }
+            | if head { ffi::XF_FWD_HEAD } else { 0 }
+            | if self.capture { ffi::XF_FWD_CAPTURE } else { 0 };
         let prof = prof.map_or(std::ptr::null_mut(), |p| p.as_mut_ptr());
         check(unsafe {
             ffi::xf_forward(self.dev.ctx.0, &*self.model, self.last_m as i32, self.pos as i32, l0 as i32, l1 as i32, flags, prof)
@@ -466,6 +469,29 @@ impl Engine {
         }
         eat(&[self.pos as u32]);
         Ok(h)
+    }
+
+    /// Copy the residual stream after layers 5, 19, 33, 47 and 61 of every
+    /// pass (hidden_states[l + 1] in transformers numbering) for an external
+    /// drafter. Off by default.
+    pub fn set_capture(&mut self, on: bool) {
+        self.capture = on;
+    }
+
+    /// The captured states of the last pass, `[5 taps][16 rows][5120]`; rows
+    /// beyond the pass size are stale.
+    pub fn read_taps(&self, out: &mut [f32]) -> Result<()> {
+        if out.len() != 5 * MAX_TOKENS * HIDDEN {
+            return Err(Error::Invalid("tap buffer must hold 5 x 16 x 5120 values".into()));
+        }
+        self.ws.read(self.ws_off(ffi::XF_WS_CAP), out)
+    }
+
+    /// Device address of the tap block (`[5][16][5120]` f32), for a consumer
+    /// that shares this engine's SYCL context. Only meaningful after
+    /// [`Device::wait`] or a read-back, when the pass that wrote it is done.
+    pub fn taps_device_ptr(&self) -> *const f32 {
+        unsafe { self.ws.ptr.cast::<u8>().add(self.ws_off(ffi::XF_WS_CAP)).cast() }
     }
 
     pub fn has_sketch(&self) -> bool {

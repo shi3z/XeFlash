@@ -105,6 +105,8 @@ pub struct xf_sketch {
 }
 
 pub const XF_FWD_IDS_SLOT1: i32 = 4;
+pub const XF_FWD_CAPTURE: i32 = 8;
+pub const XF_WS_CAP: i32 = 7;
 pub const XF_LAYER_GDN: i32 = 0;
 pub const XF_LAYER_ATTN: i32 = 1;
 pub const XF_FWD_EMBED: i32 = 1;

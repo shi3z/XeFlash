@@ -155,8 +155,9 @@ typedef struct {
   void *ws;              /* xf_ws_bytes(ctx) bytes */
 } xf_model;
 
-enum { XF_FWD_EMBED = 1, XF_FWD_HEAD = 2, XF_FWD_IDS_SLOT1 = 4 /* token ids from the verify slot ids[16..] */ };
-enum { XF_WS_IDS = 0, XF_WS_H, XF_WS_XN, XF_WS_LOGITS, XF_WS_AMAX_V, XF_WS_AMAX_I, XF_WS_MTP_H };
+enum { XF_FWD_EMBED = 1, XF_FWD_HEAD = 2, XF_FWD_IDS_SLOT1 = 4 /* token ids from the verify slot ids[16..] */,
+       XF_FWD_CAPTURE = 8 /* copy the residual stream after layers 5/19/33/47/61 to XF_WS_CAP, [5][16][5120] */ };
+enum { XF_WS_IDS = 0, XF_WS_H, XF_WS_XN, XF_WS_LOGITS, XF_WS_AMAX_V, XF_WS_AMAX_I, XF_WS_MTP_H, XF_WS_CAP };
 enum { XF_MAX_TOKENS = 16, XF_PROF_COUNT = 7, XF_AMAX_PER_TOKEN = 97 * 64 };
 
 size_t xf_ws_bytes(int ctx);

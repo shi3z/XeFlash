@@ -1,8 +1,9 @@
 # Performance
 
-Part A is the whole model on the B60 (Milestone 3). Part C, after it, is the
-drafting speed-up that followed and holds the current best numbers. Part B is
-the earlier GEMM-only study.
+Part A is the whole model on the B60 (Milestone 3). Part C is the official-MTP
+drafting speed-up. Part D compares draft sources and holds the current best
+numbers (86.6 tok/s with the bdraft2 backend). Part B is the earlier GEMM-only
+study.
 
 # Part A. Full model
 
@@ -393,6 +394,98 @@ Profile with a wait per stage, ms (`m4_runs.txt`, section D):
   launches, so fusing the small kernels would move little.
 
 Nothing in the trunk was changed in this round.
+
+# Part D. Draft sources compared: official MTP, bdraft2, lookup
+
+Same card, main model (`qwen38-27b-s4-cal.xfm`), prompts and settings as
+Part C; 512 new tokens, greedy. Three draft sources on the same XeFlash main
+model and the same verify block: the official MTP block (device chain, sketch
+head), YASAKANI's bdraft2 through the experimental backend (BDRAFT2.md), and a
+host-only D0/D1-style lookup. Raw outputs: `benchmarks/results/m5/`.
+Every run: same tokens and same committed state as non-speculative decoding.
+
+## D1. Fixed 8-row verify block (7 drafts)
+
+Tokens per second (tokens committed per pass):
+
+| prompt | none | official MTP | bdraft2 | lookup only |
+|---|---|---|---|---|
+| explain | 22.4 | 58.4 (3.90) | 74.6 (4.44) | 23.9 (1.18) |
+| code | 22.4 | 74.7 (5.04) | 104.0 (6.24) | 30.9 (1.53) |
+| story | 22.4 | 36.6 (2.41) | 42.0 (2.47) | 22.1 (1.07) |
+| proof | 22.4 | 76.4 (5.16) | 99.3 (5.95) | 27.7 (1.38) |
+| japanese | 22.4 | 37.6 (2.48) | 34.1 (2.00) | 24.4 (1.19) |
+| mean of the first four | 22.4 | 61.5 | 80.0 | 26.1 |
+
+Time per cycle, ms:
+
+| | main verify | drafter | cycle |
+|---|---|---|---|
+| official MTP, 7 drafts | about 51 | about 14 (not separable: one submission) | 65.9 to 67.5 |
+| bdraft2, taps through host | 51.1 | 9.6 to 10.5, of which 2.1 to 2.6 moving taps | 61.1 to 62.3 |
+| bdraft2, taps device-to-device | 51.1 | 5.75 to 5.79 | 58.8 to 60.0 |
+| lookup only | 48.3 to 49.5 | under 0.01 | 48.5 to 49.8 |
+
+## D2. 16-row block and the adaptive rule (bdraft2)
+
+| prompt | 8 rows | 16 rows (taps through host) | adaptive 8/16 | passes at 16 rows |
+|---|---|---|---|---|
+| explain | 74.6 | 70.9 | 75.2 | 5 of 114 |
+| code | 104.0 | 115.0 | 115.1 | 52 of 66 |
+| story | 42.0 | 35.3 | 42.0 | 0 of 207 |
+| proof | 99.3 | 114.0 | 114.0 | 41 of 69 |
+| japanese | 34.1 | 28.7 | 34.0 | 3 of 257 |
+| **mean of the first four** | 80.0 | 79.0 | **86.6** | |
+| YASAKANI on the B60 (its notes) | | | 86.3 (66.5 / 118.1 / 41.8 / 118.7) | |
+| official MTP, best fixed K (Part C) | | | 61.8 | |
+
+With 16 rows the official MTP is slower than with 8 (46.3 / 63.8 / 27.2 / 65.7
+tok/s): its 15 chained steps cost about 30 ms and late drafts are rarely
+accepted. bdraft2 drafts 15 tokens for the same 5.8 to 6.3 ms as 7.
+
+## D3. Reading
+
+* **bdraft2 is the faster drafter on this main model**: 86.6 against 61.8
+  tok/s on the four benchmark prompts. It accepts more (4.4 to 7.8 tokens per
+  pass against 3.8 to 5.0) and costs less per cycle (6 ms against 11 to 14 ms)
+  because one block yields all drafts.
+* It did not need retraining for XeFlash's INT4 main model: first-draft
+  acceptance is 84 to 97 % on English, code and proofs.
+* On the Japanese prompt it is worse than the official MTP (34 against 38
+  tok/s; first-draft acceptance 47 % against 64 %). One prompt; not
+  investigated.
+* **Against YASAKANI on the same card: 86.6 against 86.3 tok/s, i.e. level.**
+  That is not a win: the YASAKANI figure is from its notes and was not re-run,
+  the difference is far inside run-to-run and prompt variation, and the two
+  engines run different quantisations of the main model. Per prompt XeFlash is
+  ahead on explain (75.2 / 66.5), level on story, slightly behind on code and
+  proof (115 / 118, 114 / 119). YASAKANI's figure includes its D0/D1 sources
+  and their controller, which this comparison does not use.
+* Lookup alone gives 1.07 to 1.53 tokens per pass on these prompts. It is
+  nearly free, so it is the obvious thing to combine with a model drafter, but
+  alone it is not a drafter for fresh text.
+* 145 tok/s is not in reach of this configuration: at 86.6 tok/s a cycle is
+  58 to 68 ms, of which 51 to 58 ms is the main pass.
+
+## D4. Memory
+
+| | GiB (driver) |
+|---|---|
+| XeFlash main + official MTP + sketch, 8192-token cache | 16.33 |
+| + bdraft2 backend (46 matrices, rings, 1.41 GB head, its copy of the embedding) | +2.80 |
+| total with both drafters loaded | 19.13 |
+
+Both fit; with bdraft2 only, the official MTP block and sketch (0.56 GiB)
+would not be needed.
+
+## D5. Recommendation
+
+Use bdraft2 with the adaptive block as the drafter where its files are
+available; keep the official MTP path (self-contained, no external code or
+weights) as the fallback and for Japanese-like text until that gap is
+understood. The backend stays an optional cargo feature: it compiles against
+the YASAKANI source tree, so making it the default is a packaging and
+ownership decision as much as a technical one (BDRAFT2.md, section 6).
 
 # Part B. GEMM study (before the model existed)
 
