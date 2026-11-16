@@ -9,12 +9,17 @@
 //!   to float, which the kernel does anyway.
 //! * `c` (per input column) is multiplied into the activation vector before it
 //!   is quantised for DPAS, so it costs nothing per weight.
-//! * The `+0.5` makes the level grid symmetric (16 levels for 4 bits instead
-//!   of 15 usable ones, 4 instead of 3 for 2 bits). At run time it is one
-//!   scalar per token: `0.5 * sum_j c[j] x[j]`, shared by every row.
+//! * The `+0.5` makes the level grid symmetric. At run time it is one scalar
+//!   per token: `0.5 * sum_j c[j] x[j]`, shared by every row.
 //!
-//! This is data-free (weight-space error only). Activation-aware refinement is
-//! a separate step once calibration statistics exist.
+//! Two objectives:
+//!
+//! * data-free: minimise `|W - W^|^2`;
+//! * activation-aware: minimise `sum_ij a[j] (W - W^)_ij^2` where `a[j]` is
+//!   the mean square of input channel `j` on calibration text. This is the
+//!   expected output error for uncorrelated inputs. The free column scale then
+//!   does what AWQ does with an explicit rescaling: channels that carry large
+//!   activations get a finer effective step.
 
 use rayon::prelude::*;
 use xeflash_core::{Error, Result};
@@ -25,7 +30,7 @@ pub struct QuantSpec {
     pub bits: u32,
     /// Fit a per-column scale in addition to the per-row scale.
     pub col_scale: bool,
-    /// Alternating refinement rounds (>= 1).
+    /// Alternating refinement rounds for the data-free objective (>= 1).
     pub iters: usize,
 }
 
@@ -37,9 +42,12 @@ pub struct Quantized {
     pub q: Vec<i8>,
     pub row_scale: Vec<f32>,
     pub col_scale: Vec<f32>,
-    /// Sum of squared reconstruction errors and of squared weights.
+    /// Sum of squared reconstruction errors and of squared weights (unweighted).
     pub sq_err: f64,
     pub sq_norm: f64,
+    /// Activation-weighted relative error `sqrt(sum a e^2 / sum a w^2)`;
+    /// equals `rel_err()` when no activation statistics were given.
+    pub weighted_rel_err: f64,
 }
 
 impl Quantized {
@@ -47,7 +55,7 @@ impl Quantized {
     pub fn rel_err(&self) -> f64 {
         (self.sq_err / self.sq_norm.max(1e-300)).sqrt()
     }
-    /// Signal-to-quantisation-noise ratio in dB.
+    /// Signal-to-quantisation-noise ratio in dB (unweighted).
     pub fn sqnr_db(&self) -> f64 {
         10.0 * (self.sq_norm.max(1e-300) / self.sq_err.max(1e-300)).log10()
     }
@@ -56,9 +64,9 @@ impl Quantized {
     }
 }
 
-/// Step sizes tried per row, as multiples of the row's RMS. Centred on the
-/// MSE-optimal uniform step for a Gaussian source; real rows are heavier
-/// tailed, so the grid extends further up than down.
+/// Step sizes tried per row, as multiples of the row's RMS in the scaled
+/// domain. Centred on the MSE-optimal uniform step for a Gaussian source and
+/// extended upwards for heavy tails and for weighted objectives.
 fn step_grid(bits: u32) -> Vec<f32> {
     let opt = match bits {
         2 => 0.996,
@@ -66,11 +74,12 @@ fn step_grid(bits: u32) -> Vec<f32> {
         4 => 0.335,
         _ => 0.031,
     };
-    (0..14).map(|k| opt * (0.70 + 0.08 * k as f32)).collect()
+    (0..18).map(|k| opt * (0.70 + 0.08 * k as f32)).collect()
 }
 
-/// Quantise one row given column scales. Returns (row scale, squared error).
-fn quantize_row(w: &[f32], c: &[f32], lo: f32, hi: f32, grid: &[f32], q: &mut [i8]) -> (f32, f64) {
+/// Quantise one row given column scales `c` and error weights `a`.
+/// Returns (row scale, weighted squared error).
+fn quantize_row(w: &[f32], c: &[f32], a: &[f32], lo: f32, hi: f32, grid: &[f32], q: &mut [i8]) -> (f32, f64) {
     let n = w.len();
     let mut v = vec![0f32; n];
     let mut ss = 0f64;
@@ -81,20 +90,20 @@ fn quantize_row(w: &[f32], c: &[f32], lo: f32, hi: f32, grid: &[f32], q: &mut [i
     let rms = (ss / n as f64).sqrt() as f32;
     if rms == 0.0 {
         q.fill(0);
-        // All-zero row: scale 0 reproduces it exactly.
-        return (0.0, 0.0);
+        return (0.0, 0.0); // all-zero row: scale 0 reproduces it exactly
     }
     let mut best = (f64::INFINITY, 0f32, 0f32); // (error, step, fitted scale)
     for &t in grid {
         let inv = 1.0 / (rms * t);
-        // Weighted least squares for the scale: minimise sum c^2 (v - r l)^2.
+        // Weighted least squares for the scale: minimise sum a (w - r l c)^2.
         let (mut num, mut den, mut sww) = (0f64, 0f64, 0f64);
         for j in 0..n {
             let l = (v[j] * inv).floor().clamp(lo, hi) + 0.5;
-            let cl = c[j] * l;
-            num += (w[j] as f64) * (cl as f64);
-            den += (cl as f64) * (cl as f64);
-            sww += (w[j] as f64) * (w[j] as f64);
+            let cl = (c[j] * l) as f64;
+            let aj = a[j] as f64;
+            num += aj * (w[j] as f64) * cl;
+            den += aj * cl * cl;
+            sww += aj * (w[j] as f64) * (w[j] as f64);
         }
         let err = sww - num * num / den;
         if err < best.0 {
@@ -108,96 +117,20 @@ fn quantize_row(w: &[f32], c: &[f32], lo: f32, hi: f32, grid: &[f32], q: &mut [i
     (best.2, best.0.max(0.0))
 }
 
-/// Quantise a row-major `rows x cols` matrix.
-pub fn quantize(w: &[f32], rows: usize, cols: usize, spec: QuantSpec) -> Result<Quantized> {
-    if !matches!(spec.bits, 2 | 3 | 4 | 8) || spec.iters == 0 {
-        return Err(Error::Invalid("bits must be 2, 3, 4 or 8 and iters >= 1".into()));
-    }
-    if w.len() != rows * cols || rows == 0 || cols == 0 {
-        return Err(Error::Invalid("matrix size does not match its shape".into()));
-    }
-    if w.iter().any(|v| !v.is_finite()) {
-        return Err(Error::Invalid("matrix contains non-finite values".into()));
-    }
-    let lo = -((1i32 << (spec.bits - 1)) as f32);
-    let hi = ((1i32 << (spec.bits - 1)) - 1) as f32;
-    let grid = step_grid(spec.bits);
-
-    // Column scales start at the column RMS, normalised to geometric mean 1.
-    let mut c = vec![1f32; cols];
-    if spec.col_scale {
-        let ss = w
-            .par_chunks(cols)
-            .fold(|| vec![0f64; cols], |mut a, row| {
-                for (s, v) in a.iter_mut().zip(row) {
-                    *s += (*v as f64) * (*v as f64);
-                }
-                a
-            })
-            .reduce(|| vec![0f64; cols], |mut a, b| {
-                for (x, y) in a.iter_mut().zip(&b) {
-                    *x += y;
-                }
-                a
-            });
-        for (cj, s) in c.iter_mut().zip(&ss) {
-            *cj = if *s > 0.0 { (s / rows as f64).sqrt() as f32 } else { 1.0 };
-        }
-        normalize(&mut c);
-    }
-
-    let mut q = vec![0i8; rows * cols];
-    let mut r = vec![0f32; rows];
-    let mut sq_err = 0f64;
-    let rounds = if spec.col_scale { spec.iters } else { 1 };
-    for round in 0..rounds {
-        let errs: Vec<(f32, f64)> = w
-            .par_chunks(cols)
-            .zip(q.par_chunks_mut(cols))
-            .map(|(wr, qr)| quantize_row(wr, &c, lo, hi, &grid, qr))
-            .collect();
-        sq_err = errs.iter().map(|e| e.1).sum();
-        for (ri, e) in r.iter_mut().zip(&errs) {
-            *ri = e.0;
-        }
-        if round + 1 == rounds {
-            break;
-        }
-        // Least-squares column scales for the current codes and row scales:
-        // c[j] = sum_i w[i][j] p[i][j] / sum_i p[i][j]^2,  p = r[i] (q + 0.5).
-        let (num, den) = w
-            .par_chunks(cols)
-            .zip(q.par_chunks(cols))
-            .zip(r.par_iter())
-            .fold(
-                || (vec![0f64; cols], vec![0f64; cols]),
-                |(mut num, mut den), ((wr, qr), ri)| {
-                    for j in 0..cols {
-                        let p = (*ri * (qr[j] as f32 + 0.5)) as f64;
-                        num[j] += wr[j] as f64 * p;
-                        den[j] += p * p;
-                    }
-                    (num, den)
-                },
-            )
-            .reduce(
-                || (vec![0f64; cols], vec![0f64; cols]),
-                |(mut n1, mut d1), (n2, d2)| {
-                    for j in 0..cols {
-                        n1[j] += n2[j];
-                        d1[j] += d2[j];
-                    }
-                    (n1, d1)
-                },
-            );
-        for j in 0..cols {
-            if den[j] > 0.0 && num[j] > 0.0 {
-                c[j] = (num[j] / den[j]) as f32;
+fn col_sq_sums(w: &[f32], cols: usize) -> Vec<f64> {
+    w.par_chunks(cols)
+        .fold(|| vec![0f64; cols], |mut acc, row| {
+            for (s, v) in acc.iter_mut().zip(row) {
+                *s += (*v as f64) * (*v as f64);
             }
-        }
-    }
-    let sq_norm: f64 = w.par_iter().map(|v| (*v as f64) * (*v as f64)).sum();
-    Ok(Quantized { rows, cols, bits: spec.bits, q, row_scale: r, col_scale: c, sq_err, sq_norm })
+            acc
+        })
+        .reduce(|| vec![0f64; cols], |mut x, y| {
+            for (p, q) in x.iter_mut().zip(&y) {
+                *p += q;
+            }
+            x
+        })
 }
 
 /// Scale `c` so its geometric mean is 1 (keeps row scales in a sane range).
@@ -207,6 +140,143 @@ fn normalize(c: &mut [f32]) {
     for v in c.iter_mut() {
         *v *= k;
     }
+}
+
+/// Quantise a row-major `rows x cols` matrix. `act` is the optional mean
+/// square of each input channel on calibration data.
+pub fn quantize(w: &[f32], rows: usize, cols: usize, spec: QuantSpec, act: Option<&[f32]>) -> Result<Quantized> {
+    if !matches!(spec.bits, 2 | 3 | 4 | 8) || spec.iters == 0 {
+        return Err(Error::Invalid("bits must be 2, 3, 4 or 8 and iters >= 1".into()));
+    }
+    if w.len() != rows * cols || rows == 0 || cols == 0 {
+        return Err(Error::Invalid("matrix size does not match its shape".into()));
+    }
+    if w.iter().any(|v| !v.is_finite()) {
+        return Err(Error::Invalid("matrix contains non-finite values".into()));
+    }
+    if let Some(a) = act {
+        if a.len() != cols || a.iter().any(|v| !v.is_finite() || *v < 0.0) {
+            return Err(Error::Invalid("activation statistics do not match the matrix".into()));
+        }
+    }
+    let lo = -((1i32 << (spec.bits - 1)) as f32);
+    let hi = ((1i32 << (spec.bits - 1)) - 1) as f32;
+    let grid = step_grid(spec.bits);
+    let col_ss = col_sq_sums(w, cols);
+    let sigma: Vec<f32> = col_ss.iter().map(|s| if *s > 0.0 { (s / rows as f64).sqrt() as f32 } else { 1.0 }).collect();
+
+    let ones = vec![1f32; cols];
+    let mut q = vec![0i8; rows * cols];
+    let mut r = vec![0f32; rows];
+    let mut c = vec![1f32; cols];
+    let run = |c: &[f32], a: &[f32], q: &mut [i8], stride: usize| -> (Vec<f32>, f64) {
+        // `stride` > 1 evaluates a subsample of rows (candidate search).
+        let res: Vec<(f32, f64)> = w
+            .par_chunks(cols)
+            .zip(q.par_chunks_mut(cols))
+            .enumerate()
+            .filter(|(i, _)| i % stride == 0)
+            .map(|(_, (wr, qr))| quantize_row(wr, c, a, lo, hi, &grid, qr))
+            .collect();
+        (res.iter().map(|e| e.0).collect(), res.iter().map(|e| e.1).sum())
+    };
+
+    let weights: Vec<f32>;
+    if let Some(a) = act {
+        // Floor the statistics so that channels unseen in calibration are not ignored.
+        let mean = a.iter().map(|v| *v as f64).sum::<f64>() / cols as f64;
+        let floor = (0.01 * mean).max(1e-30) as f32;
+        weights = a.iter().map(|v| v + floor).collect();
+        // Candidate column scales c = sigma^beta * a^-alpha. (1, 0) is the
+        // data-free start; (1/2, 1/4) is the optimum of the high-resolution
+        // error model; the rest brackets it.
+        let cands = [(1.0f32, 0.0f32), (0.5, 0.125), (0.5, 0.25), (0.5, 0.375), (0.75, 0.25), (0.25, 0.25), (0.25, 0.375), (0.0, 0.5)];
+        let stride = if rows >= 64 { 8 } else { 1 };
+        let mut best = (f64::INFINITY, Vec::new());
+        for (beta, alpha) in cands {
+            let mut cc: Vec<f32> = sigma.iter().zip(&weights).map(|(s, a)| s.powf(beta) * a.powf(-alpha)).collect();
+            normalize(&mut cc);
+            let (_, err) = run(&cc, &weights, &mut q, stride);
+            if err < best.0 {
+                best = (err, cc);
+            }
+        }
+        c = best.1;
+        r = run(&c, &weights, &mut q, 1).0;
+    } else {
+        weights = ones;
+        if spec.col_scale {
+            c = sigma;
+            normalize(&mut c);
+        }
+        let rounds = if spec.col_scale { spec.iters } else { 1 };
+        for round in 0..rounds {
+            r = run(&c, &weights, &mut q, 1).0;
+            if round + 1 == rounds {
+                break;
+            }
+            // Least-squares column scales for the current codes and row scales.
+            let (num, den) = w
+                .par_chunks(cols)
+                .zip(q.par_chunks(cols))
+                .zip(r.par_iter())
+                .fold(
+                    || (vec![0f64; cols], vec![0f64; cols]),
+                    |(mut num, mut den), ((wr, qr), ri)| {
+                        for j in 0..cols {
+                            let p = (*ri * (qr[j] as f32 + 0.5)) as f64;
+                            num[j] += wr[j] as f64 * p;
+                            den[j] += p * p;
+                        }
+                        (num, den)
+                    },
+                )
+                .reduce(
+                    || (vec![0f64; cols], vec![0f64; cols]),
+                    |(mut n1, mut d1), (n2, d2)| {
+                        for j in 0..cols {
+                            n1[j] += n2[j];
+                            d1[j] += d2[j];
+                        }
+                        (n1, d1)
+                    },
+                );
+            for j in 0..cols {
+                if den[j] > 0.0 && num[j] > 0.0 {
+                    c[j] = (num[j] / den[j]) as f32;
+                }
+            }
+        }
+    }
+
+    // Final error figures, weighted and unweighted, from the stored result.
+    let (sq_err, w_err, w_norm) = w
+        .par_chunks(cols)
+        .zip(q.par_chunks(cols))
+        .zip(r.par_iter())
+        .map(|((wr, qr), ri)| {
+            let (mut e, mut we, mut wn) = (0f64, 0f64, 0f64);
+            for j in 0..cols {
+                let d = (wr[j] - *ri * (qr[j] as f32 + 0.5) * c[j]) as f64;
+                e += d * d;
+                we += weights[j] as f64 * d * d;
+                wn += weights[j] as f64 * (wr[j] as f64) * (wr[j] as f64);
+            }
+            (e, we, wn)
+        })
+        .reduce(|| (0.0, 0.0, 0.0), |x, y| (x.0 + y.0, x.1 + y.1, x.2 + y.2));
+    let sq_norm: f64 = col_ss.iter().sum();
+    Ok(Quantized {
+        rows,
+        cols,
+        bits: spec.bits,
+        q,
+        row_scale: r,
+        col_scale: c,
+        sq_err,
+        sq_norm,
+        weighted_rel_err: (w_err / w_norm.max(1e-300)).sqrt(),
+    })
 }
 
 #[cfg(test)]
@@ -225,7 +295,7 @@ mod tests {
         let w: Vec<f32> = (0..rows * cols).map(|_| gaussian(&mut rng)).collect();
         // Theory for an optimal uniform quantiser on a Gaussian: 9.3 / 14.3 / 19.4 dB.
         for (bits, want) in [(2, 9.3), (3, 14.3), (4, 19.4)] {
-            let z = quantize(&w, rows, cols, QuantSpec { bits, col_scale: false, iters: 1 }).unwrap();
+            let z = quantize(&w, rows, cols, QuantSpec { bits, col_scale: false, iters: 1 }, None).unwrap();
             assert!((z.sqnr_db() - want).abs() < 0.5, "{bits} bits: {} dB", z.sqnr_db());
         }
     }
@@ -236,7 +306,7 @@ mod tests {
         let mut rng = Rng::new(9);
         let w: Vec<f32> =
             (0..rows * cols).map(|i| gaussian(&mut rng) * (1.0 + (i % cols) as f32 / 64.0)).collect();
-        let z = quantize(&w, rows, cols, QuantSpec { bits: 4, col_scale: true, iters: 3 }).unwrap();
+        let z = quantize(&w, rows, cols, QuantSpec { bits: 4, col_scale: true, iters: 3 }, None).unwrap();
         let mut err = 0f64;
         for i in 0..rows {
             for j in 0..cols {
@@ -245,8 +315,30 @@ mod tests {
             }
         }
         assert!((err - z.sq_err).abs() <= 1e-3 * err.max(1e-12), "{err} vs {}", z.sq_err);
-        // Columns have very different magnitudes here, so column scales must help.
-        let plain = quantize(&w, rows, cols, QuantSpec { bits: 4, col_scale: false, iters: 1 }).unwrap();
+        let plain = quantize(&w, rows, cols, QuantSpec { bits: 4, col_scale: false, iters: 1 }, None).unwrap();
         assert!(z.sq_err < plain.sq_err);
+    }
+
+    #[test]
+    fn activation_weights_lower_the_weighted_error() {
+        let (rows, cols) = (128, 512);
+        let mut rng = Rng::new(21);
+        let w: Vec<f32> = (0..rows * cols).map(|_| gaussian(&mut rng)).collect();
+        // A few channels carry almost all of the input energy.
+        let act: Vec<f32> = (0..cols).map(|j| if j % 64 == 0 { 400.0 } else { 1.0 }).collect();
+        let spec = QuantSpec { bits: 4, col_scale: true, iters: 3 };
+        let aware = quantize(&w, rows, cols, spec, Some(&act)).unwrap();
+        let blind = quantize(&w, rows, cols, spec, None).unwrap();
+        let weighted = |z: &Quantized| {
+            let mut e = 0f64;
+            for i in 0..rows {
+                for j in 0..cols {
+                    let d = (w[i * cols + j] - z.reconstruct(i, j)) as f64;
+                    e += act[j] as f64 * d * d;
+                }
+            }
+            e
+        };
+        assert!(weighted(&aware) < 0.7 * weighted(&blind), "{} vs {}", weighted(&aware), weighted(&blind));
     }
 }

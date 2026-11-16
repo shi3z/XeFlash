@@ -166,6 +166,17 @@ size_t xf_ws_offset(int which, int ctx);
  * synchronises after every stage and adds milliseconds per category:
  * norm, quant, gemm, gdn, attn, mlp, head. */
 int xf_forward(xf_ctx *ctx, const xf_model *md, int m, int pos0, int l0, int l1, int flags, double *prof);
+/* The official MTP block: fc over [norm(embedding), norm(hidden)], one
+ * full-attention layer with its own KV cache, mtp.norm, shared lm_head. */
+typedef struct {
+  xf_layer layer;      /* kind XF_LAYER_ATTN; state = its own KV cache block */
+  const float *fc;     /* f32 [5120][10240], embedding half first */
+  const float *gain_e; /* 1 + pre_fc_norm_embedding */
+  const float *gain_h; /* 1 + pre_fc_norm_hidden */
+  const float *norm;   /* 1 + mtp.norm */
+} xf_mtp;
+int xf_mtp_step(xf_ctx *ctx, const xf_model *md, const xf_mtp *mtp, int m, int pos0, int src_row, double *prof);
+
 /* Make the first n tokens of the last pass part of the recurrent state. */
 int xf_commit(xf_ctx *ctx, const xf_model *md, int n);
 /* Queued device-to-device copy / zero fill. */

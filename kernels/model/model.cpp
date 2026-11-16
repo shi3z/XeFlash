@@ -206,13 +206,54 @@ void k_norm_apply(Q &q, const float *x, const float *inv, const float *gain, flo
   });
 }
 
+// Fused residual add + RMSNorm. One work-group of 40 threads per token: each
+// thread owns 128 columns, publishes its partial sum of squares through SLM,
+// and after one barrier every thread knows the token's norm.
+//   h += y (if y)   ;   xn = h * rsqrt(mean(h^2) + eps) * gain   ;   pmax per 64 columns
+void k_addnorm(Q &q, float *h, const float *y, const float *gain, float *xn, float *pmax, int m) {
+  constexpr int LT = D / 128; // 40 threads
+  q.parallel_for(sycl::nd_range<1>(size_t(m) * LT, LT), [=](sycl::nd_item<1> it) SYCL_ESIMD_KERNEL {
+    es::slm_init<256>();
+    const size_t mi = it.get_group(0), t = it.get_local_id(0);
+    simd<float, 64> a[2];
+#pragma unroll
+    for (int i = 0; i < 2; i++) {
+      a[i].copy_from(h + mi * D + t * 128 + i * 64);
+      if (y) {
+        simd<float, 64> b;
+        b.copy_from(y + mi * D + t * 128 + i * 64);
+        a[i] += b;
+        a[i].copy_to(h + mi * D + t * 128 + i * 64);
+      }
+    }
+    es::slm_scalar_store<float>(uint32_t(t * 4), hsum<64>(a[0] * a[0] + a[1] * a[1]));
+    es::barrier();
+    simd<float, 64> part = es::slm_block_load<float, 64>(0);
+    part.merge(simd<float, 64>(0.0f), simd<int32_t, 64>(0, 1) >= LT);
+    const float inv = srsqrt(hsum<64>(part) * (1.0f / D) + EPS);
+#pragma unroll
+    for (int i = 0; i < 2; i++) {
+      simd<float, 64> g;
+      g.copy_from(gain + t * 128 + i * 64);
+      simd<float, 64> v = a[i] * inv * g;
+      v.copy_to(xn + mi * D + t * 128 + i * 64);
+      storef(pmax + mi * PS + t * 2 + i, hmax<64>(es::abs(v)));
+    }
+  });
+}
+
 // Activation quantisation for one GEMM: x' = v * col_scale, 16-bit, two byte
 // planes in DPAS tile order. step = max|v| * max(col_scale) / 32767.
 void k_quant(Q &q, const float *v, int n, const float *cs, float cmax, const float *pmax, int m, int mpad,
-             int8_t *xhi, uint8_t *xlo, float *psum, float *ts) {
+             int8_t *xhi, uint8_t *xlo, float *ts, float *toff) {
   const int nc = n / 64;
-  q.parallel_for(sycl::range<1>(size_t(m) * nc), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
-    const size_t mi = id[0] / nc, c = id[0] % nc;
+  // One work-group per token, at most 64 threads, each owning `cpt` chunks of 64 columns.
+  int cpt = 1;
+  while (nc / cpt > 64 || nc % cpt != 0) cpt *= 2;
+  const int lt = nc / cpt;
+  q.parallel_for(sycl::nd_range<1>(size_t(m) * lt, lt), [=](sycl::nd_item<1> it) SYCL_ESIMD_KERNEL {
+    es::slm_init<256>();
+    const size_t mi = it.get_group(0), t = it.get_local_id(0);
     const simd<int32_t, 64> iota(0, 1);
     simd<float, 64> mx(0.0f);
     for (int k = 0; k * 64 < nc; k++) {
@@ -224,39 +265,36 @@ void k_quant(Q &q, const float *v, int n, const float *cs, float cmax, const flo
     float step = hmax<64>(mx) * cmax * (1.0f / 32767.0f);
     if (!(step > 0.0f)) step = 1.0f;
     const float istep = 1.0f / step;
-    simd<float, 64> x, sc;
-    x.copy_from(v + mi * n + c * 64);
-    sc.copy_from(cs + c * 64);
-    simd<float, 64> r = es::rnde<float>(x * sc * istep);
-    r = es::max(es::min(r, simd<float, 64>(32767.0f)), simd<float, 64>(-32767.0f));
-    simd<int32_t, 64> xi = es::convert<int32_t>(r);
-    simd<int8_t, 64> hb = es::convert<int8_t>(xi >> 8);
-    simd<uint8_t, 64> lb = es::convert<uint8_t>(xi & 0xFF);
+    simd<float, 64> sum(0.0f);
+    for (int k = 0; k < cpt; k++) {
+      const size_t c = t * cpt + k;
+      simd<float, 64> x, sc;
+      x.copy_from(v + mi * n + c * 64);
+      sc.copy_from(cs + c * 64);
+      simd<float, 64> r = es::rnde<float>(x * sc * istep);
+      r = es::max(es::min(r, simd<float, 64>(32767.0f)), simd<float, 64>(-32767.0f));
+      sum += r;
+      simd<int32_t, 64> xi = es::convert<int32_t>(r);
+      simd<int8_t, 64> hb = es::convert<int8_t>(xi >> 8);
+      simd<uint8_t, 64> lb = es::convert<uint8_t>(xi & 0xFF);
 #pragma unroll
-    for (int half = 0; half < 2; half++) {
-      simd<int8_t, 32> a = hb.template select<32, 1>(32 * half);
-      simd<uint8_t, 32> b = lb.template select<32, 1>(32 * half);
-      a.copy_to(xhi + ((2 * c + half) * mpad + mi) * 32);
-      b.copy_to(xlo + ((2 * c + half) * mpad + mi) * 32);
+      for (int half = 0; half < 2; half++) {
+        simd<int8_t, 32> a = hb.template select<32, 1>(32 * half);
+        simd<uint8_t, 32> b = lb.template select<32, 1>(32 * half);
+        a.copy_to(xhi + ((2 * c + half) * mpad + mi) * 32);
+        b.copy_to(xlo + ((2 * c + half) * mpad + mi) * 32);
+      }
     }
-    storef(psum + mi * PS + c, hsum<64>(r));
-    if (c == 0) storef(ts + mi, step);
-  });
-}
-
-// toff[m] = 0.5 * sum of quantised activations (the +0.5 of the level grid).
-void k_tsum(Q &q, const float *psum, int nc, float *toff, int m) {
-  q.parallel_for(sycl::range<1>(m), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
-    const size_t mi = id[0];
-    const simd<int32_t, 64> iota(0, 1);
-    simd<float, 64> acc(0.0f);
-    for (int k = 0; k * 64 < nc; k++) {
-      simd<float, 64> p;
-      p.copy_from(psum + mi * PS + k * 64);
-      p.merge(simd<float, 64>(0.0f), (iota + k * 64) >= nc);
-      acc += p;
+    // Per-thread sums are exact integers below 2^24; publish, then thread 0
+    // totals them: toff = 0.5 * sum of quantised activations.
+    es::slm_scalar_store<float>(uint32_t(t * 4), hsum<64>(sum));
+    es::barrier();
+    if (t == 0) {
+      simd<float, 64> part = es::slm_block_load<float, 64>(0);
+      part.merge(simd<float, 64>(0.0f), iota >= lt);
+      storef(toff + mi, 0.5f * hsum<64>(part));
+      storef(ts + mi, step);
     }
-    storef(toff + mi, 0.5f * hsum<64>(acc));
   });
 }
 
@@ -274,6 +312,41 @@ void k_gemv_f32(Q &q, const float *w, const float *x, float *y, int rows, int m)
     }
     // a: rows 0..47 -> 0..47 ; b: rows 48..95 -> 64..111
     storef(y + mi * 128 + (r < 48 ? r : r + 16), hsum<64>(acc));
+  });
+}
+
+// y[m][r] = dot(W[r], x[m]) in FP32 for a dense row-major matrix (mtp.fc).
+void k_gemv_dense(Q &q, const float *w, const float *x, float *y, int rows, int cols, int m) {
+  q.parallel_for(sycl::range<1>(size_t(m) * rows), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const size_t mi = id[0] / rows, r = id[0] % rows;
+    simd<float, 64> acc(0.0f);
+    for (int c = 0; c < cols / 64; c++) {
+      simd<float, 64> a, b;
+      a.copy_from(w + r * cols + c * 64);
+      b.copy_from(x + mi * cols + c * 64);
+      acc += a * b;
+    }
+    storef(y + mi * rows + r, hsum<64>(acc));
+  });
+}
+
+// MTP input: cat[m] = [ norm_e(embedding) , norm_h(hidden) ], both zero-centred
+// RMSNorms (gains hold 1 + w). hid == nullptr means a zero hidden state.
+void k_mtp_cat(Q &q, const float *emb, const float *inv_e, const float *ge, const float *hid, const float *inv_h,
+               const float *gh, float *cat, int m) {
+  q.parallel_for(sycl::range<1>(size_t(m) * (2 * D / 64)), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const size_t mi = id[0] / (2 * D / 64), c = id[0] % (2 * D / 64);
+    simd<float, 64> v(0.0f), g;
+    if (c < D / 64) {
+      v.copy_from(emb + mi * D + c * 64);
+      g.copy_from(ge + c * 64);
+      v = v * loadf(inv_e + mi) * g;
+    } else if (hid) {
+      v.copy_from(hid + mi * D + (c - D / 64) * 64);
+      g.copy_from(gh + (c - D / 64) * 64);
+      v = v * loadf(inv_h + mi) * g;
+    }
+    v.copy_to(cat + mi * 2 * D + c * 64);
   });
 }
 
@@ -593,12 +666,12 @@ struct Pass {
   WS ws;
   int m, mpad, tpt;
   Timer tm;
+  bool pending = false; // ws.y still has to be added to ws.h
 
   // y[m][rows] = mat (v[m][cols]) ; pmax must describe v.
   int gemm(const xf_mat &mat, const float *v, float *y) {
     Q &q = ctx->q;
-    k_quant(q, v, mat.cols, mat.cs, mat.cmax, ws.pmax, m, mpad, ws.xhi, ws.xlo, ws.psum, ws.ts);
-    k_tsum(q, ws.psum, mat.cols / 64, ws.toff, m);
+    k_quant(q, v, mat.cols, mat.cs, mat.cmax, ws.pmax, m, mpad, ws.xhi, ws.xlo, ws.ts, ws.toff);
     tm.tick(P_QUANT);
     xf_gemm_desc d{};
     d.wfmt = mat.fmt;
@@ -621,29 +694,33 @@ struct Pass {
     return st;
   }
 
-  void norm(const float *x, const float *gain) {
-    k_rms(ctx->q, x, ws.inv, m);
-    k_norm_apply(ctx->q, x, ws.inv, gain, ws.xn, ws.pmax, m);
+  // RMSNorm of the residual stream; folds in the pending residual add.
+  void norm(const float *gain) {
+    k_addnorm(ctx->q, ws.h, pending ? ws.y : nullptr, gain, ws.xn, ws.pmax, m);
+    pending = false;
     tm.tick(P_NORM);
+  }
+  void flush() {
+    if (pending) k_add(ctx->q, ws.h, ws.y, m);
+    pending = false;
   }
 
   int mlp(const xf_layer &L, int gi) {
     Q &q = ctx->q;
-    norm(ws.h, L.ln2);
+    norm(L.ln2);
     if (int st = gemm(L.m[gi], ws.xn, ws.g)) return st;
     if (int st = gemm(L.m[gi + 1], ws.xn, ws.u)) return st;
     k_mlp_act(q, ws.g, ws.u, ws.pmax, m);
     tm.tick(P_MLP);
     if (int st = gemm(L.m[gi + 2], ws.g, ws.y)) return st;
-    k_add(q, ws.h, ws.y, m);
-    tm.tick(P_MLP);
+    pending = true;
     return XF_OK;
   }
 
   int gdn(const xf_layer &L) {
     Q &q = ctx->q;
     GdnState s = carve_gdn(L.state);
-    norm(ws.h, L.ln1);
+    norm(L.ln1);
     if (int st = gemm(L.m[0], ws.xn, s.raw)) return st;
     if (int st = gemm(L.m[1], ws.xn, ws.yz)) return st;
     k_gemv_f32(q, L.aux[0], ws.xn, ws.yab, 96, m);
@@ -654,8 +731,7 @@ struct Pass {
     k_gdn_post(q, ws.gout, ws.yz, L.aux[4], ws.go, ws.pmax, m);
     tm.tick(P_GDN);
     if (int st = gemm(L.m[2], ws.go, ws.y)) return st;
-    k_add(q, ws.h, ws.y, m);
-    tm.tick(P_GDN);
+    pending = true;
     return mlp(L, 3);
   }
 
@@ -663,7 +739,7 @@ struct Pass {
     Q &q = ctx->q;
     AttnState s = carve_attn(L.state, md->ctx);
     const size_t nbs = size_t(md->ctx) / 64 + 1;
-    norm(ws.h, L.ln1);
+    norm(L.ln1);
     if (int st = gemm(L.m[0], ws.xn, ws.yq)) return st;
     if (int st = gemm(L.m[1], ws.xn, ws.yk)) return st;
     if (int st = gemm(L.m[2], ws.xn, ws.yv)) return st;
@@ -673,8 +749,7 @@ struct Pass {
     k_attn_comb(q, ws.pm, ws.pd, ws.pv, ws.yq, ws.go, ws.pmax, m, pos0, nbs);
     tm.tick(P_ATTN);
     if (int st = gemm(L.m[3], ws.go, ws.y)) return st;
-    k_add(q, ws.h, ws.y, m);
-    tm.tick(P_ATTN);
+    pending = true;
     return mlp(L, 4);
   }
 };
@@ -724,11 +799,42 @@ int xf_forward(xf_ctx *ctx, const xf_model *md, int m, int pos0, int l0, int l1,
       if (st != XF_OK) return st;
     }
     if (flags & XF_FWD_HEAD) {
-      p.norm(p.ws.h, md->fnorm);
+      p.norm(md->fnorm);
       if (int st = p.gemm(md->head, p.ws.xn, p.ws.logits)) return st;
       k_argmax(q, p.ws.logits, p.ws.amv, p.ws.ami, m);
       p.tm.tick(P_HEAD);
     }
+    p.flush();
+    return XF_OK;
+  });
+}
+
+// One MTP pass over m rows: row i pairs hidden state `src_row + i` of the last
+// pass (the final-norm output still in the workspace; src_row < 0 = zeros)
+// with the token id in the workspace, at MTP position pos0 + i. Leaves the
+// mtp.norm output in XF_WS_XN and logits / argmax partials like a trunk pass.
+int xf_mtp_step(xf_ctx *ctx, const xf_model *md, const xf_mtp *mtp, int m, int pos0, int src_row, double *prof) {
+  if (!ctx || !md || !mtp || m < 1 || m > MAXM || pos0 < 0 || pos0 + m > md->ctx || src_row + m > MAXM) {
+    xf_set_error("xf_mtp_step: invalid arguments");
+    return XF_ERR_INVALID;
+  }
+  return xf_guard("xf_mtp_step", [&]() -> int {
+    const int tpt = m == 1 ? 1 : m <= 8 ? 8 : 16;
+    Pass p{ctx, md, carve_ws(md->ws, md->ctx), m, tpt, tpt, Timer(ctx->q, prof)};
+    Q &q = ctx->q;
+    WS &w = p.ws;
+    const float *hid = src_row < 0 ? nullptr : w.xn + size_t(src_row) * D;
+    k_embed(q, md->embed, w.ids, w.y, m);
+    k_rms(q, w.y, w.inv, m);
+    if (hid) k_rms(q, hid, w.toff, m);
+    k_mtp_cat(q, w.y, w.inv, mtp->gain_e, hid, w.toff, mtp->gain_h, w.me, m);
+    k_gemv_dense(q, mtp->fc, w.me, w.h, D, 2 * D, m);
+    p.tm.tick(P_NORM);
+    if (int st = p.attn(mtp->layer, pos0)) return st;
+    p.norm(mtp->norm);
+    if (int st = p.gemm(md->head, w.xn, w.logits)) return st;
+    k_argmax(q, w.logits, w.amv, w.ami, m);
+    p.tm.tick(P_HEAD);
     return XF_OK;
   });
 }

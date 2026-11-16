@@ -2,7 +2,7 @@
 //!
 //!   xf-run mem  <model.xfm> [--ctx N]
 //!   xf-run dump <model.xfm> <ids.json> <out_dir> [--chunk 1|8|16] [--ctx N]
-//!   xf-run gen  <model.xfm> <ids.json> <n_new> [--ctx N] [--prefill-chunk 16] [--out ids.json]
+//!   xf-run gen  <model.xfm> <ids.json> <n_new> [--ctx N] [--prefill-chunk 16] [--mtp K] [--profile] [--out ids.json]
 //!
 //! `ids.json` is a JSON array of token ids. Run through scripts/b60run.
 
@@ -122,41 +122,104 @@ fn generate(dev: &Device, args: &[String]) -> Result<()> {
     let prompt = read_ids(&args[2])?;
     let n_new: usize = args[3].parse().map_err(|_| Error::Invalid("bad token count".into()))?;
     let pchunk = opt_usize(args, "--prefill-chunk", 16)?;
+    let k = opt_usize(args, "--mtp", 0)?; // draft tokens per cycle; 0 = no speculation
+    if k > 15 {
+        return Err(Error::Invalid("--mtp must be at most 15 (a pass holds 16 tokens)".into()));
+    }
     let mut e = load(dev, &args[1], opt_usize(args, "--ctx", 8192)?)?;
+    if k > 0 && !e.has_mtp() {
+        return Err(Error::Invalid("this container has no usable MTP block".into()));
+    }
 
     // Warm-up: compile every kernel variant, then start from a clean state.
     for m in [1usize, 2, 16] {
         e.forward(&prompt[..m.min(prompt.len())], None)?;
         e.commit(0)?;
+        if k > 0 {
+            e.mtp_pass(&prompt[..m.min(prompt.len())], 0, Some(0), None)?;
+        }
     }
     e.reset()?;
 
+    // ---- prefill ----
     let t0 = Instant::now();
     let mut next = 0u32;
-    for c in prompt.chunks(pchunk) {
+    let mut d1 = 0u32; // MTP draft of the token after `next`
+    let mut last_row = 0usize;
+    if k > 0 {
+        e.mtp_pass(&prompt[..1], 0, None, None)?; // MTP entry of the first token: zero hidden state
+    }
+    for (ci, c) in prompt.chunks(pchunk).enumerate() {
         next = e.forward(c, None)?.last().unwrap().0;
         e.commit(c.len())?;
+        if k > 0 {
+            let start = ci * pchunk;
+            let ids: Vec<u32> = (0..c.len()).map(|i| *prompt.get(start + i + 1).unwrap_or(&next)).collect();
+            d1 = e.mtp_pass(&ids, start + 1, Some(0), None)?.last().unwrap().0;
+            last_row = c.len() - 1;
+        }
     }
     dev.wait()?;
     let prefill = t0.elapsed().as_secs_f64();
 
-    let mut out = Vec::with_capacity(n_new);
+    // ---- decode ----
+    let mut out: Vec<u32> = Vec::with_capacity(n_new + 16);
+    let (mut t_mtp, mut t_main) = (0f64, 0f64);
+    let mut tried = vec![0usize; k + 1];
+    let mut accepted = vec![0usize; k + 1];
+    let mut passes = 0usize;
     let t1 = Instant::now();
-    for _ in 0..n_new {
-        out.push(next);
-        next = e.forward(&[next], None)?[0].0;
-        e.commit(1)?;
+    while out.len() < n_new {
+        let pos = e.position();
+        // Draft: next is certain (the trunk's own greedy choice); d1.. are MTP guesses.
+        let tm = Instant::now();
+        let mut drafts = vec![next];
+        if k > 0 {
+            drafts.push(d1);
+            let mut src = last_row;
+            for j in 2..=k {
+                let d = e.mtp_pass(&[drafts[j - 1]], pos + j - 1, Some(src), None)?[0].0;
+                drafts.push(d);
+                src = 0;
+            }
+        }
+        t_mtp += tm.elapsed().as_secs_f64();
+        // Verify with the trunk and keep the agreeing prefix.
+        let tv = Instant::now();
+        let g = e.forward(&drafts, None)?;
+        let mut n = 1;
+        while n < drafts.len() && g[n - 1].0 == drafts[n] {
+            n += 1;
+        }
+        e.commit(n)?;
+        t_main += tv.elapsed().as_secs_f64();
+        for i in 1..drafts.len() {
+            // position i is "tried" only if every earlier draft was accepted
+            if i <= n {
+                tried[i] += 1;
+            }
+            if i < n {
+                accepted[i] += 1;
+            }
+        }
+        out.extend_from_slice(&drafts[..n]);
+        next = g[n - 1].0;
+        passes += 1;
+        if k > 0 {
+            // MTP cache entries for the committed tokens, from trunk hidden states;
+            // the last row is also the first draft of the next cycle.
+            let tm = Instant::now();
+            let ids: Vec<u32> = (0..n).map(|i| if i + 1 < n { drafts[i + 1] } else { next }).collect();
+            d1 = e.mtp_pass(&ids, pos + 1, Some(0), None)?.last().unwrap().0;
+            last_row = n - 1;
+            t_mtp += tm.elapsed().as_secs_f64();
+        }
     }
     dev.wait()?;
     let decode = t1.elapsed().as_secs_f64();
+    let emitted = out.len();
+    out.truncate(n_new);
 
-    // A separate profiled token (synchronises after every stage, so it is slower).
-    let mut prof = [0f64; 7];
-    let reps = 8;
-    for _ in 0..reps {
-        next = e.forward(&[next], Some(&mut prof))?[0].0;
-        e.commit(1)?;
-    }
     println!("{out:?}");
     if let Some(path) = opt(args, "--out") {
         std::fs::write(&path, format!("{out:?}"))?;
@@ -168,17 +231,34 @@ fn generate(dev: &Device, args: &[String]) -> Result<()> {
         prompt.len() as f64 / prefill
     );
     eprintln!(
-        "decode : {} tokens in {:.3}s = {:.2} tok/s, {:.2} ms/token (no speculation)",
-        n_new,
+        "decode : {emitted} tokens in {:.3}s = {:.2} tok/s | {passes} trunk passes, {:.2} tokens/pass, {:.2} ms/pass trunk, {:.2} ms/pass MTP (draft length {k})",
         decode,
-        n_new as f64 / decode,
-        decode / n_new as f64 * 1e3
+        emitted as f64 / decode,
+        emitted as f64 / passes as f64,
+        t_main / passes as f64 * 1e3,
+        t_mtp / passes as f64 * 1e3
     );
-    let total: f64 = prof.iter().sum();
-    eprint!("profile (1 token, sync per stage, ms):");
-    for (n, v) in PROF_NAMES.iter().zip(prof) {
-        eprint!(" {n} {:.2}", v / reps as f64);
+    if k > 0 {
+        eprint!("acceptance by draft position (accepted/tried):");
+        for i in 1..=k {
+            eprint!(" {}:{}/{}={:.0}%", i, accepted[i], tried[i], 100.0 * accepted[i] as f64 / tried[i].max(1) as f64);
+        }
+        eprintln!();
     }
-    eprintln!(" | total {:.2}", total / reps as f64);
+    if args.iter().any(|a| a == "--profile") {
+        // Separate profiled passes: they synchronise after every stage, so they are slower.
+        let mut prof = [0f64; 7];
+        let reps = 8;
+        for _ in 0..reps {
+            next = e.forward(&[next], Some(&mut prof))?[0].0;
+            e.commit(1)?;
+        }
+        let total: f64 = prof.iter().sum();
+        eprint!("profile (1 token, sync per stage, ms):");
+        for (n, v) in PROF_NAMES.iter().zip(prof) {
+            eprint!(" {n} {:.2}", v / reps as f64);
+        }
+        eprintln!(" | total {:.2}", total / reps as f64);
+    }
     Ok(())
 }

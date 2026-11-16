@@ -1,0 +1,6 @@
+[
+ [{"role":"user","content":"Explain what a hash collision is and one way to handle it."},
+  {"role":"assistant","content":"A hash collision happens when two different keys are mapped to the same slot of a hash table. Because the number of possible keys is far larger than the number of slots, collisions are unavoidable, so every hash table needs a strategy for them.\n\nOne common strategy is separate chaining: each slot holds a small list (or another container) of all the entries whose keys hash to it. To look up a key, you compute its hash, go to that slot, and then compare the key with each entry in the list. As long as the table is resized when it becomes too full, the lists stay short and operations remain close to constant time on average."}],
+ [{"role":"user","content":"次の文を英語に訳してください：「明日の会議は午後三時に延期されました。」"},
+  {"role":"assistant","content":"\"Tomorrow's meeting has been postponed to 3 p.m.\"\n\n補足：「延期されました」は受け身なので has been postponed と訳しています。より口語的に言うなら \"Tomorrow's meeting got pushed back to three in the afternoon.\" とも表現できます。"}]
+]

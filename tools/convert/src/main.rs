@@ -3,7 +3,7 @@
 //!
 //!   xf-convert inspect <checkpoint_dir>
 //!   xf-convert analyze <checkpoint_dir> [--layers 0,31,63] [--json out.json]
-//!   xf-convert convert <checkpoint_dir> <out.xfm> [--bits 4|2|8] [--only substring]
+//!   xf-convert convert <checkpoint_dir> <out.xfm> [--bits 4|2|8] [--only substring] [--stats dir]
 //!   xf-convert verify  <checkpoint_dir> <model.xfm>
 
 use std::collections::BTreeMap;
@@ -93,7 +93,7 @@ fn analyze(dir: &Path, rest: &[String]) -> Result<()> {
             let t0 = Instant::now();
             let _ = write!(json, "  {{\"tensor\":\"{name}\",\"rows\":{rows},\"cols\":{cols}");
             for (label, bits, col_scale) in variants {
-                let z = quantize(&w, rows, cols, QuantSpec { bits, col_scale, iters: 3 })?;
+                let z = quantize(&w, rows, cols, QuantSpec { bits, col_scale, iters: 3 }, None)?;
                 print!(" {:>8.2}", z.sqnr_db());
                 let _ = write!(json, ",\"{label}\":{:.3}", z.sqnr_db());
             }
@@ -133,9 +133,9 @@ fn dtype_name(d: Dtype) -> Result<&'static str> {
     }
 }
 
-/// Below this SQNR a matrix is not quantised but copied verbatim. Every body
-/// matrix of the model is above 17.7 dB at 4 bits.
-const FALLBACK_DB: f64 = 16.0;
+/// Above this (activation-weighted) relative error a matrix is not quantised
+/// but copied verbatim. Every body matrix is below 0.13 at 4 bits; mtp.fc is 0.54.
+const FALLBACK_REL: f64 = 0.25;
 
 fn convert(dir: &Path, out: &Path, rest: &[String]) -> Result<()> {
     let opt = |k: &str| rest.iter().position(|a| a == k).and_then(|i| rest.get(i + 1)).cloned();
@@ -147,10 +147,11 @@ fn convert(dir: &Path, out: &Path, rest: &[String]) -> Result<()> {
         _ => return Err(Error::Invalid("--bits must be 4, 2 or 8 (formats DPAS consumes directly)".into())),
     };
     let only = opt("--only");
+    let stats_dir = opt("--stats");
     let ck = Checkpoint::open(dir)?;
     let meta = serde_json::json!({
         "source": dir.display().to_string(),
-        "quantizer": "row+column scale, half-offset grid, 3 rounds, data-free",
+        "quantizer": if stats_dir.is_some() { "row+column scale, half-offset grid, activation-weighted (diagonal)" } else { "row+column scale, half-offset grid, 3 rounds, data-free" },
         "default_bits": bits,
     });
     let mut writer = ContainerWriter::create(out, meta, 1 << 20)?;
@@ -167,15 +168,32 @@ fn convert(dir: &Path, out: &Path, rest: &[String]) -> Result<()> {
             let (rows, cols) = (t.shape[0], t.shape[1]);
             let t0 = Instant::now();
             let w = t.to_f32()?;
-            let z = quantize(&w, rows, cols, QuantSpec { bits, col_scale: true, iters: 3 })?;
+            // Activation statistics from tools/validation/calib_stats.py, if given.
+            let act = match &stats_dir {
+                Some(d) => {
+                    let path = Path::new(d).join(format!("{name}.bin"));
+                    match std::fs::read(&path) {
+                        Ok(bytes) => {
+                            Some(bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect::<Vec<f32>>())
+                        }
+                        Err(_) => {
+                            // No calibration data for this tensor (e.g. the MTP block): data-free.
+                            println!("      no activation statistics for {name}: data-free");
+                            None
+                        }
+                    }
+                }
+                None => None,
+            };
+            let z = quantize(&w, rows, cols, QuantSpec { bits, col_scale: true, iters: 3 }, act.as_deref())?;
             // A matrix that is far from Gaussian (mtp.fc: 5.4 dB at 4 bits and
             // still 6.5 dB at 8) cannot be carried by a uniform grid. Such
             // matrices are rare and small; keep the original data and let the
             // engine run them through the bf16 kernel.
-            if z.sqnr_db() < FALLBACK_DB {
+            if z.weighted_rel_err > FALLBACK_REL {
                 writer.add_dense(name, dtype_name(t.dtype)?, t.shape, t.bytes)?;
                 n_dense += 1;
-                println!("[{:>4}/{}] {:<62} kept dense: {:.2} dB at {bits} bits", i + 1, names.len(), name, z.sqnr_db());
+                println!("[{:>4}/{}] {:<62} kept dense: relative error {:.3} at {bits} bits", i + 1, names.len(), name, z.weighted_rel_err);
                 continue;
             }
             let tiles = pack_weights(format, rows, cols, &z.q)?;
@@ -185,13 +203,14 @@ fn convert(dir: &Path, out: &Path, rest: &[String]) -> Result<()> {
             sum_db += z.sqnr_db();
             min_db = min_db.min(z.sqnr_db());
             println!(
-                "[{:>4}/{}] {:<62} {:>12} {} {:>6.2} dB  {:.1}s",
+                "[{:>4}/{}] {:<62} {:>12} {} {:>6.2} dB  wrel {:.4}  {:.1}s",
                 i + 1,
                 names.len(),
                 name,
                 format!("{rows}x{cols}"),
                 format.name(),
                 z.sqnr_db(),
+                z.weighted_rel_err,
                 t0.elapsed().as_secs_f64()
             );
         } else {

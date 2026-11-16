@@ -35,6 +35,7 @@ pub struct Engine {
     bufs: Vec<DeviceBuf>,
     states: Vec<DeviceBuf>,
     ws: DeviceBuf,
+    mtp: Option<Box<ffi::xf_mtp>>,
     allocs: Vec<Alloc>,
     ctx: usize,
     pos: usize,
@@ -192,6 +193,45 @@ impl Engine {
         let rope_cos = ld.upload_f32("RoPE table", "cos", &cos)?;
         let rope_sin = ld.upload_f32("RoPE table", "sin", &sin)?;
 
+        // The official MTP block, if the container carries it in usable form
+        // (mtp.fc must be dense: it does not survive low-bit quantisation).
+        let mut mtp = None;
+        if xfm.names().any(|(n, k)| n == "mtp.fc.weight" && k == "dense") {
+            let p = "mtp.layers.0.";
+            let mut m = [null_mat; 7];
+            for (i, n) in ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj", "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"].iter().enumerate() {
+                m[i] = ld.matrix(&format!("{p}{n}.weight"), "MTP")?;
+            }
+            let mut aux = [std::ptr::null::<f32>(); 5];
+            aux[0] = ld.gain(&format!("{p}self_attn.q_norm.weight"))?;
+            aux[1] = ld.gain(&format!("{p}self_attn.k_norm.weight"))?;
+            let sbytes = unsafe { ffi::xf_state_bytes(ffi::XF_LAYER_ATTN, ctx as i32) };
+            let state = dev.alloc(sbytes)?;
+            state_allocs.push(Alloc { category: "MTP KV cache", name: "mtp".into(), bytes: sbytes });
+            let layer = ffi::xf_layer {
+                kind: ffi::XF_LAYER_ATTN,
+                reserved: 0,
+                ln1: ld.gain(&format!("{p}input_layernorm.weight"))?,
+                ln2: ld.gain(&format!("{p}post_attention_layernorm.weight"))?,
+                m,
+                aux,
+                state: state.ptr,
+            };
+            states.push(state);
+            let fc = ld.dense("mtp.fc.weight")?;
+            if fc.len() != HIDDEN * 2 * HIDDEN {
+                return Err(Error::Invalid("mtp.fc has an unexpected shape".into()));
+            }
+            let fc = ld.upload_f32("MTP", "mtp.fc (f32)", &fc)?;
+            mtp = Some(Box::new(ffi::xf_mtp {
+                layer,
+                fc,
+                gain_e: ld.gain("mtp.pre_fc_norm_embedding.weight")?,
+                gain_h: ld.gain("mtp.pre_fc_norm_hidden.weight")?,
+                norm: ld.gain("mtp.norm.weight")?,
+            }));
+        }
+
         let ws_bytes = unsafe { ffi::xf_ws_bytes(ctx as i32) };
         let ws = dev.alloc(ws_bytes)?;
         let mut allocs = ld.allocs;
@@ -210,7 +250,7 @@ impl Engine {
             rope_sin,
             ws: ws.ptr,
         });
-        let mut e = Engine { dev: dev.clone(), model, _layers: layers, bufs: ld.bufs, states, ws, allocs, ctx, pos: 0, last_m: 0 };
+        let mut e = Engine { dev: dev.clone(), model, _layers: layers, bufs: ld.bufs, states, ws, mtp, allocs, ctx, pos: 0, last_m: 0 };
         e.reset()?;
         Ok(e)
     }
@@ -289,6 +329,32 @@ impl Engine {
         self.pos += n;
         self.last_m = 0;
         Ok(())
+    }
+
+    pub fn has_mtp(&self) -> bool {
+        self.mtp.is_some()
+    }
+
+    /// One pass of the MTP block over `ids.len()` rows. Row `i` pairs the
+    /// final-norm hidden state `src_row + i` left in the workspace by the
+    /// previous pass (`None` = zero hidden state) with token `ids[i]`, at MTP
+    /// position `pos0 + i`. Returns the greedy draft token of every row.
+    pub fn mtp_pass(&mut self, ids: &[u32], pos0: usize, src_row: Option<usize>, prof: Option<&mut [f64; 7]>) -> Result<Vec<(u32, f32)>> {
+        let mtp = self.mtp.as_ref().ok_or_else(|| Error::Invalid("this container has no usable MTP block".into()))?;
+        if ids.is_empty() || ids.len() > MAX_TOKENS || pos0 + ids.len() > self.ctx {
+            return Err(Error::Invalid("bad MTP pass shape".into()));
+        }
+        let v: Vec<i32> = ids.iter().map(|t| *t as i32).collect();
+        self.ws.write(self.ws_off(ffi::XF_WS_IDS), &v)?;
+        let prof = prof.map_or(std::ptr::null_mut(), |p| p.as_mut_ptr());
+        check(unsafe {
+            ffi::xf_mtp_step(self.dev.ctx.0, &*self.model, &**mtp, ids.len() as i32, pos0 as i32, src_row.map_or(-1, |r| r as i32), prof)
+        })?;
+        let keep = self.last_m;
+        self.last_m = ids.len();
+        let out = self.argmax();
+        self.last_m = keep;
+        out
     }
 
     /// Finish the argmax on the host (ties go to the lowest token id).
