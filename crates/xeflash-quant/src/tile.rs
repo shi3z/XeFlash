@@ -16,6 +16,11 @@
 //! | s8     | 8    | 4  | 8         | 32 | 512        |
 //! | bf16   | 16   | 2  | 8         | 16 | 512        |
 //!
+//! The 3-bit format has no native DPAS precision. A tile is 3 registers
+//! (192 bytes): lane `n` of registers 0..2 holds the 96-bit little-endian
+//! stream of the 32 unsigned codes of row `n` (column `c` at bit `3c`). The
+//! kernel spreads it to u4 with shifts and masks.
+//!
 //! Tiles are stored row-block major (`[rowblk][tile]`), so one GPU thread
 //! streams one contiguous run of memory.
 
@@ -39,6 +44,7 @@ fn storage_bits(format: WeightFormat) -> Result<usize> {
         WeightFormat::S4 | WeightFormat::S4Exp8 => Ok(4),
         WeightFormat::S2 => Ok(2),
         WeightFormat::S8 => Ok(8),
+        WeightFormat::S3 => Ok(3),
         WeightFormat::Bf16 => Err(Error::Invalid("use pack_weights_bf16 for bf16".into())),
     }
 }
@@ -52,13 +58,32 @@ pub fn pack_weights(format: WeightFormat, rows: usize, cols: usize, w: &[i8]) ->
     if let Some(v) = w.iter().find(|v| **v < lo || **v > hi) {
         return Err(Error::Invalid(format!("weight {v} outside {lo}..={hi} for {}", format.name())));
     }
-    let e = 32 / bits; // elements per 32-bit word
     let tc = format.tile_cols();
-    let regs = tc / e;
-    let mask = (1u32 << bits) - 1;
     let tiles = cols / tc;
     let mut out = vec![0u8; rows / 16 * tiles * format.tile_bytes()];
     let mut words = out.chunks_exact_mut(4);
+    if format == WeightFormat::S3 {
+        for rb in 0..rows / 16 {
+            for t in 0..tiles {
+                let mut streams = [0u128; 16];
+                for (n, stream) in streams.iter_mut().enumerate() {
+                    let base = (rb * 16 + n) * cols + t * 32;
+                    for (c, v) in w[base..base + 32].iter().enumerate() {
+                        *stream |= (*v as u128) << (3 * c);
+                    }
+                }
+                for k in 0..3 {
+                    for stream in &streams {
+                        words.next().unwrap().copy_from_slice(&((stream >> (32 * k)) as u32).to_le_bytes());
+                    }
+                }
+            }
+        }
+        return Ok(out);
+    }
+    let e = 32 / bits; // elements per 32-bit word
+    let regs = tc / e;
+    let mask = (1u32 << bits) - 1;
     for rb in 0..rows / 16 {
         for t in 0..tiles {
             for r in 0..regs {
@@ -79,15 +104,35 @@ pub fn pack_weights(format: WeightFormat, rows: usize, cols: usize, w: &[i8]) ->
 /// Inverse of [`pack_weights`].
 pub fn unpack_weights(format: WeightFormat, rows: usize, cols: usize, packed: &[u8]) -> Result<Vec<i8>> {
     let bits = storage_bits(format)?;
-    let e = 32 / bits;
     let tc = format.tile_cols();
-    let regs = tc / e;
     let tiles = cols / tc;
+    let e = 32 / bits;
+    let regs = tc / e.max(1);
     if rows % 16 != 0 || cols % tc != 0 || packed.len() != rows / 16 * tiles * format.tile_bytes() {
         return Err(Error::Invalid("packed buffer does not match the shape".into()));
     }
     let mut out = vec![0i8; rows * cols];
     let mut words = packed.chunks_exact(4);
+    if format == WeightFormat::S3 {
+        for rb in 0..rows / 16 {
+            for t in 0..tiles {
+                let mut streams = [0u128; 16];
+                for k in 0..3 {
+                    for stream in streams.iter_mut() {
+                        let word = u32::from_le_bytes(words.next().unwrap().try_into().unwrap());
+                        *stream |= (word as u128) << (32 * k);
+                    }
+                }
+                for (n, stream) in streams.iter().enumerate() {
+                    let base = (rb * 16 + n) * cols + t * 32;
+                    for c in 0..32 {
+                        out[base + c] = ((stream >> (3 * c)) & 7) as i8;
+                    }
+                }
+            }
+        }
+        return Ok(out);
+    }
     for rb in 0..rows / 16 {
         for t in 0..tiles {
             for r in 0..regs {
@@ -173,7 +218,7 @@ mod tests {
 
     #[test]
     fn pack_roundtrip() {
-        for f in [WeightFormat::S4, WeightFormat::S2, WeightFormat::S8] {
+        for f in [WeightFormat::S4, WeightFormat::S2, WeightFormat::S8, WeightFormat::S3] {
             let (rows, cols) = (32, 96);
             let (lo, hi) = f.int_range();
             let mut rng = Rng::new(7);

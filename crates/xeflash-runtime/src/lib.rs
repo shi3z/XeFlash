@@ -132,7 +132,8 @@ impl Device {
             rs: g.row_scale.ptr.cast(),
             ts: g.token_scale.ptr.cast(),
             y: g.y.ptr.cast(),
-            ypart: g.y_part.map_or(std::ptr::null_mut(), |b| b.ptr.cast()),
+            ypart: g.y_part.map_or(std::ptr::null_mut(), |b| b.ptr),
+            toff: g.token_offset.map_or(std::ptr::null(), |b| b.ptr.cast_const().cast()),
         };
         check(unsafe { ffi::xf_gemm(self.ctx.0, &d) })
     }
@@ -214,7 +215,7 @@ impl Drop for DeviceBuf {
     }
 }
 
-/// `y[m][row] = row_scale[row] * token_scale[m] * sum_col W[row][col] * x[m][col]`
+/// `y[m][row] = row_scale[row] * token_scale[m] * (token_offset[m] + sum_col W[row][col] * x[m][col])`
 ///
 /// Buffers must be in the layouts produced by `xeflash-quant`:
 /// * `w`: XMX tile order, `rows/16 * cols/tile_cols` tiles of `tile_bytes`;
@@ -238,7 +239,12 @@ pub struct Gemm<'a> {
     pub row_scale: &'a DeviceBuf,
     pub token_scale: &'a DeviceBuf,
     pub y: &'a DeviceBuf,
+    /// Scratch for `segs > 1`: `segs * planes * m_pad * rows` 4-byte words,
+    /// `planes` = 2 with 16-bit activations.
     pub y_part: Option<&'a DeviceBuf>,
+    /// Per-token value added to the integer sum before scaling (`m_pad` f32).
+    /// Carries the `+0.5` of the half-offset level grid.
+    pub token_offset: Option<&'a DeviceBuf>,
 }
 
 impl Gemm<'_> {
@@ -275,9 +281,15 @@ impl Gemm<'_> {
         need("row_scale", self.row_scale, self.rows * 4)?;
         need("token_scale", self.token_scale, mpad * 4)?;
         need("y", self.y, mpad * self.rows * 4)?;
+        if let Some(off) = self.token_offset {
+            if self.format == WeightFormat::Bf16 {
+                return bad("token_offset is only defined for integer formats".into());
+            }
+            need("token_offset", off, mpad * 4)?;
+        }
         match (self.segs, self.y_part) {
             (1, _) => {}
-            (s, Some(p)) => need("y_part", p, s * mpad * self.rows * 4)?,
+            (s, Some(p)) => need("y_part", p, s * (1 + self.x_lo.is_some() as usize) * mpad * self.rows * 4)?,
             (_, None) => return bad("segs > 1 requires y_part".into()),
         }
         Ok(())

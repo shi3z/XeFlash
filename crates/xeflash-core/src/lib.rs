@@ -52,6 +52,9 @@ pub enum WeightFormat {
     Bf16 = 3,
     /// Packed s4 storage, expanded to s8 in registers before DPAS.
     S4Exp8 = 4,
+    /// Packed unsigned 3-bit codes, spread to u4 in registers before DPAS.
+    /// Codes are offset binary (`u = q + 4`); the offset is a per-token scalar.
+    S3 = 5,
 }
 
 impl WeightFormat {
@@ -67,6 +70,7 @@ impl WeightFormat {
         match self {
             WeightFormat::S4 | WeightFormat::S4Exp8 => 256,
             WeightFormat::S2 => 128,
+            WeightFormat::S3 => 192,
             WeightFormat::S8 | WeightFormat::Bf16 => 512,
         }
     }
@@ -79,6 +83,7 @@ impl WeightFormat {
         match self {
             WeightFormat::S4 | WeightFormat::S4Exp8 => (-8, 7),
             WeightFormat::S2 => (-2, 1),
+            WeightFormat::S3 => (0, 7),
             _ => (-128, 127),
         }
     }
@@ -89,6 +94,7 @@ impl WeightFormat {
             WeightFormat::S8 => "s8",
             WeightFormat::Bf16 => "bf16",
             WeightFormat::S4Exp8 => "s4>s8",
+            WeightFormat::S3 => "s3",
         }
     }
 }

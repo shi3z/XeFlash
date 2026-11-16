@@ -44,7 +44,8 @@ pub struct xf_gemm_desc {
     pub rs: *const f32,
     pub ts: *const f32,
     pub y: *mut f32,
-    pub ypart: *mut f32,
+    pub ypart: *mut c_void,
+    pub toff: *const f32,
 }
 
 unsafe extern "C" {

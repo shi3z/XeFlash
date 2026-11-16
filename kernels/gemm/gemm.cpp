@@ -49,6 +49,33 @@ template <> struct Fmt<XF_W_S4_EXP8> {
   static constexpr bool is_float = false;
 };
 
+template <> struct Fmt<XF_W_S3> {
+  static constexpr int tile_cols = 32, stored_dw = 48, opnd_dw = 64;
+  static constexpr bool is_float = false;
+};
+
+// Packed 3-bit tile (3 registers: per lane a 96-bit stream of 32 unsigned
+// codes) -> u4 tile (4 registers), entirely in GRF. Codes are offset binary,
+// so no sign extension is needed; the offset is folded into the token offset.
+ESIMD_INLINE simd<int32_t, 64> expand_s3_to_u4(simd<int32_t, 48> p) SYCL_ESIMD_FUNCTION {
+  auto v = p.template bit_cast_view<uint32_t>();
+  simd<uint32_t, 16> d0 = v.template select<16, 1>(0);
+  simd<uint32_t, 16> d1 = v.template select<16, 1>(16);
+  simd<uint32_t, 16> d2 = v.template select<16, 1>(32);
+  // Four 24-bit groups (8 codes each) per lane; the top byte is masked below.
+  simd<uint32_t, 64> g;
+  g.template select<16, 1>(0) = d0;
+  g.template select<16, 1>(16) = (d0 >> 24) | (d1 << 8);
+  g.template select<16, 1>(32) = (d1 >> 16) | (d2 << 16);
+  g.template select<16, 1>(48) = d2 >> 8;
+  // 8 x 3 bits -> 8 x 4 bits: spread by 12, then 6, then 3 bits. Written on
+  // the whole tile so the compiler emits 32-lane instructions.
+  simd<uint32_t, 64> y = (g & 0x000FFFu) | ((g & 0xFFF000u) << 4);
+  simd<uint32_t, 64> z = (y & 0x003F003Fu) | ((y & 0x0FC00FC0u) << 2);
+  simd<uint32_t, 64> o = (z & 0x07070707u) | ((z & 0x38383838u) << 1);
+  return o.template bit_cast_view<int32_t>();
+}
+
 // Packed s4 tile (4 registers) -> s8 tile (8 registers), entirely in GRF.
 // Only used by the XF_W_S4_EXP8 comparison variant.
 ESIMD_INLINE simd<int32_t, 128> expand_s4_to_s8(simd<int32_t, 64> p) SYCL_ESIMD_FUNCTION {
@@ -70,23 +97,32 @@ ESIMD_INLINE simd<int32_t, 128> expand_s4_to_s8(simd<int32_t, 64> p) SYCL_ESIMD_
   return out;
 }
 
+// Stored tile -> DPAS weight operand. Identity for the native formats.
+template <int WF>
+ESIMD_INLINE simd<int32_t, Fmt<WF>::opnd_dw> operand(simd<int32_t, Fmt<WF>::stored_dw> w) SYCL_ESIMD_FUNCTION {
+  if constexpr (WF == XF_W_S3) return expand_s3_to_u4(w);
+  else if constexpr (WF == XF_W_S4_EXP8) return expand_s4_to_s8(w);
+  else return w;
+}
+
 template <int WF, int R>
-ESIMD_INLINE simd<int32_t, 16 * R> mac(simd<int32_t, 16 * R> acc, simd<int32_t, Fmt<WF>::stored_dw> w,
+ESIMD_INLINE simd<int32_t, 16 * R> mac(simd<int32_t, 16 * R> acc, simd<int32_t, Fmt<WF>::opnd_dw> w,
                                        simd<int32_t, 8 * R> a, bool a_unsigned) SYCL_ESIMD_FUNCTION {
-  if constexpr (WF == XF_W_S4) {
-    if (a_unsigned) return xmx::dpas<8, R, int32_t, int32_t, int32_t, int32_t, PT::s4, PT::u8>(acc, w, a);
-    return xmx::dpas<8, R, int32_t, int32_t, int32_t, int32_t, PT::s4, PT::s8>(acc, w, a);
-  } else if constexpr (WF == XF_W_S2) {
-    if (a_unsigned) return xmx::dpas<8, R, int32_t, int32_t, int32_t, int32_t, PT::s2, PT::u8>(acc, w, a);
-    return xmx::dpas<8, R, int32_t, int32_t, int32_t, int32_t, PT::s2, PT::s8>(acc, w, a);
-  } else if constexpr (WF == XF_W_S8) {
-    if (a_unsigned) return xmx::dpas<8, R, int32_t, int32_t, int32_t, int32_t, PT::s8, PT::u8>(acc, w, a);
-    return xmx::dpas<8, R, int32_t, int32_t, int32_t, int32_t, PT::s8, PT::s8>(acc, w, a);
-  } else { // XF_W_S4_EXP8
-    simd<int32_t, 128> w8 = expand_s4_to_s8(w);
-    if (a_unsigned) return xmx::dpas<8, R, int32_t, int32_t, int32_t, int32_t, PT::s8, PT::u8>(acc, w8, a);
-    return xmx::dpas<8, R, int32_t, int32_t, int32_t, int32_t, PT::s8, PT::s8>(acc, w8, a);
-  }
+  constexpr PT WP = WF == XF_W_S4 ? PT::s4 : WF == XF_W_S2 ? PT::s2 : WF == XF_W_S3 ? PT::u4 : PT::s8;
+  if (a_unsigned) return xmx::dpas<8, R, int32_t, int32_t, int32_t, int32_t, WP, PT::u8>(acc, w, a);
+  return xmx::dpas<8, R, int32_t, int32_t, int32_t, int32_t, WP, PT::s8>(acc, w, a);
+}
+
+// int32 accumulators -> scaled float output. Shared by the direct path and by
+// the segment combiner so both produce bit-identical results:
+//   y = (acc [* 256 + acc_lo] + token_offset) * row_scale * token_scale
+template <bool A16>
+ESIMD_INLINE simd<float, 16> finish(simd<int32_t, 16> si, simd<int32_t, 16> li, simd<float, 16> rsv, float ts,
+                                    float off) SYCL_ESIMD_FUNCTION {
+  simd<float, 16> f = convert<float>(si);
+  if constexpr (A16) f = f * 256.0f + convert<float>(li);
+  f = f + off;
+  return f * rsv * ts;
 }
 
 template <int WF, int R, int G, int U, bool A16> sycl::event submit(sycl::queue &q, const xf_gemm_desc &d) {
@@ -100,6 +136,7 @@ template <int WF, int R, int G, int U, bool A16> sycl::event submit(sycl::queue 
   const int32_t *XL = static_cast<const int32_t *>(d.xlo);
   const float *RS = d.rs;
   const float *TS = d.ts;
+  const float *TO = d.toff;
   const size_t rows = d.rows;
   const size_t rowblks = rows / 16;
   const size_t tiles = size_t(d.cols) / F::tile_cols;
@@ -107,7 +144,10 @@ template <int WF, int R, int G, int U, bool A16> sycl::event submit(sycl::queue 
   const size_t tps = tiles / segs; // tiles per segment
   const size_t mpad = (size_t(d.m) + TPT - 1) / TPT * TPT;
   const size_t tgroups = mpad / TPT;
-  float *Y = segs == 1 ? d.y : d.ypart;
+  float *YF = static_cast<float *>(d.ypart);     // float partials (bf16) when segs > 1
+  int32_t *YI = static_cast<int32_t *>(d.ypart); // exact integer partials when segs > 1
+  float *Y = segs == 1 ? d.y : YF;
+  constexpr size_t PLANES = A16 ? 2 : 1;
 
   return q.parallel_for(sycl::range<1>(rowblks * tgroups * segs), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
     const size_t idx = id[0];
@@ -170,8 +210,9 @@ template <int WF, int R, int G, int U, bool A16> sycl::event submit(sycl::queue 
       for (size_t t = 0; t < tps; t += U) {
 #pragma unroll
         for (int u = 0; u < U; u++) {
-          simd<int32_t, WDW> w;
-          w.copy_from(wp + (t + u) * WDW);
+          simd<int32_t, WDW> ws;
+          ws.copy_from(wp + (t + u) * WDW);
+          simd<int32_t, F::opnd_dw> w = operand<WF>(ws);
           simd<int32_t, XDW> xv;
           xv.copy_from(X + xoff + (t + u) * xstride);
 #pragma unroll
@@ -194,6 +235,8 @@ template <int WF, int R, int G, int U, bool A16> sycl::event submit(sycl::queue 
       rsv.copy_from(RS + rb * 16);
       simd<float, TPT> tsv;
       tsv.copy_from(TS + tg * TPT);
+      simd<float, TPT> tov(0.0f);
+      if (TO) tov.copy_from(TO + tg * TPT);
 #pragma unroll
       for (int g = 0; g < G; g++) {
         simd<int32_t, 16 * R> s = acc[0][g];
@@ -206,21 +249,24 @@ template <int WF, int R, int G, int U, bool A16> sycl::event submit(sycl::queue 
 #pragma unroll
         for (int m = 0; m < R; m++) {
           simd<int32_t, 16> si = s.template select<16, 1>(16 * m);
-          simd<float, 16> f = convert<float>(si);
-          if constexpr (A16) {
-            simd<int32_t, 16> li = sl.template select<16, 1>(16 * m);
-            f = f * 256.0f + convert<float>(li);
+          simd<int32_t, 16> li = sl.template select<16, 1>(16 * m);
+          const size_t tok = tg * TPT + g * R + m;
+          if (segs == 1) {
+            simd<float, 16> f = finish<A16>(si, li, rsv, float(tsv[g * R + m]), float(tov[g * R + m]));
+            f.copy_to(Y + tok * rows + rb * 16);
+          } else {
+            // Exact integer partial sums; the combiner converts and scales.
+            si.copy_to(YI + ((seg * PLANES) * mpad + tok) * rows + rb * 16);
+            if constexpr (A16) li.copy_to(YI + ((seg * PLANES + 1) * mpad + tok) * rows + rb * 16);
           }
-          f = f * rsv * float(tsv[g * R + m]);
-          f.copy_to(Y + (seg * mpad + tg * TPT + g * R + m) * rows + rb * 16);
         }
       }
     }
   });
 }
 
-// Sum the per-segment partial outputs into y.
-sycl::event combine(sycl::queue &q, const float *ypart, float *y, size_t n, size_t segs) {
+// Float formats: sum the per-segment partial outputs into y.
+sycl::event combine_float(sycl::queue &q, const float *ypart, float *y, size_t n, size_t segs) {
   return q.parallel_for(sycl::range<1>(n / 16), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
     const size_t i = id[0] * 16;
     simd<float, 16> s;
@@ -231,6 +277,39 @@ sycl::event combine(sycl::queue &q, const float *ypart, float *y, size_t n, size
       s += v;
     }
     s.copy_to(y + i);
+  });
+}
+
+// Integer formats: sum the int32 partials of all segments, then convert and
+// scale exactly like the direct path.
+template <bool A16> sycl::event combine_int(sycl::queue &q, const xf_gemm_desc &d, size_t mpad) {
+  const int32_t *YI = static_cast<const int32_t *>(d.ypart);
+  float *Y = d.y;
+  const float *RS = d.rs;
+  const float *TS = d.ts;
+  const float *TO = d.toff;
+  const size_t rows = d.rows, rowblks = rows / 16, segs = d.segs;
+  constexpr size_t PLANES = A16 ? 2 : 1;
+  return q.parallel_for(sycl::range<1>(mpad * rowblks), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const size_t tok = id[0] / rowblks, rb = id[0] % rowblks;
+    simd<int32_t, 16> si(0), li(0);
+    for (size_t k = 0; k < segs; k++) {
+      simd<int32_t, 16> v;
+      v.copy_from(YI + ((k * PLANES) * mpad + tok) * rows + rb * 16);
+      si += v;
+      if constexpr (A16) {
+        simd<int32_t, 16> l;
+        l.copy_from(YI + ((k * PLANES + 1) * mpad + tok) * rows + rb * 16);
+        li += l;
+      }
+    }
+    simd<float, 16> rsv;
+    rsv.copy_from(RS + rb * 16);
+    simd<float, 1> ts, to(0.0f);
+    ts.copy_from(TS + tok);
+    if (TO) to.copy_from(TO + tok);
+    simd<float, 16> f = finish<A16>(si, li, rsv, float(ts[0]), float(to[0]));
+    f.copy_to(Y + tok * rows + rb * 16);
   });
 }
 
@@ -270,13 +349,16 @@ extern "C" int xf_gemm(xf_ctx *ctx, const xf_gemm_desc *dp) {
     case XF_W_S8: st = dispatch<XF_W_S8, false>(ctx->q, d); break;
     case XF_W_BF16: st = dispatch<XF_W_BF16, false>(ctx->q, d); break;
     case XF_W_S4_EXP8: st = dispatch<XF_W_S4_EXP8, false>(ctx->q, d); break;
+    case XF_W_S3: st = d.a16 ? dispatch<XF_W_S3, true>(ctx->q, d) : dispatch<XF_W_S3, false>(ctx->q, d); break;
     default: xf_set_error("xf_gemm: weight format not implemented"); return XF_ERR_INVALID;
     }
     if (st != XF_OK) return st;
     if (d.segs > 1) {
       const int tpt = d.tokens_per_thread;
       const size_t mpad = (size_t(d.m) + tpt - 1) / tpt * tpt;
-      combine(ctx->q, d.ypart, d.y, mpad * size_t(d.rows), d.segs);
+      if (d.wfmt == XF_W_BF16) combine_float(ctx->q, static_cast<const float *>(d.ypart), d.y, mpad * size_t(d.rows), d.segs);
+      else if (d.a16) combine_int<true>(ctx->q, d, mpad);
+      else combine_int<false>(ctx->q, d, mpad);
     }
     return XF_OK;
   });

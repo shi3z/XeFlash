@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 xeflash-core.workspace = true
+rayon = "1"

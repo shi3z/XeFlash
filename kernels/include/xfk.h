@@ -62,7 +62,11 @@ int xf_noop(xf_ctx *ctx);
 
 /* ---- GEMM -------------------------------------------------------------
  *
- * y[m][row] = rs[row] * ts[m] * sum_col W[row][col] * x[m][col]
+ * y[m][row] = rs[row] * ts[m] * (toff[m] + sum_col W[row][col] * x[m][col])
+ *
+ * Integer formats are exact: the sum is an int32 DPAS accumulation, so the
+ * result does not depend on the kernel variant, the token batch size or the
+ * number of column segments.
  *
  * Weights are stored in "XMX tile order": the matrix is cut into tiles of
  * 16 rows x TC columns (TC = 32 for integer weights, 16 for bf16) and every
@@ -84,7 +88,7 @@ typedef enum {
   XF_W_S8 = 2,       /* signed 8-bit, DPAS s8 x s8 (uncompressed reference) */
   XF_W_BF16 = 3,     /* bfloat16 weights and activations (float reference) */
   XF_W_S4_EXP8 = 4,  /* packed s4 expanded to s8 in registers, then s8 x s8 */
-  XF_W_S3 = 5        /* packed signed 3-bit expanded to s4 in registers */
+  XF_W_S3 = 5        /* packed unsigned 3-bit codes spread to u4 in registers */
 } xf_wfmt;
 
 typedef struct {
@@ -102,7 +106,10 @@ typedef struct {
   const float *rs;       /* device: rows floats */
   const float *ts;       /* device: m_pad floats */
   float *y;              /* device: m_pad * rows floats, [m][row] */
-  float *ypart;          /* device: segs * m_pad * rows floats, or NULL */
+  void *ypart;           /* device scratch when segs > 1, or NULL:
+                            segs * (a16 ? 2 : 1) * m_pad * rows 4-byte words */
+  const float *toff;     /* device: m_pad floats added to the integer sum
+                            before scaling (integer formats), or NULL */
 } xf_gemm_desc;
 
 int xf_gemm(xf_ctx *ctx, const xf_gemm_desc *d);

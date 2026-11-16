@@ -80,8 +80,12 @@ fn run_case(dev: &Device, w: &Weights, c: &Case, min_time: f64) -> Result<Outcom
 
     let token_scale: Vec<f32> = (0..mpad).map(|_| 0.75 + 0.25 * rng.unit_f32().abs()).collect();
     let ts_dev = dev.upload(&token_scale)?;
+    let is_int = c.format != WeightFormat::Bf16;
+    let token_offset: Vec<f32> = (0..mpad).map(|_| if is_int { (rng.next_u64() >> 44) as f32 * 0.5 - 250000.0 } else { 0.0 }).collect();
+    let to_dev = if is_int { Some(dev.upload(&token_offset)?) } else { None };
     let y_dev = dev.alloc(mpad * rows * 4)?;
-    let ypart_dev = if c.segs > 1 { Some(dev.alloc(c.segs * mpad * rows * 4)?) } else { None };
+    let planes = 1 + c.a16 as usize;
+    let ypart_dev = if c.segs > 1 { Some(dev.alloc(c.segs * planes * mpad * rows * 4)?) } else { None };
 
     // Activations and the CPU-side copies used by the reference.
     let mut x_i16: Vec<i16> = Vec::new();
@@ -116,6 +120,7 @@ fn run_case(dev: &Device, w: &Weights, c: &Case, min_time: f64) -> Result<Outcom
         token_scale: &ts_dev,
         y: &y_dev,
         y_part: ypart_dev.as_ref(),
+        token_offset: to_dev.as_ref(),
     };
 
     // ---- correctness (also serves as JIT warm-up) ----
@@ -150,7 +155,7 @@ fn run_case(dev: &Device, w: &Weights, c: &Case, min_time: f64) -> Result<Outcom
                     hi = hi.wrapping_add(wv * (xv >> 8));
                     lo = lo.wrapping_add(wv * (xv & 0xFF));
                 }
-                let f = hi as f32 * 256.0 + lo as f32;
+                let f = hi as f32 * 256.0 + lo as f32 + token_offset[i];
                 want = f * w.row_scale[row] * token_scale[i];
                 tol_ref = want.abs() as f64;
             } else {
@@ -158,7 +163,7 @@ fn run_case(dev: &Device, w: &Weights, c: &Case, min_time: f64) -> Result<Outcom
                 for col in 0..cols {
                     acc = acc.wrapping_add(w.int[row * cols + col] as i32 * x_i16[i * cols + col] as i32);
                 }
-                want = acc as f32 * w.row_scale[row] * token_scale[i];
+                want = (acc as f32 + token_offset[i]) * w.row_scale[row] * token_scale[i];
                 tol_ref = want.abs() as f64;
             }
             if got.to_bits() != want.to_bits() {
@@ -240,7 +245,7 @@ fn main() -> Result<()> {
     println!("launch   : {queued:.2} us queued, {waited:.2} us with a wait per launch\n");
 
     let formats =
-        [WeightFormat::Bf16, WeightFormat::S8, WeightFormat::S4Exp8, WeightFormat::S4, WeightFormat::S2];
+        [WeightFormat::Bf16, WeightFormat::S8, WeightFormat::S4Exp8, WeightFormat::S4, WeightFormat::S3, WeightFormat::S2];
     let token_counts: &[usize] = if quick { &[1, 8, 64] } else { &[1, 8, 16, 64, 256] };
     let min_time = if quick { 0.1 } else { 0.4 };
 
@@ -269,8 +274,11 @@ fn main() -> Result<()> {
                 if tokens <= 16 && shape.rows < 8192 {
                     variants.push((4, false)); // few row blocks: add column workers
                 }
-                if format == WeightFormat::S4 && tokens <= 8 {
+                if matches!(format, WeightFormat::S4 | WeightFormat::S3) && tokens <= 16 {
                     variants.push((1, true)); // 16-bit activations
+                    if shape.rows < 8192 {
+                        variants.push((4, true));
+                    }
                 }
                 for (segs, a16) in variants {
                     let case = Case { shape: *shape, format, tokens, tpt, segs, a16 };

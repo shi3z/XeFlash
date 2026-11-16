@@ -1,0 +1,15 @@
+[package]
+name = "xf-convert"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "xf-convert"
+path = "src/main.rs"
+
+[dependencies]
+xeflash-core.workspace = true
+xeflash-quant.workspace = true
+xeflash-model.workspace = true
+serde_json = "1"

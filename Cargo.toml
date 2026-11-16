@@ -4,7 +4,10 @@ members = [
     "crates/xeflash-core",
     "crates/xeflash-runtime",
     "crates/xeflash-quant",
+    "crates/xeflash-model",
     "tools/benchmark",
+    "tools/convert",
+    "tools/validation",
 ]
 
 [workspace.package]
@@ -16,6 +19,7 @@ license = "Apache-2.0"
 xeflash-core = { path = "crates/xeflash-core" }
 xeflash-runtime = { path = "crates/xeflash-runtime" }
 xeflash-quant = { path = "crates/xeflash-quant" }
+xeflash-model = { path = "crates/xeflash-model" }
 
 [profile.release]
 opt-level = 3

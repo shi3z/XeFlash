@@ -1,0 +1,8 @@
+tensor                                                            shape   q vs ref    gpu8 vs q   gpu16 vs q gpu16 vs ref
+layers.3.mlp.down_proj.weight                                5120x17408     0.1097      8.90e-3      3.50e-5       0.1097
+layers.3.mlp.gate_proj.weight                                17408x5120     0.1085      8.24e-3      3.21e-5       0.1085
+layers.3.mlp.up_proj.weight                                  17408x5120     0.1083      8.34e-3      3.25e-5       0.1083
+layers.3.self_attn.k_proj.weight                              1024x5120     0.1144      9.85e-3      3.85e-5       0.1144
+layers.3.self_attn.o_proj.weight                              5120x6144     0.1173      8.50e-3      3.26e-5       0.1173
+layers.3.self_attn.q_proj.weight                             12288x5120     0.1102      8.79e-3      3.37e-5       0.1102
+layers.3.self_attn.v_proj.weight                              1024x5120     0.1142      8.54e-3      3.36e-5       0.1142
