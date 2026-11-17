@@ -1,0 +1,2 @@
+bf16 exit 0
+fp16 exit 0

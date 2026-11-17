@@ -1,0 +1,20 @@
+bf16 vs fp32 KV: KL mean 4.02e-05 median 4.71e-06 max 1.21e-02; max|dlogit| mean 0.042 max 1.738; greedy flips 10/3200
+   pos 149 fp32 margin 0.003
+   pos 276 fp32 margin 0.073
+   pos 337 fp32 margin 0.007
+   pos 366 fp32 margin 0.007
+   pos 474 fp32 margin 0.002
+   pos 545 fp32 margin 0.003
+   pos 1909 fp32 margin 0.013
+   pos 2214 fp32 margin 0.000
+   pos 2498 fp32 margin 0.004
+   pos 3082 fp32 margin 0.002
+fp16 vs fp32 KV: KL mean 3.06e-05 median 2.31e-06 max 4.76e-02; max|dlogit| mean 0.028 max 1.623; greedy flips 8/3200
+   pos 276 fp32 margin 0.073
+   pos 414 fp32 margin 0.002
+   pos 474 fp32 margin 0.002
+   pos 545 fp32 margin 0.003
+   pos 594 fp32 margin 0.001
+   pos 1341 fp32 margin 0.003
+   pos 2890 fp32 margin 0.015
+   pos 3082 fp32 margin 0.002

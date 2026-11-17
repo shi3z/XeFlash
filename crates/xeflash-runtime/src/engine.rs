@@ -456,7 +456,29 @@ impl Engine {
         for (l, st) in self.states.iter().take(LAYERS).enumerate() {
             if l % 4 == 3 {
                 let rows = self.pos * 4 * 256;
+                let kvm = match std::env::var("XF_KV").as_deref() {
+                    Ok("bf16") | Ok("fp16") => 2usize,
+                    _ => 4,
+                };
                 let mut buf = vec![0u32; rows];
+                if kvm == 2 {
+                    // 16-bit KV (K^T layout): hash the stored 16-bit values, position-major
+                    let mut all = vec![0u16; self.ctx * 4 * 256];
+                    st.read(0, &mut all)?;
+                    for p in 0..self.pos {
+                        for kh in 0..4 {
+                            for d in 0..256 {
+                                buf[(p * 4 + kh) * 256 + d] = all[((p / 64 * 4 + kh) * 256 + d) * 64 + p % 64] as u32;
+                            }
+                        }
+                    }
+                    eat(&buf);
+                    let mut vb = vec![0u16; rows];
+                    st.read(self.ctx * 4 * 256 * 2, &mut vb)?;
+                    let vb: Vec<u32> = vb.iter().map(|&x| x as u32).collect();
+                    eat(&vb);
+                    continue;
+                }
                 if std::env::var("XF_ATTN_KT").map_or(true, |v| !v.starts_with('0')) && self.ctx % 64 == 0 {
                     // transposed K: [block of 64][kv head][dim][position]; hash in position-major order
                     let mut all = vec![0u32; self.ctx * 4 * 256];

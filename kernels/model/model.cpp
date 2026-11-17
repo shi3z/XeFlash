@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #include "../ctx.hpp"
 
@@ -162,17 +163,61 @@ GdnState carve_gdn(void *base) {
   s.total = b.off;
   return s;
 }
+// KV storage: 0 = FP32 (default), 1 = BF16, 2 = FP16 (XF_KV=bf16|fp16; experimental, not bit-identical to FP32).
+int kv_mode() {
+  static const int m = [] {
+    const char *e = std::getenv("XF_KV");
+    if (!e) return 0;
+    if (!std::strcmp(e, "bf16")) return 1;
+    if (!std::strcmp(e, "fp16")) return 2;
+    return 0;
+  }();
+  return m;
+}
 struct AttnState {
-  float *K, *V;
+  void *K, *V;
   size_t total;
 };
 AttnState carve_attn(void *base, int ctx) {
   Bump b{static_cast<char *>(base)};
   AttnState s;
-  s.K = b.take<float>(size_t(ctx) * AKH * AD);
-  s.V = b.take<float>(size_t(ctx) * AKH * AD);
+  if (kv_mode() == 0) {
+    s.K = b.take<float>(size_t(ctx) * AKH * AD);
+    s.V = b.take<float>(size_t(ctx) * AKH * AD);
+  } else {
+    s.K = b.take<uint16_t>(size_t(ctx) * AKH * AD);
+    s.V = b.take<uint16_t>(size_t(ctx) * AKH * AD);
+  }
   s.total = b.off;
   return s;
+}
+// 64 KV elements at element index `at` as FP32 (KV: 0 FP32, 1 BF16, 2 FP16) and the reverse.
+template <int KV> inline simd<float, 64> ld64(const void *base, size_t at) {
+  if constexpr (KV == 0) {
+    simd<float, 64> x;
+    x.copy_from(static_cast<const float *>(base) + at);
+    return x;
+  } else {
+    simd<uint16_t, 64> e;
+    e.copy_from(static_cast<const uint16_t *>(base) + at);
+    if constexpr (KV == 1) {
+      simd<uint32_t, 64> u = es::convert<uint32_t>(e) << 16;
+      return u.template bit_cast_view<float>();
+    } else {
+      simd<sycl::half, 64> hh = e.template bit_cast_view<sycl::half>();
+      return es::convert<float>(hh);
+    }
+  }
+}
+template <int KV> inline simd<uint16_t, 64> to16(simd<float, 64> x) {
+  if constexpr (KV == 1) { // round to nearest even
+    simd<uint32_t, 64> u = x.template bit_cast_view<uint32_t>();
+    u = (u + 0x7fffu + ((u >> 16) & 1u)) >> 16;
+    return es::convert<uint16_t>(u);
+  } else {
+    simd<sycl::half, 64> hh = es::convert<sycl::half>(x);
+    return hh.template bit_cast_view<uint16_t>();
+  }
 }
 
 // ------------------------------------------------------------------- kernels
@@ -534,8 +579,8 @@ void k_attn_q(Q &q, const float *yq, size_t qs, const float *gain, const float *
   });
 }
 
-void k_attn_kv(Q &q, const float *yk, const float *yv, size_t ks, const float *gain, const float *cs, const float *sn, float *K,
-               float *V, int m, int pos0, bool kt = false) {
+void k_attn_kv(Q &q, const float *yk, const float *yv, size_t ks, const float *gain, const float *cs, const float *sn, void *K,
+               void *V, int m, int pos0, bool kt = false, int kvm = 0) {
   q.parallel_for(sycl::range<1>(size_t(m) * AKH), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
     const size_t mi = id[0] / AKH, kh = id[0] % AKH;
     simd<float, 64> v[4];
@@ -544,19 +589,31 @@ void k_attn_kv(Q &q, const float *yk, const float *yv, size_t ks, const float *g
     norm_rope(v, gain, cs + (pos0 + mi) * 32, sn + (pos0 + mi) * 32);
 #pragma unroll
     for (int i = 0; i < 4; i++) {
-      if (kt) {
-        // K^T layout: [block of 64 positions][kv head][dim][position in block]
-        const size_t pos = pos0 + mi;
-        float *base = K + ((pos / 64) * AKH + kh) * size_t(AD) * 64 + pos % 64;
-        simd<uint32_t, 64> off(i * 64 * 64, 64);
-        off = off * 4u;
-        es::scatter<float, 64>(base, off, v[i]);
-      } else {
-        v[i].copy_to(K + ((pos0 + mi) * AKH + kh) * AD + i * 64);
-      }
       simd<float, 64> x;
       x.copy_from(yv + mi * ks + kh * AD + i * 64);
-      x.copy_to(V + ((pos0 + mi) * AKH + kh) * AD + i * 64);
+      if (kvm == 0) {
+        float *Kf = static_cast<float *>(K);
+        if (kt) {
+          // K^T layout: [block of 64 positions][kv head][dim][position in block]
+          const size_t pos = pos0 + mi;
+          float *base = Kf + ((pos / 64) * AKH + kh) * size_t(AD) * 64 + pos % 64;
+          simd<uint32_t, 64> off(i * 64 * 64, 64);
+          off = off * 4u;
+          es::scatter<float, 64>(base, off, v[i]);
+        } else {
+          v[i].copy_to(Kf + ((pos0 + mi) * AKH + kh) * AD + i * 64);
+        }
+        x.copy_to(static_cast<float *>(V) + ((pos0 + mi) * AKH + kh) * AD + i * 64);
+      } else { // 16-bit KV (K^T layout only)
+        const size_t pos = pos0 + mi;
+        uint16_t *base = static_cast<uint16_t *>(K) + ((pos / 64) * AKH + kh) * size_t(AD) * 64 + pos % 64;
+        simd<uint32_t, 64> off(i * 64 * 64, 64);
+        off = off * 2u;
+        simd<uint16_t, 64> k16 = kvm == 1 ? to16<1>(v[i]) : to16<2>(v[i]);
+        es::scatter<uint16_t, 64>(base, off, k16);
+        simd<uint16_t, 64> v16 = kvm == 1 ? to16<1>(x) : to16<2>(x);
+        v16.copy_to(static_cast<uint16_t *>(V) + ((pos0 + mi) * AKH + kh) * AD + i * 64);
+      }
     }
   });
 }
@@ -673,8 +730,8 @@ void k_attn_part2(Q &q, const float *qr, const float *K, const float *V, float *
 // Variant C/D (transposed K): K is stored [block of 64 keys][kv head][dim][key], so the 64 keys of a block are the SIMD
 // lanes: a score needs no horizontal reduction, and one K^T vector load feeds TG tokens x HG heads of FMAs
 // (the query element is a scalar broadcast). Causal mask by lane. Output format as k_attn_part.
-template <int HG, int TG>
-void k_attn_part3(Q &q, const float *qr, const float *KT, const float *V, float *pm, float *pd, float *pv, int m,
+template <int HG, int TG, int KV = 0>
+void k_attn_part3(Q &q, const float *qr, const void *KT, const void *V, float *pm, float *pd, float *pv, int m,
                   int pos0, size_t nbs, int gper) {
   // gper = token groups handled by one thread (>= ceil(m / TG): one thread walks them all, 1: one group per thread)
   constexpr int GRP = AH / AKH / HG;
@@ -682,7 +739,7 @@ void k_attn_part3(Q &q, const float *qr, const float *KT, const float *V, float 
   const int ngrp = (m + TG - 1) / TG, nsplit = (ngrp + gper - 1) / gper;
   q.parallel_for(sycl::range<1>(AKH * GRP * nb * nsplit), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
     const size_t b = id[0] % nb, g = id[0] / nb % GRP, kh = id[0] / nb / GRP % AKH, sp = id[0] / nb / GRP / AKH;
-    const float *kb = KT + (b * AKH + kh) * size_t(AD) * 64;
+    const size_t kb = (b * AKH + kh) * size_t(AD) * 64; // element offset of this block's K^T tile
     const simd<int, 64> lane(0, 1);
     for (int t0 = int(sp) * gper * TG; t0 < std::min(m, int(sp + 1) * gper * TG); t0 += TG) {
       const int nt = std::min(TG, m - t0);
@@ -704,8 +761,7 @@ void k_attn_part3(Q &q, const float *qr, const float *KT, const float *V, float 
           }
 #pragma unroll
         for (int dd = 0; dd < 16; dd++) {
-          simd<float, 64> k;
-          k.copy_from(kb + size_t(dc * 16 + dd) * 64);
+          simd<float, 64> k = ld64<KV>(KT, kb + size_t(dc * 16 + dd) * 64);
 #pragma unroll
           for (int tt = 0; tt < TG; tt++)
 #pragma unroll
@@ -737,8 +793,7 @@ void k_attn_part3(Q &q, const float *qr, const float *KT, const float *V, float 
 #pragma unroll
           for (int h = 0; h < HG; h++) acc[tt][h] = 0.0f;
         for (int t = 0; t < kmax; t++) {
-          simd<float, 64> v;
-          v.copy_from(V + ((b * 64 + t) * AKH + kh) * AD + i * 64);
+          simd<float, 64> v = ld64<KV>(V, ((b * 64 + t) * AKH + kh) * AD + i * 64);
 #pragma unroll
           for (int tt = 0; tt < TG; tt++)
 #pragma unroll
@@ -1137,7 +1192,9 @@ struct Pass {
     }
     k_attn_q(q, ws.yq, qs, L.aux[0], md->rope_cos, md->rope_sin, ws.qr, m, pos0);
     static const bool kt = !(std::getenv("XF_ATTN_KT") && std::getenv("XF_ATTN_KT")[0] == '0') && md->ctx % 64 == 0; // default on; XF_ATTN_KT=0 = legacy
-    k_attn_kv(q, yk, yv, ks, L.aux[1], md->rope_cos, md->rope_sin, s.K, s.V, m, pos0, kt);
+    const int kvm = kv_mode();
+    if (kvm && !kt) { xf_set_error("XF_KV needs the K^T layout (ctx multiple of 64, XF_ATTN_KT != 0)"); return XF_ERR_INVALID; }
+    k_attn_kv(q, yk, yv, ks, L.aux[1], md->rope_cos, md->rope_sin, s.K, s.V, m, pos0, kt, kvm);
     if (kt) {
       // Re-read each pass so a sweep can change them between passes (cheap).
       const char *eh = std::getenv("XF_ATTN_HG"), *et = std::getenv("XF_ATTN_TG"), *eg = std::getenv("XF_ATTN_GP");
@@ -1162,20 +1219,30 @@ struct Pass {
         const unsigned key = unsigned(m) * 4u + (nbk < 24 ? 0u : nbk < 48 ? 1u : 2u);
         if (key < 64 && !(seen >> key & 1u)) { seen |= 1u << key; std::fprintf(stderr, "[attn] part3<HG=%d,TG=%d> gper=%d rows=%d blocks=%d\n", hg, tg, gp, m, nbk); }
       }
-#define XF_P3(H, T) k_attn_part3<H, T>(q, ws.qr, s.K, s.V, ws.pm, ws.pd, ws.pv, m, pos0, nbs, gp)
+#define XF_P3(H, T) k_attn_part3<H, T, 0>(q, ws.qr, s.K, s.V, ws.pm, ws.pd, ws.pv, m, pos0, nbs, gp)
+#define XF_P3K(KVM, H, T) k_attn_part3<H, T, KVM>(q, ws.qr, s.K, s.V, ws.pm, ws.pd, ws.pv, m, pos0, nbs, gp)
+#define XF_P3KT(KVM, H) { if (tg <= 2) XF_P3K(KVM, H, 2); else XF_P3K(KVM, H, 4); }
+      if (kvm) {
+        // 16-bit KV: reduced instantiation set (HG 1/3/6, TG 2/4)
+        const int hq = hg >= 6 ? 6 : hg >= 3 ? 3 : 1;
+        if (kvm == 1) { if (hq == 6) XF_P3KT(1, 6) else if (hq == 3) XF_P3KT(1, 3) else XF_P3KT(1, 1) }
+        else { if (hq == 6) XF_P3KT(2, 6) else if (hq == 3) XF_P3KT(2, 3) else XF_P3KT(2, 1) }
+      } else
       if (hg == 6) { if (tg == 1) XF_P3(6, 1); else if (tg == 2) XF_P3(6, 2); else if (tg == 4) XF_P3(6, 4); else XF_P3(6, 8); }
       else if (hg == 1) { if (tg == 1) XF_P3(1, 1); else if (tg == 2) XF_P3(1, 2); else if (tg == 4) XF_P3(1, 4); else XF_P3(1, 8); }
       else if (hg == 2) { if (tg == 1) XF_P3(2, 1); else if (tg == 2) XF_P3(2, 2); else if (tg == 4) XF_P3(2, 4); else XF_P3(2, 8); }
       else { if (tg == 1) XF_P3(3, 1); else if (tg == 2) XF_P3(3, 2); else if (tg == 4) XF_P3(3, 4); else XF_P3(3, 8); }
 #undef XF_P3
+#undef XF_P3K
+#undef XF_P3KT
       (void)nbk;
     } else {
       static const int hg = std::getenv("XF_ATTN_HG") ? std::atoi(std::getenv("XF_ATTN_HG")) : 0;
-      if (hg == 6) k_attn_part2<6>(q, ws.qr, s.K, s.V, ws.pm, ws.pd, ws.pv, m, pos0, nbs);
-      else if (hg == 3) k_attn_part2<3>(q, ws.qr, s.K, s.V, ws.pm, ws.pd, ws.pv, m, pos0, nbs);
-      else if (hg == 2) k_attn_part2<2>(q, ws.qr, s.K, s.V, ws.pm, ws.pd, ws.pv, m, pos0, nbs);
-      else if (hg == 1) k_attn_part2<1>(q, ws.qr, s.K, s.V, ws.pm, ws.pd, ws.pv, m, pos0, nbs);
-      else k_attn_part(q, ws.qr, s.K, s.V, ws.pm, ws.pd, ws.pv, m, pos0, nbs);
+      if (hg == 6) k_attn_part2<6>(q, ws.qr, static_cast<const float *>(s.K), static_cast<const float *>(s.V), ws.pm, ws.pd, ws.pv, m, pos0, nbs);
+      else if (hg == 3) k_attn_part2<3>(q, ws.qr, static_cast<const float *>(s.K), static_cast<const float *>(s.V), ws.pm, ws.pd, ws.pv, m, pos0, nbs);
+      else if (hg == 2) k_attn_part2<2>(q, ws.qr, static_cast<const float *>(s.K), static_cast<const float *>(s.V), ws.pm, ws.pd, ws.pv, m, pos0, nbs);
+      else if (hg == 1) k_attn_part2<1>(q, ws.qr, static_cast<const float *>(s.K), static_cast<const float *>(s.V), ws.pm, ws.pd, ws.pv, m, pos0, nbs);
+      else k_attn_part(q, ws.qr, static_cast<const float *>(s.K), static_cast<const float *>(s.V), ws.pm, ws.pd, ws.pv, m, pos0, nbs);
       static const bool alog = std::getenv("XF_ATTN_LOG") != nullptr;
       static unsigned seen = 0;
       if (alog && !(seen >> m & 1u)) {
