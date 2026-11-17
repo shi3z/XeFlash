@@ -1,0 +1,37 @@
+loaded /data/B60special/models/xfm/qwen38-27b-s4-cal.xfm in 6.3s, context capacity 30720 tokens
+device allocations      count          GiB
+  DeltaNet state           48       0.2168
+  KV cache                 16       3.7500
+  MTP                       5       0.3687
+  MTP KV cache              1       0.2344
+  RoPE table                2       0.0073
+  body matrices           256      11.3428
+  embedding (bf16)          1       2.3682
+  lm_head                   1       0.5920
+  matrix scales           779       0.0393
+  small tensors           408       0.0978
+  workspace                 1       0.2082
+  TOTAL requested        1518      19.2255
+driver free VRAM: 22.4843 GiB before, 3.2218 GiB after, difference 19.2625 GiB
+long30000 K=0     6.78 tok/s | 1.00 tok/pass | trunk 147.23 ms/pass, MTP   0.00 ms/pass | prefill 162 tok/s | accept []
+[27775, 383, 279, 3766]
+outputs identical across draft lengths: true
+sweep pos 30104 cfg 3:4:1: m1 attn 18.46 m8 attn 44.17 m16 attn 90.32
+sweep pos 30104 cfg 3:4:1:6: m1 attn 18.43 m8 attn 50.90 m16 attn 58.92
+sweep pos 30104 cfg 3:4:1:3: m1 attn 18.44 m8 attn 39.70 m16 attn 54.01
+sweep pos 30104 cfg 3:4:1:2: m1 attn 18.43 m8 attn 35.10 m16 attn 61.86
+sweep pos 30104 cfg 6:2:1: m1 attn 14.91 m8 attn 55.95 m16 attn 109.54
+profile ( 1 tokens/pass, sync per stage, ms): norm 1.55 quant 3.08 gemm 35.78 gdn 4.40 attn 14.89 mlp 0.92 head 1.54 | total 62.17
+          unprofiled: 56.10 ms/pass
+profile ( 8 tokens/pass, sync per stage, ms): norm 1.63 quant 3.53 gemm 41.29 gdn 5.31 attn 55.94 mlp 1.43 head 1.81 | total 110.95
+          unprofiled: 104.54 ms/pass
+profile (16 tokens/pass, sync per stage, ms): norm 1.61 quant 3.62 gemm 45.63 gdn 8.14 attn 109.47 mlp 2.08 head 1.88 | total 172.43
+          unprofiled: 166.22 ms/pass
+profile (MTP step, 1 row, sync per stage, ms): norm 0.458 quant 0.061 gemm 0.546 gdn 0.000 attn 0.066 mlp 0.015 head 1.545 | total 2.691
+          unprofiled (includes argmax read-back): 2.551 ms/step
+deep position 30104: cycle K=6, 4 fill rows: draft chain 19.11 ms, trunk pass 101.99 ms, whole cycle 121.11 ms
+deep position 30104: cycle K=7, 4 fill rows: draft chain 22.06 ms, trunk pass 104.52 ms, whole cycle 126.56 ms
+profile (device chain, 1 fill row, 1 drafts, full head, ms): norm 0.433 quant 0.062 gemm 0.548 gdn 0.000 attn 0.061 mlp 0.015 head 1.546 | total 2.664
+          unprofiled: 2.535 ms per chain
+profile (device chain, 1 fill row, 7 drafts, full head, ms): norm 2.998 quant 0.442 gemm 3.837 gdn 0.000 attn 0.478 mlp 0.103 head 10.825 | total 18.683
+          unprofiled: 17.694 ms per chain

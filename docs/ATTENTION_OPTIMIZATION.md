@@ -65,5 +65,40 @@ not DRAM.
   barrier cost, GRF pressure of 96 rows per thread group, and whether ESIMD slm_block_load matches the 64-lane layout.
 - 16-bit KV halves the tile traffic and SLM footprint; combined effect to be measured separately.
 
-## 5. Status
-Step 1 (analysis) done as far as possible without hardware counters. Step 2 (SLM kernel), step 3 (tile 32/64/128 comparison, 8K/30K/48K) not started.
+## 5. SLM work-group kernel `k_attn_slm<HPT,KV,NCK>` (implemented, default for m >= 2)
+Design: one work-group per (kv head, 64-key block); thread = (token, 6/HPT-th of the 6 GQA heads); the group has m * 6/HPT threads (HPT=3: 2m threads,
+limit 64 work-items per group, so HPT=1 fails at 16 rows). The K^T tile is staged in SLM in NCK chunks (all threads copy, barrier, compute scores,
+barrier), the V tile in 4 chunks of 64 dims (16 KiB); scores/softmax stay in registers (same pm/pd/pv partials as before, `k_attn_comb` unchanged);
+scores and V sums are separate phases, not fused across blocks. SLM = max(64 KiB / NCK, 16 KiB); every K/V byte is read from global memory once per pass.
+Selected automatically: m >= 2 -> HPT=3, NCK=4, except m <= 8 with 48 <= blocks < 112 (3K-7K tokens) where `part3` is slightly faster.
+`XF_ATTN_SLM=0` = old kernel, `=2|3|6` force HPT, `XF_ATTN_SLMC=1|2|4` chunking. 16-bit KV uses HPT=3, NCK=4.
+
+Attention stage, ms for 16 layers (synced profile, `benchmarks/results/m7/slm*_sweep_*.log`):
+| ctx | rows | part3 3:4 | SLM HPT=3 NCK=4 | other SLM variants |
+|---:|---:|---:|---:|---|
+| 1.1K | 8 / 16 | 3.82 / 3.81 | 1.64 / 2.58 | |
+| 2.1K | 8 / 16 | 3.84 / 4.33 | 2.82 / 4.78 | |
+| 4.2K | 8 / 16 | 4.41 / 8.56 | 4.92 / 8.63 | |
+| 8.1K | 8 / 16 | 9.04 / 17.54 | 8.71 / 15.89 | HPT=2 (NCK 1): 10.96 / 18.91; HPT=3 NCK1: 12.03 / 15.71 |
+| 30.1K | 8 / 16 | 44.2 / 90.4 | 29.2 / 54.8 | HPT=3 NCK2: 29.6 / 54.4; HPT=2: 36.8 / 65.4; HPT=1: 50.1 / n.a. (64-thread limit) |
+| 48.6K | 8 / 16 | 86.6 / 176.3 | 46.3 / 87.2 | HPT=2 NCK2: 58.6 / 104.4 |
+1-row passes are unchanged (the old kernel stays). HPT=6 (NCK 1) was worse than HPT=3 at 8K-48K (e.g. 48K: 80.8 / 93.8 for 8 / 16 rows).
+
+Correctness: logits over 3,200 teacher-forced tokens, chunks of 8 and 16, are **bit-identical** to the previous kernel (max |dlogit| = 0, 0 greedy flips)
+because every output element is accumulated in the same order; the earlier 1,600-token check was identical for HPT = 2, 3, 6.
+Registers/spill of the new kernels were not inspected; no spill reports were checked beyond the part3 variants in section 2.
+
+End to end (bdraft2, same prompts and settings, `benchmarks/results/m7/f1_*`, `f2_*`):
+| case | before | SLM (auto) |
+|---|---:|---:|
+| 8K, adaptive-cost / fixed 8 / fixed 16 | 53.07 / 53.05 / 43.24 | 53.39 / 53.34 / 44.06 |
+| 30K adaptive-cost | 31.5 (m6) | 38.47 (fixed 16: 29.0) |
+| 5 short prompts, mean | 69.94 | 72.01 |
+| 60K, BF16 KV, 64 tokens, fixed 8 | 34.4 | 40.4 (main pass 124.7 -> 105.1 ms) |
+The 30K "before" is the m6 measurement (not re-run with the old kernel in this session), the others were measured back to back.
+
+## 6. What limits it now
+At 30K, 8 rows, 29 ms for 94 GFLOP (16 layers x 24 heads x 8 tokens x 30K keys x 2 x 256 x 2 FLOP) is ~3.3 TFLOP/s, against ~9 ms for memory at 456 GB/s with one read per tile.
+Both the 8- and 16-row runs land at the same ~3.3 TFLOP/s, i.e. the kernel is now bounded by vector FMA / SLM-load issue, not by DRAM traffic.
+(Inference from FLOP counts; no hardware counters were available.) Reaching the memory floor would need XMX (DPAS) for QK and PV, which needs 16-bit Q/K/V
+operands: that is the BF16/XMX attention step, not done here.

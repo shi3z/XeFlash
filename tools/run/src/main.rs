@@ -478,6 +478,13 @@ fn generate(dev: &Device, args: &[String]) -> Result<()> {
                     std::env::set_var("XF_ATTN_HG", v[0]);
                     std::env::set_var("XF_ATTN_TG", v[1]);
                     std::env::set_var("XF_ATTN_GP", v[2]);
+                    match v.get(3) {
+                        Some(x) if *x != "0" => std::env::set_var("XF_ATTN_SLM", x),
+                        _ => std::env::remove_var("XF_ATTN_SLM"),
+                    }
+                    if let Some(c) = v.get(4) {
+                        std::env::set_var("XF_ATTN_SLMC", c);
+                    }
                 }
                 eprint!("sweep pos {} cfg {cfg}:", e.position());
                 for m in [1usize, 8, 16] {

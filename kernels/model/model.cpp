@@ -812,6 +812,90 @@ void k_attn_part3(Q &q, const float *qr, const void *KT, const void *V, float *p
   });
 }
 
+
+// Work-group attention: one work-group per (kv head, 64-key block) stages the block's K^T tile and then its V tile in SLM once
+// (64 KiB each, reused), so every K/V byte is read from global memory once for all 6 GQA heads and all m tokens.
+// Thread = (token, part of the 6 heads): NP = 6/HPT threads per token, HPT heads per thread, m*NP threads per group.
+// Same pm/pd/pv output as k_attn_part3. Two separate phases (scores, then V sums); no fusion across blocks.
+template <int HPT, int KV, int NCK>
+void k_attn_slm(Q &q, const float *qr, const void *KT, const void *V, float *pm, float *pd, float *pv, int m, int pos0, size_t nbs) {
+  // NCK: the K^T tile is staged in NCK chunks of 256/NCK dims; V in 4 chunks of 64 dims (16 KiB). SLM = max(64 KiB / NCK, 16 KiB).
+  constexpr int NP = AH / AKH / HPT;
+  constexpr int KD = AD / NCK;                   // dims per K chunk
+  constexpr uint32_t SLMB = (KD * 256 > 16384) ? KD * 256 : 16384;
+  const size_t nb = size_t(pos0 + m - 1) / 64 + 1;
+  const int LT = m * NP;
+  q.parallel_for(sycl::nd_range<1>(AKH * nb * LT, LT), [=](sycl::nd_item<1> it) SYCL_ESIMD_KERNEL {
+    es::slm_init<SLMB>();
+    const size_t grp = it.get_group(0);
+    const int lt = int(it.get_local_id(0));
+    const size_t b = grp % nb, kh = grp / nb;
+    const int tok = lt / NP, hp = lt % NP;
+    const simd<int, 64> lane(0, 1);
+    const size_t kb = (b * AKH + kh) * size_t(AD) * 64;
+    simd<float, 64> s[HPT];
+#pragma unroll
+    for (int h = 0; h < HPT; h++) s[h] = 0.0f;
+    const size_t qrow = (size_t(tok) * AH + kh * (AH / AKH) + hp * HPT) * AD;
+    for (int c = 0; c < NCK; c++) {
+      for (int d = lt; d < KD; d += LT) es::slm_block_store<float, 64>(uint32_t(d) * 256u, ld64<KV>(KT, kb + size_t(c * KD + d) * 64));
+      es::barrier();
+      for (int dc = 0; dc < KD / 16; dc++) {
+        simd<float, 16> qc[HPT];
+#pragma unroll
+        for (int h = 0; h < HPT; h++) qc[h].copy_from(qr + qrow + size_t(h) * AD + c * KD + dc * 16);
+#pragma unroll
+        for (int dd = 0; dd < 16; dd++) {
+          simd<float, 64> k = es::slm_block_load<float, 64>(uint32_t(dc * 16 + dd) * 256u);
+#pragma unroll
+          for (int h = 0; h < HPT; h++) s[h] += k * float(qc[h][dd]);
+        }
+      }
+      es::barrier();
+    }
+    const int lim = pos0 + tok - int(b) * 64; // lanes 0..lim visible to this token
+#pragma unroll
+    for (int h = 0; h < HPT; h++) {
+      simd<float, 64> x = s[h] * 0.0625f;
+      x.merge(simd<float, 64>(-1e30f), lane > lim);
+      const float mx = hmax<64>(x);
+      x = es::exp(x - mx);
+      s[h] = x;
+      if (lim >= 0) {
+        const size_t mh = size_t(tok) * AH + kh * (AH / AKH) + hp * HPT + h;
+        storef(pm + mh * nbs + b, mx);
+        storef(pd + mh * nbs + b, hsum<64>(x));
+      }
+    }
+    const int nvalid = std::min(64, pos0 + m - 1 - int(b) * 64 + 1); // keys that exist for the last token of the group
+    const int kmax = std::min(64, lim + 1);
+    for (int i = 0; i < 4; i++) {
+      for (int t = lt; t < 64; t += LT) {
+        simd<float, 64> v(0.0f);
+        if (t < nvalid) v = ld64<KV>(V, ((b * 64 + t) * AKH + kh) * AD + i * 64);
+        es::slm_block_store<float, 64>(uint32_t(t) * 256u, v);
+      }
+      es::barrier();
+      simd<float, 64> acc[HPT];
+#pragma unroll
+      for (int h = 0; h < HPT; h++) acc[h] = 0.0f;
+      for (int t = 0; t < kmax; t++) {
+        simd<float, 64> v = es::slm_block_load<float, 64>(uint32_t(t) * 256u);
+#pragma unroll
+        for (int h = 0; h < HPT; h++) acc[h] += v * float(s[h][t]);
+      }
+      es::barrier();
+      if (lim >= 0) {
+#pragma unroll
+        for (int h = 0; h < HPT; h++) {
+          const size_t mh = size_t(tok) * AH + kh * (AH / AKH) + hp * HPT + h;
+          acc[h].copy_to(pv + (mh * nbs + b) * AD + i * 64);
+        }
+      }
+    }
+  });
+}
+
 // Combine block partials, apply the sigmoid output gate.
 void k_attn_comb(Q &q, const float *pm, const float *pd, const float *pv, const float *yq, size_t qs, float *ao, float *pmax,
                  int m, int pos0, size_t nbs) {
@@ -1214,11 +1298,32 @@ struct Pass {
       }
       const int tg = tgo ? tgo : (m <= 1 ? 1 : m <= 2 ? 2 : 4);
       if (gp == 0) gp = 1000;
-      if (std::getenv("XF_ATTN_LOG")) {
+      const char *esl = std::getenv("XF_ATTN_SLM");
+      const bool autoslm = !esl;
+      int slm = esl ? std::atoi(esl) : ((m >= 2 && !(m <= 8 && nbk >= 48 && nbk < 112)) ? 3 : 0);
+      if (std::getenv("XF_ATTN_LOG") && !(slm && m >= 2)) {
         static unsigned seen = 0;
         const unsigned key = unsigned(m) * 4u + (nbk < 24 ? 0u : nbk < 48 ? 1u : 2u);
         if (key < 64 && !(seen >> key & 1u)) { seen |= 1u << key; std::fprintf(stderr, "[attn] part3<HG=%d,TG=%d> gper=%d rows=%d blocks=%d\n", hg, tg, gp, m, nbk); }
       }
+      // SLM work-group attention: automatic for m >= 2 (HPT=3, K tile in 4 chunks), except 8 rows or fewer at 3K-7K tokens where the
+      // register-tile kernel is a little faster (benchmarks/results/m7). XF_ATTN_SLM=0 forces the old kernel, =2/3/6 forces HPT.
+      if (slm && m >= 2) {
+        if (std::getenv("XF_ATTN_LOG")) {
+          static unsigned seen = 0;
+          const unsigned key = unsigned(m) * 4u + (nbk < 24 ? 0u : nbk < 48 ? 1u : 2u);
+          if (key < 64 && !(seen >> key & 1u)) { seen |= 1u << key; std::fprintf(stderr, "[attn] slm<HPT=%d,KV=%d> rows=%d blocks=%d\n", slm, kvm, m, nbk); }
+        }
+        const char *esc = std::getenv("XF_ATTN_SLMC");
+        const int nck = esc ? std::atoi(esc) : (autoslm ? 4 : 1);
+#define XF_SLM(KVM, H, C) k_attn_slm<H, KVM, C>(q, ws.qr, s.K, s.V, ws.pm, ws.pd, ws.pv, m, pos0, nbs)
+#define XF_SLMC(KVM, H) { if (nck >= 4) XF_SLM(KVM, H, 4); else if (nck == 2) XF_SLM(KVM, H, 2); else XF_SLM(KVM, H, 1); }
+        if (kvm == 0) { if (slm >= 6) XF_SLMC(0, 6) else if (slm >= 3) XF_SLMC(0, 3) else XF_SLMC(0, 2) }
+        else if (kvm == 1) XF_SLM(1, 3, 4);
+        else XF_SLM(2, 3, 4);
+#undef XF_SLM
+#undef XF_SLMC
+      } else
 #define XF_P3(H, T) k_attn_part3<H, T, 0>(q, ws.qr, s.K, s.V, ws.pm, ws.pd, ws.pv, m, pos0, nbs, gp)
 #define XF_P3K(KVM, H, T) k_attn_part3<H, T, KVM>(q, ws.qr, s.K, s.V, ws.pm, ws.pd, ws.pv, m, pos0, nbs, gp)
 #define XF_P3KT(KVM, H) { if (tg <= 2) XF_P3K(KVM, H, 2); else XF_P3K(KVM, H, 4); }

@@ -75,3 +75,5 @@ Quality versus FP32 KV, teacher-forced 3,200 tokens (`kv_quality_3200.txt`):
 
 Both are of the same size as the old-vs-new attention difference (KL 5.2e-5, 9/3200 flips). Neither is lossless; FP16 is a little closer and as fast.
 Not yet measured: retrieval / multi-needle, Japanese/code/math tasks, prefix reuse, EOS at 60K, 60K quality, 30K timing with 16-bit KV.
+
+60K with the SLM attention (BF16 KV, same run settings): 40.4 tok/s, main pass 105 ms (was 34.4 tok/s, 125 ms with the register-tile kernel); same tokens and state as plain decode.

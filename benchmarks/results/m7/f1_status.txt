@@ -1,0 +1,6 @@
+ref8 0
+auto8 0
+auto16 0
+8kauto 0
+8k0 0
+30k 0

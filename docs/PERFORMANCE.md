@@ -862,3 +862,12 @@ both block sizes: 6 of 53 passes used 16 rows in the 8K run of E6's first compar
   4x); 16-bit KV (halves the bytes and the memory, changes results, needs a quality evaluation); more key splits
   for the 1-row case at long context; Page-Sparse attention (approximate, evaluated separately); then the Main
   GEMMs (42 ms of the 8-row pass at any context).
+
+
+## Part F: SLM attention and 16-bit KV (see ATTENTION_OPTIMIZATION.md, KV_MEMORY.md)
+- SLM work-group attention is the default for >= 2 rows: bit-identical to the previous kernel (3,200 tokens, chunks 8 and 16), 30K 8-row attention 44 -> 29 ms,
+  16-row 90 -> 55 ms, 48K 8-row 87 -> 46 ms. bdraft2: 8K 53.07 -> 53.39 tok/s, 30K 31.5 -> 38.5, short-prompt mean 69.9 -> 72.0.
+- `XF_KV=bf16|fp16`: KV halves; 60K fits with bdraft2 (22.40 of 22.48 GiB), 40.4 tok/s (64 tokens). Not bit-identical to FP32 KV:
+  KL 4.0e-5 (BF16) / 3.1e-5 (FP16), 10 / 8 greedy flips in 3,200 tokens (nearly all with FP32 margin < 0.02).
+- Not yet measured: 16-bit KV quality on retrieval/multi-needle/Japanese/code/math, prefix reuse and EOS at 60K, 48K with bdraft2.
+- Next bottleneck at long context: the attention kernel is now FMA-issue bound (~3.3 TFLOP/s); next step would be DPAS-based attention (16-bit operands).
