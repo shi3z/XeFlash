@@ -6,7 +6,8 @@ the YASAKANI inference engine for Qwen3.8-27B as its starting point and
 rebuilds it around the Xe2 GPU (Intel Arc Pro B60): a Rust host, SYCL/ESIMD
 kernels and a weight format that feeds the XMX systolic array directly.
 
-This product is based on software developed by the YASAKANI authors.
+This product is based on software developed by the YASAKANI authors
+(https://github.com/yasakani-dev/yasakani).
 YASAKANI: Copyright 2026 the YASAKANI authors, licensed under the Apache
 License, Version 2.0. XeFlash follows YASAKANI's licence and is distributed
 under the same terms.
