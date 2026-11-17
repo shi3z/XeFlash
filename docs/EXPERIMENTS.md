@@ -301,6 +301,14 @@ pass. All outputs and states identical to plain greedy.
 *Expectation that was wrong.* I expected a clear acceptance loss from the
 main-model mismatch. There is none visible on English, code and proofs.
 
+## E23. Fine-tuning bdraft2 for XeFlash: closed, negative
+
+Input adapter, `fc`, attention LoRA (r8, r16) and the selector projection do not improve acceptance beyond noise on
+held-out text, Japanese included (paired bootstrap, every interval contains zero), while fitting the training data. A
+better SHEAD candidate set is worth under 1.5 % in any category. Details and the list of defects in the experiments
+(a KL anchor that was silently zero for LoRA, a frozen-block backward error, a reference pass using tuned selector
+tables) are in `docs/BDRAFT2.md` section 7 and `/data/B60special/bdraft2-ft/docs/TRAINING_REPORT.md`.
+
 ## Things that did not work or were wrong
 
 * First guess of the low-precision DPAS layout (16-bit channels): wrong, see E1.

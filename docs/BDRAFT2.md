@@ -111,3 +111,31 @@ Rejected rows never reach the ring, so there is no drafter rollback.
 * A native version would decode the 46 matrices with YASAKANI's
   `tools/yskn_decode.py`, re-quantise them to XeFlash's format and reimplement
   about fifteen kernels; then the head could be shared with the main model's.
+
+## 7. Adapting bdraft2 to XeFlash's INT4 main model: negative result
+
+Study in `/data/B60special/bdraft2-ft` (PyTorch port of the drafter verified against the engine: first draft equal in
+99.5 % of recorded cycles; teacher data collected from XeFlash with the `xf-run collect` subcommand: 338 sequences,
+ja/en/code/math/logic, topics disjoint between train, val and test; test untouched).
+
+Untuned bdraft2 on XeFlash's main model, validation, tokens per pass: all 3.45, ja 2.11, en 2.95, code 4.86, math 5.25,
+logic 4.54. Japanese is low on all 14 validation prompts, not on one.
+
+Tried, each against the untuned drafter with a paired sequence bootstrap on the last checkpoint:
+per-tap scale and bias before `fc`; `fc` itself; LoRA rank 8 and 16 on q/k/v/o of the five layers; the selector
+projection `sel.hp`. None moved all-category or Japanese tokens/pass outside +-0.04 / +-0.03 (intervals contain zero);
+the larger variants fit the training sequences (held-in tokens/pass up to +0.1) without any validation gain. A
+sensitivity test explains the first two: scaling the taps by 0.8 to 1.25, adding 0.4 sigma noise, or a constant bias
+barely changes acceptance; only dropping tap 47 or 61 does.
+
+The candidate set is not the limit either: forcing the target into the SHEAD candidates changes the first draft by
++1.2 points on Japanese (60.8 -> 62.0 %), and a perfect candidate step would add 0.03 tokens/pass overall. The target is
+in the drafter's exact top-3 in 78 % of Japanese blocks and first in 61 %: a ranking problem inside the drafter.
+
+Decision: untuned bdraft2 stays the baseline; no tuned weights are ported. Full table, defects found in the experiments
+and the reasoning: `/data/B60special/bdraft2-ft/docs/TRAINING_REPORT.md`. Japanese is a separate study (re-ranking of
+the top-16, a different training objective, much more Japanese data).
+
+Next priorities for XeFlash speed instead (from PERFORMANCE.md): long-context attention (8K-token decode is 2x slower
+per pass than at short context, FP32 unfused attention), the non-GEMM part of the main pass (about 10 ms of 51), and
+the cost of the verification pass for 8 and 16 rows.
