@@ -1,0 +1,12 @@
+[attn] k_attn_part3<HG=3,TG=1> transposed-K, rows=1, pos0=0, threads=8, groups per pass=1; launches per attention layer: kv, part3, comb
+[attn] k_attn_part3<HG=3,TG=2> transposed-K, rows=2, pos0=0, threads=8, groups per pass=1; launches per attention layer: kv, part3, comb
+[attn] k_attn_part3<HG=3,TG=4> transposed-K, rows=16, pos0=0, threads=8, groups per pass=4; launches per attention layer: kv, part3, comb
+[attn] k_attn_part3<HG=3,TG=4> transposed-K, rows=8, pos0=8016, threads=1008, groups per pass=2; launches per attention layer: kv, part3, comb
+long8000 K=0    21.17 tok/s | 1.00 tok/pass | trunk  47.23 ms/pass, MTP   0.00 ms/pass | prefill 216 tok/s | accept []
+[attn] k_attn_part3<HG=3,TG=4> transposed-K, rows=7, pos0=8024, threads=1008, groups per pass=2; launches per attention layer: kv, part3, comb
+[attn] k_attn_part3<HG=3,TG=4> transposed-K, rows=3, pos0=8025, threads=1008, groups per pass=1; launches per attention layer: kv, part3, comb
+[attn] k_attn_part3<HG=3,TG=4> transposed-K, rows=5, pos0=8028, threads=1008, groups per pass=2; launches per attention layer: kv, part3, comb
+[attn] k_attn_part3<HG=3,TG=4> transposed-K, rows=6, pos0=8044, threads=1008, groups per pass=2; launches per attention layer: kv, part3, comb
+[attn] k_attn_part3<HG=3,TG=4> transposed-K, rows=4, pos0=8139, threads=1024, groups per pass=1; launches per attention layer: kv, part3, comb
+long8000 K=6    50.31 tok/s | 3.89 tok/pass | trunk  77.25 ms/pass, MTP   0.00 ms/pass | prefill 194 tok/s | accept [85% 78% 71% 84% 71% 80%]  same tokens, same state at +68
+outputs identical across draft lengths: true

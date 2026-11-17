@@ -232,6 +232,7 @@ fn run_once(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, k: usize
     let mut accepted = vec![0usize; k + 1];
     let mut passes = 0usize;
     let mut state = (0usize, 0u64);
+    let mut hash_s = 0f64;
     let t1 = Instant::now();
     while out.len() < n_new {
         let pos = e.position();
@@ -271,7 +272,11 @@ fn run_once(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, k: usize
         }
         out.extend_from_slice(&drafts[..n]);
         if state.0 == 0 && out.len() >= STATE_AT {
-            state = (out.len(), e.state_hash()?);
+            {
+                let th = Instant::now();
+                state = (out.len(), e.state_hash()?);
+                hash_s += th.elapsed().as_secs_f64(); // not part of the decode time
+            }
         }
         next = g[n - 1].0;
         passes += 1;
@@ -286,7 +291,7 @@ fn run_once(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, k: usize
         }
     }
     dev.wait()?;
-    let decode_s = t1.elapsed().as_secs_f64();
+    let decode_s = t1.elapsed().as_secs_f64() - hash_s;
     let emitted = out.len();
     out.truncate(n_new);
     Ok(RunStats { out, emitted, prefill_s, decode_s, passes, t_main, t_mtp, tried, accepted, state })
@@ -318,6 +323,7 @@ fn run_spec(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, k: usize
     let mut accepted = vec![0usize; k + 1];
     let mut passes = 0usize;
     let mut state = (0usize, 0u64);
+    let mut hash_s = 0f64;
     let t1 = Instant::now();
     while out.len() < n_new {
         let (drafts, g) = e.spec_cycle(&fill, next, k)?;
@@ -337,14 +343,18 @@ fn run_spec(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, k: usize
         }
         out.extend_from_slice(&drafts[..n]);
         if state.0 == 0 && out.len() >= STATE_AT {
-            state = (out.len(), e.state_hash()?);
+            {
+                let th = Instant::now();
+                state = (out.len(), e.state_hash()?);
+                hash_s += th.elapsed().as_secs_f64(); // not part of the decode time
+            }
         }
         next = g[n - 1].0;
         fill = (0..n).map(|i| if i + 1 < n { drafts[i + 1] } else { next }).collect();
         passes += 1;
     }
     dev.wait()?;
-    let decode_s = t1.elapsed().as_secs_f64();
+    let decode_s = t1.elapsed().as_secs_f64() - hash_s;
     let emitted = out.len();
     out.truncate(n_new);
     // The cycle is one submission, so trunk and MTP time are not separable here; see --profile.
@@ -460,6 +470,29 @@ fn generate(dev: &Device, args: &[String]) -> Result<()> {
         std::fs::write(&path, json.trim_end().trim_end_matches(',').to_string() + "\n]\n")?;
     }
     if args.iter().any(|a| a == "--profile") {
+        // XF_ATTN_SWEEP="HG:TG:GP;HG:TG:GP;..." profiles the attention stage for each configuration at this position.
+        if let Ok(sw) = std::env::var("XF_ATTN_SWEEP") {
+            for cfg in sw.split(';') {
+                let v: Vec<&str> = cfg.split(':').collect();
+                unsafe {
+                    std::env::set_var("XF_ATTN_HG", v[0]);
+                    std::env::set_var("XF_ATTN_TG", v[1]);
+                    std::env::set_var("XF_ATTN_GP", v[2]);
+                }
+                eprint!("sweep pos {} cfg {cfg}:", e.position());
+                for m in [1usize, 8, 16] {
+                    let mut prof = [0f64; 7];
+                    let toks: Vec<u32> = (0..m as u32).map(|i| 1000 + i).collect();
+                    e.forward(&toks, None)?;
+                    for _ in 0..6 {
+                        e.forward(&toks, Some(&mut prof))?;
+                        e.commit(0)?;
+                    }
+                    eprint!(" m{m} attn {:.2}", prof[4] / 6.0);
+                }
+                eprintln!();
+            }
+        }
         // Separate profiled passes: they synchronise after every stage, so their sum is above the real pass time.
         for m in [1usize, 8, 16] {
             let mut prof = [0f64; 7];
@@ -502,6 +535,33 @@ fn generate(dev: &Device, args: &[String]) -> Result<()> {
                 e.mtp_pass(&[1000], 5, Some(0), None)?;
             }
             eprintln!("          unprofiled (includes argmax read-back): {:.3} ms/step", t.elapsed().as_secs_f64() / reps as f64 * 1e3);
+            // At the current (deep) position: draft chain, trunk pass and whole cycle, unprofiled, no commit.
+            {
+                let fill = [1000u32; 4];
+                let reps = 10;
+                for (label, k) in [("cycle K=6, 4 fill rows", 6usize), ("cycle K=7, 4 fill rows", 7)] {
+                    e.spec_draft(&fill, 1000, k, None)?;
+                    dev.wait()?;
+                    let t = Instant::now();
+                    for _ in 0..reps {
+                        e.spec_draft(&fill, 1000, k, None)?;
+                    }
+                    dev.wait()?;
+                    let d = t.elapsed().as_secs_f64() / reps as f64 * 1e3;
+                    let toks: Vec<u32> = (0..=k as u32).map(|i| 1000 + i).collect();
+                    let t = Instant::now();
+                    for _ in 0..reps {
+                        e.forward(&toks, None)?;
+                    }
+                    let f = t.elapsed().as_secs_f64() / reps as f64 * 1e3;
+                    let t = Instant::now();
+                    for _ in 0..reps {
+                        e.spec_cycle(&fill, 1000, k)?;
+                    }
+                    let c = t.elapsed().as_secs_f64() / reps as f64 * 1e3;
+                    eprintln!("deep position {}: {label}: draft chain {d:.2} ms, trunk pass {f:.2} ms, whole cycle {c:.2} ms", e.position());
+                }
+            }
             // The device-side chain: 1 fill row + 6 drafts, per-stage and unprofiled.
             let toks = [1000u32];
             e.reset()?;
@@ -547,7 +607,13 @@ impl Bd {
 /// bdraft2 backend fed with captured tap states, `None` the D0/D1-style lookup.
 /// Verify block is `k + 1` rows. Returns the stats plus seconds spent moving taps.
 /// `block` = 8 or 16 rows per verify pass, or 0 for the adaptive rule (see `Adapt`).
-fn run_ext(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, block: usize, mut bd: Option<&mut Bd>) -> Result<(RunStats, f64)> {
+fn run_ext(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, block: usize, bd: Option<&mut Bd>) -> Result<(RunStats, f64)> {
+    run_ext_mode(dev, e, prompt, n_new, block, bd, false)
+}
+
+/// `cost` = adaptive rule with the 16/8 cycle-cost ratio measured on this machine, at the current context length
+/// (probe of real 8- and 16-row passes before decoding), instead of the fixed 1.16 of the short-context port notes.
+fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, block: usize, mut bd: Option<&mut Bd>, cost: bool) -> Result<(RunStats, f64)> {
     let k = if block == 0 { 15 } else { block - 1 };
     let mut adapt = Adapt::new();
     let mut zero_copy = bd.is_some();
@@ -581,6 +647,24 @@ fn run_ext(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, block: us
     }
     dev.wait()?;
     let prefill_s = t0.elapsed().as_secs_f64();
+    if block == 0 && cost {
+        // Probe: real passes at the current position (no commit, taps capture off so the pending taps stay intact).
+        e.set_capture(false);
+        let time = |e: &mut Engine, rows: usize| -> Result<f64> {
+            let ids = vec![next; rows];
+            e.forward(&ids, None)?;
+            let t = Instant::now();
+            for _ in 0..4 {
+                e.forward(&ids, None)?;
+            }
+            Ok(t.elapsed().as_secs_f64() / 4.0 * 1e3)
+        };
+        let (t8, t16) = (time(e, 8)?, time(e, 16)?);
+        let d = if bd.is_some() { 6.5 } else { 0.5 }; // drafter ms per cycle (bdraft2: measured 6.3)
+        adapt.c16 = (t16 + d) / (t8 + d);
+        e.set_capture(bd.is_some());
+        eprintln!("          cost probe at position {}: 8 rows {t8:.1} ms, 16 rows {t16:.1} ms -> c16 = {:.3}", e.position(), adapt.c16);
+    }
 
     let mut out: Vec<u32> = Vec::with_capacity(n_new + 16);
     let (mut t_draft, mut t_main, mut t_taps) = (0f64, 0f64, 0f64);
@@ -588,6 +672,7 @@ fn run_ext(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, block: us
     let mut accepted = vec![0usize; k + 1];
     let mut passes = 0usize;
     let mut state = (0usize, 0u64);
+    let mut hash_s = 0f64;
     let t1 = Instant::now();
     while out.len() < n_new {
         let pos = e.position();
@@ -644,7 +729,11 @@ fn run_ext(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, block: us
         }
         out.extend_from_slice(&ids[..n]);
         if state.0 == 0 && out.len() >= STATE_AT {
-            state = (out.len(), e.state_hash()?);
+            {
+                let th = Instant::now();
+                state = (out.len(), e.state_hash()?);
+                hash_s += th.elapsed().as_secs_f64(); // not part of the decode time
+            }
         }
         next = g[n - 1].0;
         passes += 1;
@@ -653,7 +742,7 @@ fn run_ext(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, block: us
         }
     }
     dev.wait()?;
-    let decode_s = t1.elapsed().as_secs_f64();
+    let decode_s = t1.elapsed().as_secs_f64() - hash_s;
     let emitted = out.len();
     out.truncate(n_new);
     e.set_capture(false);
@@ -674,15 +763,17 @@ struct Adapt {
     g16: f64,
     extra: f64,
     t8: f64,
+    /// Cost of a 16-row cycle relative to an 8-row one (draft + verify + commit).
+    c16: f64,
 }
 
 impl Adapt {
     const C16: f64 = 1.16;
     fn new() -> Self {
-        Adapt { g16: 0.0, extra: 3.0, t8: 4.0 }
+        Adapt { g16: 0.0, extra: 3.0, t8: 4.0, c16: Self::C16 }
     }
     fn use16(&self) -> bool {
-        self.g16 > (Self::C16 - 1.0) * self.t8
+        self.g16 > (self.c16 - 1.0) * self.t8
     }
     /// `a` = drafts accepted in a pass of `rows` rows.
     fn update(&mut self, rows: usize, a: usize) {
@@ -781,16 +872,36 @@ fn compare(dev: &Device, args: &[String]) -> Result<()> {
                 ),
             );
         };
-        if e.has_mtp() {
+        let only_bd = args.iter().any(|a| a == "--only-bd");
+        if e.has_mtp() && !only_bd {
             let r = run_spec(dev, &mut e, &prompt, n_new, k, 16)?;
             report("mtp", &r, 0.0, false);
         }
         if let Some(b) = bd.as_mut() {
-            let (r, taps_s) = run_ext(dev, &mut e, &prompt, n_new, block, Some(b))?;
-            report("bdraft2", &r, taps_s, true);
+            // `--configs 8,16,0,0c`: verify block per run; `0` = adaptive with the fixed port-notes cost ratio,
+            // `0c` = adaptive with the measured cost ratio. Default: the single `--block`.
+            let cfgs: Vec<String> = match opt(args, "--configs") {
+                Some(c) => c.split(',').map(|x| x.to_string()).collect(),
+                None => vec![block.to_string()],
+            };
+            for cfg in cfgs {
+                let (blk, cost) = match cfg.as_str() {
+                    "0c" => (0usize, true),
+                    c => (c.parse::<usize>().map_err(|_| Error::Invalid("bad --configs".into()))?, false),
+                };
+                let (r, taps_s) = run_ext_mode(dev, &mut e, &prompt, n_new, blk, Some(b), cost)?;
+                let label = match (blk, cost) {
+                    (0, true) => "bd2:adapt-cost".to_string(),
+                    (0, false) => "bd2:adapt-old".to_string(),
+                    (n, _) => format!("bd2:fixed{n}"),
+                };
+                report(&label, &r, taps_s, true);
+            }
         }
-        let (r, _) = run_ext(dev, &mut e, &prompt, n_new, block, None)?;
-        report("d0d1", &r, 0.0, true);
+        if !only_bd {
+            let (r, _) = run_ext(dev, &mut e, &prompt, n_new, block, None)?;
+            report("d0d1", &r, 0.0, true);
+        }
     }
     if let Some(path) = opt(args, "--json") {
         std::fs::write(&path, json.trim_end().trim_end_matches(',').to_string() + "\n]\n")?;

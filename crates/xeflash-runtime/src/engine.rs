@@ -457,7 +457,20 @@ impl Engine {
             if l % 4 == 3 {
                 let rows = self.pos * 4 * 256;
                 let mut buf = vec![0u32; rows];
-                st.read(0, &mut buf)?; // K
+                if std::env::var("XF_ATTN_KT").map_or(true, |v| !v.starts_with('0')) && self.ctx % 64 == 0 {
+                    // transposed K: [block of 64][kv head][dim][position]; hash in position-major order
+                    let mut all = vec![0u32; self.ctx * 4 * 256];
+                    st.read(0, &mut all)?;
+                    for p in 0..self.pos {
+                        for kh in 0..4 {
+                            for d in 0..256 {
+                                buf[(p * 4 + kh) * 256 + d] = all[((p / 64 * 4 + kh) * 256 + d) * 64 + p % 64];
+                            }
+                        }
+                    }
+                } else {
+                    st.read(0, &mut buf)?; // K
+                }
                 eat(&buf);
                 st.read(self.ctx * 4 * 256 * 4, &mut buf)?; // V
                 eat(&buf);

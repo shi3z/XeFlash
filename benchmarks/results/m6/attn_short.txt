@@ -1,0 +1,24 @@
+== HG=L TG=0
+profile ( 1 tokens/pass, sync per stage, ms): attn 1.69 | total 49.11
+profile ( 8 tokens/pass, sync per stage, ms): attn 1.77 | total 57.07
+profile (16 tokens/pass, sync per stage, ms): attn 1.78 | total 64.97
+== HG=3 TG=4
+profile ( 1 tokens/pass, sync per stage, ms): attn 3.79 | total 51.01
+profile ( 8 tokens/pass, sync per stage, ms): attn 5.50 | total 61.11
+profile (16 tokens/pass, sync per stage, ms): attn 8.50 | total 71.69
+== HG=1 TG=4
+profile ( 1 tokens/pass, sync per stage, ms): attn 2.78 | total 50.13
+profile ( 8 tokens/pass, sync per stage, ms): attn 3.76 | total 58.88
+profile (16 tokens/pass, sync per stage, ms): attn 5.50 | total 68.78
+== HG=1 TG=2
+profile ( 1 tokens/pass, sync per stage, ms): attn 2.66 | total 49.95
+profile ( 8 tokens/pass, sync per stage, ms): attn 5.07 | total 60.16
+profile (16 tokens/pass, sync per stage, ms): attn 8.09 | total 71.24
+== HG=2 TG=4
+profile ( 1 tokens/pass, sync per stage, ms): attn 3.09 | total 50.43
+profile ( 8 tokens/pass, sync per stage, ms): attn 4.37 | total 59.67
+profile (16 tokens/pass, sync per stage, ms): attn 6.73 | total 69.98
+== HG=6 TG=2
+profile ( 1 tokens/pass, sync per stage, ms): attn 3.76 | total 51.15
+profile ( 8 tokens/pass, sync per stage, ms): attn 8.54 | total 63.86
+profile (16 tokens/pass, sync per stage, ms): attn 14.39 | total 77.57

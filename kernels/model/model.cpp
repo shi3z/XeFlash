@@ -535,7 +535,7 @@ void k_attn_q(Q &q, const float *yq, size_t qs, const float *gain, const float *
 }
 
 void k_attn_kv(Q &q, const float *yk, const float *yv, size_t ks, const float *gain, const float *cs, const float *sn, float *K,
-               float *V, int m, int pos0) {
+               float *V, int m, int pos0, bool kt = false) {
   q.parallel_for(sycl::range<1>(size_t(m) * AKH), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
     const size_t mi = id[0] / AKH, kh = id[0] % AKH;
     simd<float, 64> v[4];
@@ -544,7 +544,16 @@ void k_attn_kv(Q &q, const float *yk, const float *yv, size_t ks, const float *g
     norm_rope(v, gain, cs + (pos0 + mi) * 32, sn + (pos0 + mi) * 32);
 #pragma unroll
     for (int i = 0; i < 4; i++) {
-      v[i].copy_to(K + ((pos0 + mi) * AKH + kh) * AD + i * 64);
+      if (kt) {
+        // K^T layout: [block of 64 positions][kv head][dim][position in block]
+        const size_t pos = pos0 + mi;
+        float *base = K + ((pos / 64) * AKH + kh) * size_t(AD) * 64 + pos % 64;
+        simd<uint32_t, 64> off(i * 64 * 64, 64);
+        off = off * 4u;
+        es::scatter<float, 64>(base, off, v[i]);
+      } else {
+        v[i].copy_to(K + ((pos0 + mi) * AKH + kh) * AD + i * 64);
+      }
       simd<float, 64> x;
       x.copy_from(yv + mi * ks + kh * AD + i * 64);
       x.copy_to(V + ((pos0 + mi) * AKH + kh) * AD + i * 64);
@@ -592,6 +601,159 @@ void k_attn_part(Q &q, const float *qr, const float *K, const float *V, float *p
     storef(pd + mh * nbs + b, den);
 #pragma unroll
     for (int i = 0; i < 4; i++) acc[i].copy_to(pv + (mh * nbs + b) * AD + i * 64);
+  });
+}
+
+
+// Variant B/D: one thread per (kv head, group of HG query heads, block of 64 keys); the thread walks all tokens of
+// the pass over that block, so a K/V row is loaded once per HG heads and the block stays in L1 across tokens.
+// Scores of a block are formed first, then one vectorised softmax, then the weighted V sum. Output format as k_attn_part.
+template <int HG>
+void k_attn_part2(Q &q, const float *qr, const float *K, const float *V, float *pm, float *pd, float *pv, int m,
+                  int pos0, size_t nbs) {
+  constexpr int GRP = AH / AKH / HG; // thread groups per kv head
+  const size_t nb = size_t(pos0 + m - 1) / 64 + 1;
+  q.parallel_for(sycl::range<1>(AKH * GRP * nb), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const size_t b = id[0] % nb, g = id[0] / nb % GRP, kh = id[0] / nb / GRP;
+    for (int mi = 0; mi < m; mi++) {
+      const size_t last = pos0 + mi;
+      if (b * 64 > last) break;
+      const int nk = int(std::min<size_t>(64, last - b * 64 + 1));
+      simd<float, 64> qv[HG][4], s[HG];
+#pragma unroll
+      for (int h = 0; h < HG; h++) {
+        const size_t hh = kh * (AH / AKH) + g * HG + h;
+#pragma unroll
+        for (int i = 0; i < 4; i++) qv[h][i].copy_from(qr + (size_t(mi) * AH + hh) * AD + i * 64);
+        s[h] = -1e30f;
+      }
+      for (int t = 0; t < nk; t++) {
+        simd<float, 64> k[4];
+        const float *kp = K + ((b * 64 + t) * AKH + kh) * AD;
+#pragma unroll
+        for (int i = 0; i < 4; i++) k[i].copy_from(kp + i * 64);
+#pragma unroll
+        for (int h = 0; h < HG; h++)
+          s[h][t] = hsum<64>(qv[h][0] * k[0] + qv[h][1] * k[1] + qv[h][2] * k[2] + qv[h][3] * k[3]) * 0.0625f;
+      }
+      simd<float, 64> acc[HG][4];
+#pragma unroll
+      for (int h = 0; h < HG; h++) {
+        const float mx = hmax<64>(s[h]);
+        s[h] = es::exp(s[h] - mx);
+        const size_t mh = size_t(mi) * AH + kh * (AH / AKH) + g * HG + h;
+        storef(pm + mh * nbs + b, mx);
+        storef(pd + mh * nbs + b, hsum<64>(s[h]));
+#pragma unroll
+        for (int i = 0; i < 4; i++) acc[h][i] = 0.0f;
+      }
+      for (int t = 0; t < nk; t++) {
+        simd<float, 64> v[4];
+        const float *vp = V + ((b * 64 + t) * AKH + kh) * AD;
+#pragma unroll
+        for (int i = 0; i < 4; i++) v[i].copy_from(vp + i * 64);
+#pragma unroll
+        for (int h = 0; h < HG; h++) {
+          const simd<float, 64> w = float(s[h][t]);
+#pragma unroll
+          for (int i = 0; i < 4; i++) acc[h][i] += v[i] * w;
+        }
+      }
+#pragma unroll
+      for (int h = 0; h < HG; h++) {
+        const size_t mh = size_t(mi) * AH + kh * (AH / AKH) + g * HG + h;
+#pragma unroll
+        for (int i = 0; i < 4; i++) acc[h][i].copy_to(pv + (mh * nbs + b) * AD + i * 64);
+      }
+    }
+  });
+}
+
+
+// Variant C/D (transposed K): K is stored [block of 64 keys][kv head][dim][key], so the 64 keys of a block are the SIMD
+// lanes: a score needs no horizontal reduction, and one K^T vector load feeds TG tokens x HG heads of FMAs
+// (the query element is a scalar broadcast). Causal mask by lane. Output format as k_attn_part.
+template <int HG, int TG>
+void k_attn_part3(Q &q, const float *qr, const float *KT, const float *V, float *pm, float *pd, float *pv, int m,
+                  int pos0, size_t nbs, int gper) {
+  // gper = token groups handled by one thread (>= ceil(m / TG): one thread walks them all, 1: one group per thread)
+  constexpr int GRP = AH / AKH / HG;
+  const size_t nb = size_t(pos0 + m - 1) / 64 + 1;
+  const int ngrp = (m + TG - 1) / TG, nsplit = (ngrp + gper - 1) / gper;
+  q.parallel_for(sycl::range<1>(AKH * GRP * nb * nsplit), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const size_t b = id[0] % nb, g = id[0] / nb % GRP, kh = id[0] / nb / GRP % AKH, sp = id[0] / nb / GRP / AKH;
+    const float *kb = KT + (b * AKH + kh) * size_t(AD) * 64;
+    const simd<int, 64> lane(0, 1);
+    for (int t0 = int(sp) * gper * TG; t0 < std::min(m, int(sp + 1) * gper * TG); t0 += TG) {
+      const int nt = std::min(TG, m - t0);
+      const int lastg = pos0 + t0 + nt - 1; // last position seen by the last token of the group
+      if (int(b) * 64 > lastg) continue;
+      simd<float, 64> s[TG][HG];
+#pragma unroll
+      for (int tt = 0; tt < TG; tt++)
+#pragma unroll
+        for (int h = 0; h < HG; h++) s[tt][h] = 0.0f;
+      for (int dc = 0; dc < AD / 16; dc++) {
+        simd<float, 16> qc[TG][HG];
+#pragma unroll
+        for (int tt = 0; tt < TG; tt++)
+#pragma unroll
+          for (int h = 0; h < HG; h++) {
+            if (tt < nt) qc[tt][h].copy_from(qr + (size_t(t0 + tt) * AH + kh * (AH / AKH) + g * HG + h) * AD + dc * 16);
+            else qc[tt][h] = 0.0f;
+          }
+#pragma unroll
+        for (int dd = 0; dd < 16; dd++) {
+          simd<float, 64> k;
+          k.copy_from(kb + size_t(dc * 16 + dd) * 64);
+#pragma unroll
+          for (int tt = 0; tt < TG; tt++)
+#pragma unroll
+            for (int h = 0; h < HG; h++) s[tt][h] += k * float(qc[tt][h][dd]);
+        }
+      }
+#pragma unroll
+      for (int tt = 0; tt < TG; tt++) {
+        const int lim = pos0 + t0 + tt - int(b) * 64; // lanes 0..lim visible
+#pragma unroll
+        for (int h = 0; h < HG; h++) {
+          simd<float, 64> x = s[tt][h] * 0.0625f;
+          x.merge(simd<float, 64>(-1e30f), lane > lim);
+          const float mx = hmax<64>(x);
+          x = es::exp(x - mx);
+          s[tt][h] = x;
+          if (tt < nt && lim >= 0) {
+            const size_t mh = size_t(t0 + tt) * AH + kh * (AH / AKH) + g * HG + h;
+            storef(pm + mh * nbs + b, mx);
+            storef(pd + mh * nbs + b, hsum<64>(x));
+          }
+        }
+      }
+      const int kmax = std::min(64, lastg - int(b) * 64 + 1);
+      for (int i = 0; i < 4; i++) {
+        simd<float, 64> acc[TG][HG];
+#pragma unroll
+        for (int tt = 0; tt < TG; tt++)
+#pragma unroll
+          for (int h = 0; h < HG; h++) acc[tt][h] = 0.0f;
+        for (int t = 0; t < kmax; t++) {
+          simd<float, 64> v;
+          v.copy_from(V + ((b * 64 + t) * AKH + kh) * AD + i * 64);
+#pragma unroll
+          for (int tt = 0; tt < TG; tt++)
+#pragma unroll
+            for (int h = 0; h < HG; h++) acc[tt][h] += v * float(s[tt][h][t]);
+        }
+#pragma unroll
+        for (int tt = 0; tt < TG; tt++)
+#pragma unroll
+          for (int h = 0; h < HG; h++)
+            if (tt < nt && pos0 + t0 + tt >= int(b) * 64) {
+              const size_t mh = size_t(t0 + tt) * AH + kh * (AH / AKH) + g * HG + h;
+              acc[tt][h].copy_to(pv + (mh * nbs + b) * AD + i * 64);
+            }
+      }
+    }
   });
 }
 
@@ -974,8 +1136,53 @@ struct Pass {
       yv = ws.yv;
     }
     k_attn_q(q, ws.yq, qs, L.aux[0], md->rope_cos, md->rope_sin, ws.qr, m, pos0);
-    k_attn_kv(q, yk, yv, ks, L.aux[1], md->rope_cos, md->rope_sin, s.K, s.V, m, pos0);
-    k_attn_part(q, ws.qr, s.K, s.V, ws.pm, ws.pd, ws.pv, m, pos0, nbs);
+    static const bool kt = !(std::getenv("XF_ATTN_KT") && std::getenv("XF_ATTN_KT")[0] == '0') && md->ctx % 64 == 0; // default on; XF_ATTN_KT=0 = legacy
+    k_attn_kv(q, yk, yv, ks, L.aux[1], md->rope_cos, md->rope_sin, s.K, s.V, m, pos0, kt);
+    if (kt) {
+      // Re-read each pass so a sweep can change them between passes (cheap).
+      const char *eh = std::getenv("XF_ATTN_HG"), *et = std::getenv("XF_ATTN_TG"), *eg = std::getenv("XF_ATTN_GP");
+      const int nbk = int(size_t(pos0 + m - 1) / 64 + 1);
+      int hg = eh ? std::atoi(eh) : 3;
+      int tgo = et ? std::atoi(et) : 0;
+      int gp = eg ? std::atoi(eg) : 0;
+      if (!eh && !et && !eg) {
+        // Automatic choice, from the sweep in PERFORMANCE.md (best HG:TG, one token group per thread):
+        // short contexts need more threads (small HG/TG), long ones more reuse (HG=3, TG=4).
+        if (m == 1) { hg = nbk < 24 ? 1 : nbk < 200 ? 3 : 6; tgo = 2; }
+        else if (m <= 8) { hg = 3; tgo = nbk < 48 ? 2 : 4; }
+        else if (nbk < 24) { hg = 3; tgo = 2; }
+        else if (nbk < 48) { hg = 6; tgo = 2; }
+        else { hg = 3; tgo = 4; }
+        gp = 1;
+      }
+      const int tg = tgo ? tgo : (m <= 1 ? 1 : m <= 2 ? 2 : 4);
+      if (gp == 0) gp = 1000;
+      if (std::getenv("XF_ATTN_LOG")) {
+        static unsigned seen = 0;
+        const unsigned key = unsigned(m) * 4u + (nbk < 24 ? 0u : nbk < 48 ? 1u : 2u);
+        if (key < 64 && !(seen >> key & 1u)) { seen |= 1u << key; std::fprintf(stderr, "[attn] part3<HG=%d,TG=%d> gper=%d rows=%d blocks=%d\n", hg, tg, gp, m, nbk); }
+      }
+#define XF_P3(H, T) k_attn_part3<H, T>(q, ws.qr, s.K, s.V, ws.pm, ws.pd, ws.pv, m, pos0, nbs, gp)
+      if (hg == 6) { if (tg == 1) XF_P3(6, 1); else if (tg == 2) XF_P3(6, 2); else if (tg == 4) XF_P3(6, 4); else XF_P3(6, 8); }
+      else if (hg == 1) { if (tg == 1) XF_P3(1, 1); else if (tg == 2) XF_P3(1, 2); else if (tg == 4) XF_P3(1, 4); else XF_P3(1, 8); }
+      else if (hg == 2) { if (tg == 1) XF_P3(2, 1); else if (tg == 2) XF_P3(2, 2); else if (tg == 4) XF_P3(2, 4); else XF_P3(2, 8); }
+      else { if (tg == 1) XF_P3(3, 1); else if (tg == 2) XF_P3(3, 2); else if (tg == 4) XF_P3(3, 4); else XF_P3(3, 8); }
+#undef XF_P3
+      (void)nbk;
+    } else {
+      static const int hg = std::getenv("XF_ATTN_HG") ? std::atoi(std::getenv("XF_ATTN_HG")) : 0;
+      if (hg == 6) k_attn_part2<6>(q, ws.qr, s.K, s.V, ws.pm, ws.pd, ws.pv, m, pos0, nbs);
+      else if (hg == 3) k_attn_part2<3>(q, ws.qr, s.K, s.V, ws.pm, ws.pd, ws.pv, m, pos0, nbs);
+      else if (hg == 2) k_attn_part2<2>(q, ws.qr, s.K, s.V, ws.pm, ws.pd, ws.pv, m, pos0, nbs);
+      else if (hg == 1) k_attn_part2<1>(q, ws.qr, s.K, s.V, ws.pm, ws.pd, ws.pv, m, pos0, nbs);
+      else k_attn_part(q, ws.qr, s.K, s.V, ws.pm, ws.pd, ws.pv, m, pos0, nbs);
+      static const bool alog = std::getenv("XF_ATTN_LOG") != nullptr;
+      static unsigned seen = 0;
+      if (alog && !(seen >> m & 1u)) {
+        seen |= 1u << m;
+        std::fprintf(stderr, "[attn] legacy path (hg=%d), rows=%d, pos0=%d, row-major K\n", hg, m, pos0);
+      }
+    }
     k_attn_comb(q, ws.pm, ws.pd, ws.pv, ws.yq, qs, ws.go, ws.pmax, m, pos0, nbs);
     tm.tick(P_ATTN);
     if (int st = gemm(L.m[3], ws.go, ws.y)) return st;

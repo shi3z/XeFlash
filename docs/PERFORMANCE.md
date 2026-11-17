@@ -675,3 +675,190 @@ target whose feasibility is not established.
 2. Text-level quality of s4 and s3 against BF16 and both YASAKANI files.
 3. s3 kernel tuning (single 192-byte load, 8-token path) and a prefill kernel
    that keeps XMX busy.
+
+# Part E. Long-context attention (K^T layout, shared K/V tiles)
+
+All numbers: Qwen3.8-27B s4 calibrated container, B60, greedy, same prompts, same drafter weights, decode time
+excludes load, prefill, warm-up and the state hash. Raw data: `benchmarks/results/m6/`.
+
+## E1. Why the old attention was slow
+
+`k_attn_part` ran one thread per (token, query head, 64-key block) and re-read the FP32 K/V rows for every token and
+every head (the 6 query heads of a KV head did not share loads). At 8,040 tokens: 1 row 6.9 ms, 8 rows 38.7 ms,
+16 rows 75.7 ms of the pass (time grew with the number of rows). Per-stage times are measured with a synchronisation
+after each stage (their sum exceeds the real pass); unsynchronised pass times are listed separately.
+
+## E2. New kernel (`k_attn_part3<HG,TG>`, `kernels/model/model.cpp`)
+
+* K cache is stored transposed per block: `[block of 64 keys][kv head][dim][key]`. The 64 keys of a block are the
+  SIMD lanes, so a score needs no horizontal reduction; one K^T vector load feeds `TG tokens x HG heads` FMAs
+  (query element = scalar broadcast). V stays `[key][kv head][dim]`.
+* One thread = (kv head, group of HG query heads, 64-key block, group of TG tokens when `gper = 1`). It forms the 64
+  scores of every (token, head) of its group, a vectorised softmax (masked lanes = causal mask), then the weighted V
+  sum. Partial results use the same `pm/pd/pv` format, so `k_attn_comb` is unchanged.
+* FP32 throughout. Per-token arithmetic does not depend on HG, TG or the number of rows, so passes of 1, 8 and 16
+  rows are bit-identical (checked: hidden state of 8 layers, logits and greedy tokens over 3,200 positions).
+* Switch: `XF_ATTN_KT=0` selects the old kernels and row-major K layout. `XF_ATTN_HG/TG/GP` force a configuration;
+  `XF_ATTN_LOG=1` prints the configuration chosen per pass size; `XF_ATTN_SWEEP="HG:TG:GP;..."` with
+  `xf-run gen --profile` sweeps configurations at the current position without reloading.
+* Layout note: the K layout is fixed when the cache is written, so it cannot be switched by context length at run
+  time. Instead the configuration (HG, TG) is chosen per pass by context length and row count.
+
+## E3. Configuration sweep (attention stage, ms, rows 1 / 8 / 16)
+
+`benchmarks/results/m6/attn_sweep.txt`, `attn_kt_8k*.txt`, `l30k_prof.log`, `l48k_prof.log`.
+
+| context | old kernel | best new (HG:TG:GP) |
+|---|---|---|
+| 336 | 1.65 / 1.85 / 2.95 | 1:2:1 2.66 / 2.74 / 2.80 |
+| 1,104 | 1.71 / 4.06 / 6.45 | 1:2:1 2.66, 2:2:1 2.89, 3:2:1 3.00 |
+| 2,128 | 1.95 / 7.79 / 13.59 | 3:2:1 2.87 / 3.19, 6:2:1 4.05 (16) |
+| 4,176 | 3.60 / 16.78 / 31.55 | 3:2:1 3.12; 3:4:1 4.42 (8); 6:2:1 8.58 (16) |
+| 8,104 | 6.91 / 38.63 / 75.78 | 3:2:1 4.23; 3:4:1 9.05 (8), 17.53 (16) |
+| 30,104 | 37.6 / 386.6 / 824.5 | 6:2:1 14.96; 3:4:1 44.2 (8), 90.3 (16) |
+| 48,580 | not measured | 6:2:1 24.8; 3:4:1 86.6 (8), 176.5 (16) |
+
+HG = query heads per thread (6 = the whole GQA group), TG = tokens per thread, GP = 1: token groups are spread over
+threads. Larger HG/TG reuse more loads but leave fewer threads; with TG = 8 registers spill (3:8 is 2x slower), and
+HG=6 with TG=4 loses. The automatic choice (used unless `XF_ATTN_*` is set):
+1 row: HG 1 below 1,536 tokens, 3 below 12,800, else 6 (TG 2); 2 to 8 rows: HG 3, TG 2 below 3,072 tokens else 4;
+9 to 16 rows: HG 3 / TG 2 below 1,536, HG 6 / TG 2 up to 3,072, then HG 3 / TG 4.
+
+At short context the new kernel is slower than the old one (about 0.9 ms of a 57 ms pass at 336 tokens, 1.6 %): the
+work is too small to fill the GPU and per-launch latency dominates. It overtakes the old kernel at about 1,000
+tokens.
+
+## E4. Main pass at 8K (position 8,040, unsynchronised pass time)
+
+| rows | old attention | new attention |
+|---|---|---|
+| 1 | 48.1 ms | 45.3 ms |
+| 8 | 87.4 ms | 58.3 ms |
+| 16 | 132.5 ms | 74.3 ms |
+
+Stage times with per-stage synchronisation, 8 rows: GEMM 41.8, attention 9.2 (was 38.7), GDN 5.3, norm 1.6, quant 3.5,
+MLP act 1.4, head 1.8.
+
+## E5. Why the first end-to-end number moved less than the kernel (measurement error, fixed)
+
+The first `gen` runs reported 116 -> 106 ms per K=6 cycle although the in-process cycle measured 99.9 -> 74.2 ms.
+The `state_hash` check (reads and hashes the whole KV, about 1 GB on the host) sat inside the timed decode loop;
+with the transposed K it also needs a re-ordering loop, so it cost more on the new path. It is now excluded from
+decode time (the check itself still runs). After the fix: K=6 with the MTP drafter at 8K, 103.4 -> 77.3 ms per
+cycle, 37.6 -> 50.3 tok/s. Production uses the new kernel: `XF_ATTN_LOG=1` shows
+`k_attn_part3<HG=3,TG=4>` for 8 rows at 8K.
+
+## E6. bdraft2 end to end
+
+Adaptive 8/16 verify block, sketch MTP head, 512 new tokens for the short prompts and 256 for the 8K prompt,
+state check at +68 tokens against non-speculative decoding. "adapt-old" is the rule of D2 (fixed cost ratio 1.16);
+"adapt-cost" measures real 8- and 16-row passes at the start of the run and uses their ratio.
+
+8K (long8000, 8,024-token prompt):
+
+| configuration | tok/s | tokens/pass | cycle ms | main | drafter | 16-row cycles |
+|---|---|---|---|---|---|---|
+| old attention, fixed 8 | 36.75 | 3.53 | 95.96 | 88.08 | 6.14 | 0 |
+| old attention, fixed 16 | 25.46 | 3.62 | 142.38 | 133.29 | 7.33 | all |
+| old attention, adapt-old | 35.16 | 3.53 | 100.31 | 92.36 | 6.22 | few |
+| new attention, fixed 8 | 53.02 | 3.53 | 66.52 | 58.64 | 6.15 | 0 |
+| new attention, fixed 16 | 43.25 | 3.62 | 83.82 | 74.73 | 7.34 | all |
+| new attention, adapt-old | 51.79 | 3.53 | 68.11 | 60.14 | 6.22 | 7 of 74 |
+| new attention, adapt-cost | 53.07 | 3.53 | 66.46 | 58.62 | 6.10 | 0 of 74 |
+
+All rows: same tokens as plain greedy, same committed state. Measured 8/16-row pass cost ratio at this length 1.248
+(old rule assumes 1.16), so 16 rows are not worth it for this prompt (about 3.5 tokens per pass; the 16-row block
+adds 0.09). An earlier run of the same comparison (192 tokens) gave 36.0 -> 53.0 tok/s.
+
+Short prompts (new attention vs old attention, same adaptive rule; tok/s):
+
+| prompt | old attn adapt-old | new fixed 8 | new fixed 16 | new adapt-old | new adapt-cost |
+|---|---|---|---|---|---|
+| explain | 76.40 | 74.47 | 72.94 | 75.29 | 74.70 |
+| code | 117.74 | 102.02 | 117.43 | 114.02 | 114.64 |
+| story | 42.30 | 41.45 | 36.07 | 41.46 | 41.46 |
+| proof | 116.54 | 99.71 | 116.40 | 115.71 | 116.82 |
+| japanese | 34.23 | 33.79 | 29.39 | 33.74 | 33.70 |
+| mean of 4 (explain..proof) | 88.2 | 79.4 | 85.7 | 86.6 | 86.9 |
+| mean of 5 | 77.4 | 70.3 | 74.4 | 76.0 | 76.3 |
+
+The new attention costs about 1.5 % at short context (the old attention run was taken on another day in one
+process; the two are not interleaved, so a difference of 1 % is within run-to-run variation). The measured-ratio
+rule equals the old rule to within noise at short context (ratio 1.14, close to the 1.16 constant) and is better
+at 8K and beyond, where the ratio rises to 1.25 (8K) and 1.55 (30K); fixed 16 loses about 13 % on story and Japanese,
+and fixed 8 loses 10 to 15 % on code and proof, so the adaptive rule stays. No category is worse than fixed 8
+by more than noise.
+
+## E7. 30K and the memory limit
+
+FP32 KV costs 128 KiB per token (16 layers) plus 8 KiB for the MTP layer; the pass workspace grows with context.
+
+| context capacity | main + MTP + sketch | + bdraft2 | fits in 22.48 GiB free |
+|---|---|---|---|
+| 8,448 | 16.37 GiB | 19.17 GiB | yes |
+| 30,720 | 19.39 GiB | 22.20 GiB | yes (0.28 GiB left) |
+| 49,152 | 21.73 GiB | 24.5 GiB | without bdraft2 only |
+| 61,440 | needs more than 22.5 GiB | | no, `xf_alloc` refuses the 363 MB pass workspace |
+
+So 60K is not reachable with the FP32 KV cache on a 24 GB card, with or without bdraft2; 16-bit KV would be needed
+(not implemented, and not an exact change). The largest measured context is 48,580 tokens without bdraft2.
+
+30K (long30000, 30,024-token prompt of non-repeating text, bdraft2, 192 new tokens):
+
+| | new attention | old attention |
+|---|---|---|
+| fixed 8: tok/s / tokens per pass | 31.53 / 3.18 | not run end to end (see below) |
+| adapt-cost (measured ratio 1.548: never 16 rows) | 31.54 | |
+| cycle / main / drafter | 100.86 / 92.99 / 6.15 ms | |
+| 8-row pass, unsynchronised | 96.2 ms | 437.4 ms |
+| 16-row pass | 147.2 ms | 885.5 ms |
+| 1-row pass | 82.4 ms | 78.7 ms |
+| K=0 decode | 16.1 tok/s | 12.6 tok/s |
+| prefill | 162 tok/s | 47 tok/s |
+
+An end-to-end old-attention run at 30K would hold the shared GPU lock for about 40 minutes (prefill with the old
+kernel is 47 tok/s and the comparison prefills the prompt several times), so the old side is given at pass level
+only. At 30K the old attention costs 387 ms per 8-row pass (the K/V of 16 layers no longer stay in cache);
+the new one 44 ms.
+
+48.5K, no bdraft2, 16 new tokens: K=0 12.56 tok/s (79.6 ms per token); passes 128.5 / 148.9 / 253.2 ms for 1 / 8 / 16 rows,
+attention 87 / 100 / 196 ms in the last (sweep) configuration, best 3:4:1 86.6 ms (8 rows) and 6:2:1 24.8 ms (1 row).
+
+## E8. Numerical agreement with the old kernel
+
+`benchmarks/results/m6/numeric_check.txt`, `numeric_kl.txt`. Teacher-forced run of 3,200 tokens in chunks of 8:
+
+* The new kernel is not bit-identical to the old one (different summation order and a block-wise softmax). Hidden
+  state relative RMS difference: 1e-4 after layer 7, 7e-4 after layer 31, 3.7e-3 at the final hidden state;
+  KL(old || new) of the next-token distribution: mean 5.2e-5, median 2.1e-6, max 3.9e-2 (the fidelity gap of the
+  quantised model to the original is KL 0.069).
+* The greedy token differs at 9 of 3,200 positions; in 8 of them the top-two logit gap is at most 0.015; the
+  other (position 2,890) has a gap of 0.116 in the old kernel and 0.015 in the new one. Generated sequences of up to 512 tokens were
+  identical to the old kernel in the 8K runs above; this is not guaranteed for every sequence.
+* Within the new kernel, chunks of 1, 8 and 16 tokens are bit-identical in all 65 layer outputs and in logits,
+  and speculative decoding reproduces plain greedy decoding (tokens and committed state, hash over DeltaNet
+  state, convolution history and every committed KV row, compared at +68 tokens) in every run above.
+  Commit and rejection are unchanged (a pass never writes committed state).
+
+Not tested in this round: prefix reuse, EOS handling (no stop-token logic in `xf-run`), rollback across a
+switch between 8 and 16 rows beyond the state hash comparison above (the hash is taken after runs that mix
+both block sizes: 6 of 53 passes used 16 rows in the 8K run of E6's first comparison, 7 of 74 in adapt-old).
+
+## E9. Where the time goes now (8 rows, unsynchronised pass)
+
+| context | pass | GEMM | attention | GDN | other |
+|---|---|---|---|---|---|
+| 8K | 58.3 ms | 41.8 (72 %) | 9.2 (16 %) | 5.3 | 7.9 |
+| 30K | 96.2 | 41.3 (43 %) | 44 (46 %) | 5.3 | 9 |
+| 48.5K | 148.9 | 41.3 (28 %) | 86.6 (58 %) | 5.3 | 9 |
+
+* At 8K the Main GEMMs dominate again; the drafter adds 6 ms per cycle.
+* From 30K on attention dominates and grows faster than linearly (8K 9.2 ms, 30K 44 ms, 48.5K 87 ms: the K/V of
+  one layer no longer fits the L2). The kernel is bound by reading K/V: one pass reads 128 KiB per token once per
+  query-head group (2 with HG=3) and once per token group (2 for 8 rows), i.e. about four times the minimum
+  (30K: 3.9 GB minimum, 15.7 GB read, 44 ms is about 360 GB/s).
+* Candidates, in the order the measurements suggest (none implemented in this round): a work-group of the
+  head-group x token-group threads of one block that loads each K/V tile once into SLM (cuts the traffic about
+  4x); 16-bit KV (halves the bytes and the memory, changes results, needs a quality evaluation); more key splits
+  for the 1-row case at long context; Page-Sparse attention (approximate, evaluated separately); then the Main
+  GEMMs (42 ms of the 8-row pass at any context).

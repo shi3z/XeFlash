@@ -1,0 +1,3 @@
+long8000 K=0    18.88 tok/s | 1.00 tok/pass | trunk  47.92 ms/pass, MTP   0.00 ms/pass | prefill 216 tok/s | accept []
+long8000 K=6    36.53 tok/s | 3.89 tok/pass | trunk 106.40 ms/pass, MTP   0.00 ms/pass | prefill 194 tok/s | accept [85% 78% 71% 84% 71% 80%]  same tokens, same state at +68
+outputs identical across draft lengths: true

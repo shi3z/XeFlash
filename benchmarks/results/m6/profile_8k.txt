@@ -1,0 +1,30 @@
+loaded /data/B60special/models/xfm/qwen38-27b-s4-cal.xfm in 6.2s, context capacity 8448 tokens
+device allocations      count          GiB
+  DeltaNet state           48       0.2168
+  KV cache                 16       1.0312
+  MTP                       5       0.3687
+  MTP KV cache              1       0.0645
+  RoPE table                2       0.0020
+  body matrices           256      11.3428
+  embedding (bf16)          1       2.3682
+  lm_head                   1       0.5920
+  matrix scales           779       0.0393
+  small tensors           408       0.0978
+  workspace                 1       0.0798
+  TOTAL requested        1518      16.2031
+driver free VRAM: 22.4843 GiB before, 6.2467 GiB after, difference 16.2375 GiB
+long8000 K=0    20.10 tok/s | 1.00 tok/pass | trunk  49.66 ms/pass, MTP   0.00 ms/pass | prefill 173 tok/s | accept []
+[8160, 369, 264, 11782, 314, 279, 1822, 3387, 494, 279, 3766, 8129, 8559, 279, 2548, 286]
+outputs identical across draft lengths: true
+profile ( 1 tokens/pass, sync per stage, ms): norm 1.62 quant 3.14 gemm 35.87 gdn 4.42 attn 6.87 mlp 0.95 head 1.54 | total 54.42
+          unprofiled: 48.07 ms/pass
+profile ( 8 tokens/pass, sync per stage, ms): norm 1.63 quant 3.56 gemm 41.57 gdn 5.31 attn 38.67 mlp 1.44 head 1.82 | total 94.01
+          unprofiled: 87.43 ms/pass
+profile (16 tokens/pass, sync per stage, ms): norm 1.63 quant 3.68 gemm 45.85 gdn 8.15 attn 75.72 mlp 2.07 head 1.88 | total 138.98
+          unprofiled: 132.48 ms/pass
+profile (MTP step, 1 row, sync per stage, ms): norm 0.463 quant 0.060 gemm 0.551 gdn 0.000 attn 0.036 mlp 0.014 head 1.545 | total 2.670
+          unprofiled (includes argmax read-back): 2.543 ms/step
+profile (device chain, 1 fill row, 1 drafts, full head, ms): norm 0.444 quant 0.065 gemm 0.555 gdn 0.000 attn 0.034 mlp 0.014 head 1.546 | total 2.658
+          unprofiled: 2.517 ms per chain
+profile (device chain, 1 fill row, 7 drafts, full head, ms): norm 3.020 quant 0.428 gemm 3.859 gdn 0.000 attn 0.247 mlp 0.100 head 10.817 | total 18.472
+          unprofiled: 17.553 ms per chain

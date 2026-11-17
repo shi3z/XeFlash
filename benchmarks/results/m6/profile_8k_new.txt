@@ -1,0 +1,12 @@
+profile ( 1 tokens/pass, sync per stage, ms): norm 1.61 quant 3.17 gemm 35.90 gdn 4.42 attn 4.11 mlp 0.95 head 1.55 | total 51.71
+          unprofiled: 45.33 ms/pass
+profile ( 8 tokens/pass, sync per stage, ms): norm 1.59 quant 3.49 gemm 41.84 gdn 5.31 attn 9.22 mlp 1.44 head 1.82 | total 64.70
+          unprofiled: 58.32 ms/pass
+profile (16 tokens/pass, sync per stage, ms): norm 1.61 quant 3.59 gemm 45.75 gdn 8.17 attn 17.60 mlp 2.09 head 1.89 | total 80.70
+          unprofiled: 74.33 ms/pass
+profile (MTP step, 1 row, sync per stage, ms): norm 0.462 quant 0.063 gemm 0.551 gdn 0.000 attn 0.047 mlp 0.015 head 1.543 | total 2.680
+          unprofiled (includes argmax read-back): 2.543 ms/step
+profile (device chain, 1 fill row, 1 drafts, full head, ms): norm 0.434 quant 0.061 gemm 0.552 gdn 0.000 attn 0.044 mlp 0.014 head 1.546 | total 2.651
+          unprofiled: 2.525 ms per chain
+profile (device chain, 1 fill row, 7 drafts, full head, ms): norm 3.012 quant 0.431 gemm 3.867 gdn 0.000 attn 0.344 mlp 0.103 head 10.822 | total 18.579
+          unprofiled: 17.645 ms per chain

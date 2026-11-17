@@ -1,0 +1,15 @@
+legacy ctx256.json profile ( 1 tokens/pass, sync per stage, ms): attn 1.65 | total 49.04
+legacy ctx256.json profile ( 8 tokens/pass, sync per stage, ms): attn 1.85 | total 57.52
+legacy ctx256.json profile (16 tokens/pass, sync per stage, ms): attn 2.95 | total 66.54
+legacy ctx1024.json profile ( 1 tokens/pass, sync per stage, ms): attn 1.71 | total 49.06
+legacy ctx1024.json profile ( 8 tokens/pass, sync per stage, ms): attn 4.06 | total 59.75
+legacy ctx1024.json profile (16 tokens/pass, sync per stage, ms): attn 6.45 | total 70.49
+legacy ctx2048.json profile ( 1 tokens/pass, sync per stage, ms): attn 1.95 | total 49.34
+legacy ctx2048.json profile ( 8 tokens/pass, sync per stage, ms): attn 7.79 | total 63.56
+legacy ctx2048.json profile (16 tokens/pass, sync per stage, ms): attn 13.59 | total 77.03
+legacy ctx4096.json profile ( 1 tokens/pass, sync per stage, ms): attn 3.60 | total 51.07
+legacy ctx4096.json profile ( 8 tokens/pass, sync per stage, ms): attn 16.78 | total 72.24
+legacy ctx4096.json profile (16 tokens/pass, sync per stage, ms): attn 31.55 | total 94.77
+legacy long8000.json profile ( 1 tokens/pass, sync per stage, ms): attn 6.91 | total 54.35
+legacy long8000.json profile ( 8 tokens/pass, sync per stage, ms): attn 38.63 | total 93.79
+legacy long8000.json profile (16 tokens/pass, sync per stage, ms): attn 75.78 | total 138.93

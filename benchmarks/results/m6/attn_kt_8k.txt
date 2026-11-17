@@ -1,0 +1,40 @@
+== KT HG=3 TG=0
+[8160, 369, 264, 11782, 314, 279, 1822, 3387, 494, 279, 3766, 8129, 8559, 279, 2548, 286]
+profile ( 1 tokens/pass, sync per stage, ms): norm 1.58 quant 3.12 gemm 35.99 gdn 4.42 attn 4.12 mlp 0.96 head 1.55 | total 51.73
+          unprofiled: 45.34 ms/pass
+profile ( 8 tokens/pass, sync per stage, ms): norm 1.63 quant 3.54 gemm 41.95 gdn 5.33 attn 22.43 mlp 1.46 head 1.82 | total 78.15
+          unprofiled: 71.51 ms/pass
+profile (16 tokens/pass, sync per stage, ms): norm 1.66 quant 3.62 gemm 45.86 gdn 8.17 attn 43.41 mlp 2.09 head 1.88 | total 106.69
+          unprofiled: 100.31 ms/pass
+== KT HG=6 TG=0
+[8160, 369, 264, 11782, 314, 279, 1822, 3387, 494, 279, 3766, 8129, 8559, 279, 2548, 286]
+profile ( 1 tokens/pass, sync per stage, ms): norm 1.61 quant 3.08 gemm 35.90 gdn 4.41 attn 4.15 mlp 0.94 head 1.55 | total 51.62
+          unprofiled: 45.39 ms/pass
+profile ( 8 tokens/pass, sync per stage, ms): norm 1.63 quant 3.49 gemm 42.01 gdn 5.32 attn 72.84 mlp 1.45 head 1.82 | total 128.56
+          unprofiled: 122.14 ms/pass
+profile (16 tokens/pass, sync per stage, ms): norm 1.65 quant 3.63 gemm 45.86 gdn 8.15 attn 140.78 mlp 2.08 head 1.88 | total 204.04
+          unprofiled: 197.34 ms/pass
+== KT HG=2 TG=0
+[8160, 369, 264, 11782, 314, 279, 1822, 3387, 494, 279, 3766, 8129, 8559, 279, 2548, 286]
+profile ( 1 tokens/pass, sync per stage, ms): norm 1.61 quant 3.14 gemm 35.86 gdn 4.42 attn 6.19 mlp 0.94 head 1.55 | total 53.71
+          unprofiled: 47.37 ms/pass
+profile ( 8 tokens/pass, sync per stage, ms): norm 1.63 quant 3.50 gemm 41.91 gdn 5.31 attn 18.28 mlp 1.46 head 1.82 | total 73.90
+          unprofiled: 67.38 ms/pass
+profile (16 tokens/pass, sync per stage, ms): norm 1.63 quant 3.62 gemm 45.86 gdn 8.15 attn 34.94 mlp 2.10 head 1.89 | total 98.19
+          unprofiled: 91.70 ms/pass
+== KT HG=3 TG=4
+[8160, 369, 264, 11782, 314, 279, 1822, 3387, 494, 279, 3766, 8129, 8559, 279, 2548, 286]
+profile ( 1 tokens/pass, sync per stage, ms): norm 1.63 quant 3.13 gemm 35.90 gdn 4.41 attn 4.72 mlp 0.95 head 1.54 | total 52.27
+          unprofiled: 45.96 ms/pass
+profile ( 8 tokens/pass, sync per stage, ms): norm 1.61 quant 3.44 gemm 41.85 gdn 5.30 attn 9.21 mlp 1.45 head 1.82 | total 64.67
+          unprofiled: 58.30 ms/pass
+profile (16 tokens/pass, sync per stage, ms): norm 1.65 quant 3.59 gemm 45.79 gdn 8.12 attn 17.58 mlp 2.07 head 1.88 | total 80.68
+          unprofiled: 74.33 ms/pass
+== KT HG=3 TG=2
+[8160, 369, 264, 11782, 314, 279, 1822, 3387, 494, 279, 3766, 8129, 8559, 279, 2548, 286]
+profile ( 1 tokens/pass, sync per stage, ms): norm 1.61 quant 3.15 gemm 35.84 gdn 4.40 attn 4.23 mlp 0.93 head 1.55 | total 51.72
+          unprofiled: 45.45 ms/pass
+profile ( 8 tokens/pass, sync per stage, ms): norm 1.60 quant 3.51 gemm 41.61 gdn 5.29 attn 14.35 mlp 1.44 head 1.82 | total 69.62
+          unprofiled: 63.24 ms/pass
+profile (16 tokens/pass, sync per stage, ms): norm 1.62 quant 3.56 gemm 45.76 gdn 8.12 attn 27.79 mlp 2.08 head 1.88 | total 90.80
+          unprofiled: 84.49 ms/pass

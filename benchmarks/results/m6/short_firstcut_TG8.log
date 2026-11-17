@@ -1,0 +1,67 @@
+loaded /data/B60special/models/xfm/qwen38-27b-s4-cal.xfm in 7.9s, context capacity 8192 tokens
+device allocations      count          GiB
+  DeltaNet state           48       0.2168
+  KV cache                 16       1.0000
+  MTP                       5       0.3687
+  MTP KV cache              1       0.0625
+  RoPE table                2       0.0020
+  body matrices           256      11.3428
+  embedding (bf16)          1       2.3682
+  head sketch               4       0.1291
+  lm_head                   1       0.5920
+  matrix scales           779       0.0393
+  small tensors           408       0.0978
+  workspace                 1       0.0783
+  TOTAL requested        1522      16.2975
+driver free VRAM: 22.4843 GiB before, 6.1532 GiB after, difference 16.3311 GiB
+bdraft2 backend loaded: +2.798 GiB device memory (driver)
+explain   none        21.98 tok/s | 1.00 tok/pass | main  45.50 ms/pass
+          taps device-to-device
+explain   bd2:fixed8   71.46 tok/s | 4.44 tok/pass | cycle  62.13 ms | main  54.50, draft   5.79 (of which taps 0.00) ms/pass | accept% [84 84 84 82 80 71 62] | same tokens, same state
+          taps device-to-device
+explain   bd2:fixed16   67.38 tok/s | 5.00 tok/pass | cycle  74.21 ms | main  65.83, draft   6.49 (of which taps 0.00) ms/pass | accept% [84 85 82 90 76 83 60 71 73 55 50 33 100 0 0] | same tokens, same state
+          adaptive block: 5 of 114 passes used 16 rows; taps device-to-device
+explain   bd2:adapt-old   72.12 tok/s | 4.52 tok/pass | cycle  62.64 ms | main  54.99, draft   5.80 (of which taps 0.00) ms/pass | accept% [85 84 83 82 80 75 64 33 100 100 0 0 0 0 0] | same tokens, same state
+          cost probe at position 30: 8 rows 51.9 ms, 16 rows 62.3 ms -> c16 = 1.179
+          adaptive block: 3 of 114 passes used 16 rows; taps device-to-device
+explain   bd2:adapt-cost   72.35 tok/s | 4.52 tok/pass | cycle  62.44 ms | main  54.80, draft   5.80 (of which taps 0.00) ms/pass | accept% [85 84 84 82 80 73 64 0 0 0 0 0 0 0 0] | same tokens, same state
+code      none        21.99 tok/s | 1.00 tok/pass | main  45.48 ms/pass
+          taps device-to-device
+code      bd2:fixed8   97.89 tok/s | 6.10 tok/pass | cycle  62.27 ms | main  54.49, draft   5.78 (of which taps 0.00) ms/pass | accept% [90 92 96 94 90 89 86] | same tokens, same state
+          taps device-to-device
+code      bd2:fixed16  108.48 tok/s | 8.08 tok/pass | cycle  74.46 ms | main  65.80, draft   6.50 (of which taps 0.00) ms/pass | accept% [92 92 87 91 95 85 89 87 96 81 76 94 100 80 92] | same tokens, same state
+          adaptive block: 52 of 68 passes used 16 rows; taps device-to-device
+code      bd2:adapt-old  106.19 tok/s | 7.60 tok/pass | cycle  71.59 ms | main  63.16, draft   6.32 (of which taps 0.00) ms/pass | accept% [90 90 91 92 91 86 86 84 95 90 89 94 100 80 92] | same tokens, same state
+          cost probe at position 28: 8 rows 51.7 ms, 16 rows 62.2 ms -> c16 = 1.179
+          adaptive block: 51 of 69 passes used 16 rows; taps device-to-device
+code      bd2:adapt-cost  105.09 tok/s | 7.49 tok/pass | cycle  71.30 ms | main  62.88, draft   6.30 (of which taps 0.00) ms/pass | accept% [90 90 91 92 91 84 86 83 95 89 88 93 100 86 92] | same tokens, same state
+story     none        21.99 tok/s | 1.00 tok/pass | main  45.48 ms/pass
+          taps device-to-device
+story     bd2:fixed8   39.78 tok/s | 2.46 tok/pass | cycle  61.88 ms | main  54.49, draft   5.77 (of which taps 0.00) ms/pass | accept% [68 59 52 39 59 40 75] | same tokens, same state
+          taps device-to-device
+story     bd2:fixed16   33.30 tok/s | 2.46 tok/pass | cycle  73.92 ms | main  65.84, draft   6.46 (of which taps 0.00) ms/pass | accept% [68 58 55 38 65 45 60 0 0 0 0 0 0 0 0] | same tokens, same state
+          adaptive block: 0 of 208 passes used 16 rows; taps device-to-device
+story     bd2:adapt-old   39.78 tok/s | 2.46 tok/pass | cycle  61.88 ms | main  54.49, draft   5.77 (of which taps 0.00) ms/pass | accept% [68 59 52 39 59 40 75 0 0 0 0 0 0 0 0] | same tokens, same state
+          cost probe at position 29: 8 rows 51.8 ms, 16 rows 62.2 ms -> c16 = 1.179
+          adaptive block: 0 of 208 passes used 16 rows; taps device-to-device
+story     bd2:adapt-cost   39.77 tok/s | 2.46 tok/pass | cycle  61.89 ms | main  54.50, draft   5.77 (of which taps 0.00) ms/pass | accept% [68 59 52 39 59 40 75 0 0 0 0 0 0 0 0] | same tokens, same state
+proof     none        21.99 tok/s | 1.00 tok/pass | main  45.47 ms/pass
+          taps device-to-device
+proof     bd2:fixed8   95.75 tok/s | 5.95 tok/pass | cycle  62.17 ms | main  54.40, draft   5.78 (of which taps 0.00) ms/pass | accept% [97 89 89 91 93 86 81] | same tokens, same state
+          taps device-to-device
+proof     bd2:fixed16  107.74 tok/s | 8.00 tok/pass | cycle  74.25 ms | main  65.59, draft   6.49 (of which taps 0.00) ms/pass | accept% [97 90 86 90 93 82 82 96 85 100 86 79 93 86 75] | same tokens, same state
+          adaptive block: 40 of 68 passes used 16 rows; taps device-to-device
+proof     bd2:adapt-old  108.52 tok/s | 7.53 tok/pass | cycle  69.39 ms | main  61.04, draft   6.21 (of which taps 0.00) ms/pass | accept% [96 88 88 92 96 80 80 100 95 100 89 88 100 86 67] | same tokens, same state
+          cost probe at position 24: 8 rows 51.6 ms, 16 rows 61.9 ms -> c16 = 1.178
+          adaptive block: 38 of 69 passes used 16 rows; taps device-to-device
+proof     bd2:adapt-cost  107.69 tok/s | 7.42 tok/pass | cycle  68.91 ms | main  60.61, draft   6.17 (of which taps 0.00) ms/pass | accept% [96 88 84 92 96 81 83 95 100 100 89 88 100 86 67] | same tokens, same state
+japanese  none        21.98 tok/s | 1.00 tok/pass | main  45.48 ms/pass
+          taps device-to-device
+japanese  bd2:fixed8   32.42 tok/s | 2.00 tok/pass | cycle  61.80 ms | main  54.48, draft   5.78 (of which taps 0.00) ms/pass | accept% [47 47 53 63 84 50 75] | same tokens, same state
+          taps device-to-device
+japanese  bd2:fixed16   27.12 tok/s | 2.00 tok/pass | cycle  73.88 ms | main  65.87, draft   6.47 (of which taps 0.00) ms/pass | accept% [48 48 51 57 71 58 71 60 33 100 0 0 0 0 0] | same tokens, same state
+          adaptive block: 3 of 257 passes used 16 rows; taps device-to-device
+japanese  bd2:adapt-old   32.35 tok/s | 2.00 tok/pass | cycle  61.94 ms | main  54.62, draft   5.78 (of which taps 0.00) ms/pass | accept% [47 46 54 63 84 50 75 100 0 0 0 0 0 0 0] | same tokens, same state
+          cost probe at position 31: 8 rows 51.9 ms, 16 rows 62.4 ms -> c16 = 1.181
+          adaptive block: 4 of 257 passes used 16 rows; taps device-to-device
+japanese  bd2:adapt-cost   32.32 tok/s | 2.00 tok/pass | cycle  61.99 ms | main  54.67, draft   5.78 (of which taps 0.00) ms/pass | accept% [47 46 54 63 84 50 75 100 0 0 0 0 0 0 0] | same tokens, same state

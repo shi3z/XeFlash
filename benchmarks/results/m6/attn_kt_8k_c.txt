@@ -1,0 +1,28 @@
+== KT HG=1 TG=1
+profile ( 1 tokens/pass, sync per stage, ms): norm 1.59 quant 3.08 gemm 35.78 gdn 4.43 attn 8.05 mlp 0.94 head 1.55 | total 55.42
+          unprofiled: 49.21 ms/pass
+profile ( 8 tokens/pass, sync per stage, ms): norm 1.63 quant 3.53 gemm 41.67 gdn 5.31 attn 46.44 mlp 1.46 head 1.82 | total 101.85
+          unprofiled: 95.27 ms/pass
+profile (16 tokens/pass, sync per stage, ms): norm 1.66 quant 3.66 gemm 45.85 gdn 8.15 attn 88.93 mlp 2.09 head 1.88 | total 152.23
+          unprofiled: 145.68 ms/pass
+== KT HG=1 TG=2
+profile ( 1 tokens/pass, sync per stage, ms): norm 1.66 quant 3.20 gemm 35.86 gdn 4.43 attn 8.25 mlp 0.95 head 1.55 | total 55.90
+          unprofiled: 49.42 ms/pass
+profile ( 8 tokens/pass, sync per stage, ms): norm 1.63 quant 3.59 gemm 41.75 gdn 5.30 attn 26.90 mlp 1.46 head 1.82 | total 82.45
+          unprofiled: 75.80 ms/pass
+profile (16 tokens/pass, sync per stage, ms): norm 1.68 quant 3.69 gemm 45.86 gdn 8.15 attn 51.49 mlp 2.09 head 1.88 | total 114.83
+          unprofiled: 108.23 ms/pass
+== KT HG=6 TG=2
+profile ( 1 tokens/pass, sync per stage, ms): norm 1.62 quant 3.15 gemm 35.83 gdn 4.42 attn 4.66 mlp 0.94 head 1.55 | total 52.17
+          unprofiled: 45.89 ms/pass
+profile ( 8 tokens/pass, sync per stage, ms): norm 1.59 quant 3.49 gemm 41.65 gdn 5.31 attn 15.73 mlp 1.44 head 1.82 | total 71.03
+          unprofiled: 64.60 ms/pass
+profile (16 tokens/pass, sync per stage, ms): norm 1.66 quant 3.61 gemm 45.76 gdn 8.11 attn 30.43 mlp 2.11 head 1.88 | total 93.56
+          unprofiled: 87.16 ms/pass
+== KT HG=6 TG=4
+profile ( 1 tokens/pass, sync per stage, ms): norm 1.60 quant 3.04 gemm 36.03 gdn 4.43 attn 11.45 mlp 0.93 head 1.54 | total 59.03
+          unprofiled: 52.87 ms/pass
+profile ( 8 tokens/pass, sync per stage, ms): norm 1.59 quant 3.52 gemm 41.93 gdn 5.31 attn 22.75 mlp 1.46 head 1.82 | total 78.39
+          unprofiled: 71.87 ms/pass
+profile (16 tokens/pass, sync per stage, ms): norm 1.68 quant 3.67 gemm 45.85 gdn 8.15 attn 44.42 mlp 2.10 head 1.88 | total 107.74
+          unprofiled: 101.17 ms/pass

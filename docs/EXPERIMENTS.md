@@ -322,3 +322,14 @@ tables) are in `docs/BDRAFT2.md` section 7 and `/data/B60special/bdraft2-ft/docs
 * Benchmarks taken while a 12-thread conversion was running on the host are
   not reliable: the submitting thread gets descheduled (launch-with-wait
   rises from 8 us to over 100 us). Final numbers are taken on an idle host.
+
+## E24. Shared-K/V long-context attention
+
+Question: can attention at 8K be made independent of the number of verify rows? Variants measured in
+`benchmarks/results/m6/` (A: old kernel; B: K/V shared over the 6 heads of a GQA group and the tokens of a pass; C:
+transposed K layout, keys as SIMD lanes; D: token groups spread over threads). B alone (HG sweep, row-major K):
+38.7 -> 23.3 ms at 8 rows. C with TG=4: 9.2 ms. Result and sweep over HG/TG/context in PERFORMANCE.md Part E.
+Defects found on the way: (1) the first end-to-end number hid the gain because the state hash (1 GB host read) was
+inside the timed loop; (2) TG=8 spills registers; (3) at short context the first cut was 4 to 7 % slower overall
+until HG/TG were chosen by context length; (4) the new kernel is not bit-identical to the old one (KL 5e-5, 9 of
+3,200 greedy tokens differ at near-ties); within the new kernel all pass sizes are bit-identical.

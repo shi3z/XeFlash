@@ -1,0 +1,22 @@
+[
+  {"prompt":"explain","drafter":"bd2:fixed8","block":8,"tok_per_s":74.473,"tokens_per_pass":4.4397,"cycle_ms":59.615,"main_ms":52.016,"draft_ms":5.770,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"explain","drafter":"bd2:fixed16","block":8,"tok_per_s":72.938,"tokens_per_pass":5.0000,"cycle_ms":68.551,"main_ms":60.202,"draft_ms":6.471,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"explain","drafter":"bd2:adapt-old","block":8,"tok_per_s":75.294,"tokens_per_pass":4.5175,"cycle_ms":59.998,"main_ms":52.381,"draft_ms":5.780,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"explain","drafter":"bd2:adapt-cost","block":8,"tok_per_s":74.695,"tokens_per_pass":4.5175,"cycle_ms":60.480,"main_ms":52.822,"draft_ms":5.824,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"code","drafter":"bd2:fixed8","block":8,"tok_per_s":102.018,"tokens_per_pass":6.0952,"cycle_ms":59.747,"main_ms":52.008,"draft_ms":5.748,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"code","drafter":"bd2:fixed16","block":8,"tok_per_s":117.430,"tokens_per_pass":8.0781,"cycle_ms":68.791,"main_ms":60.168,"draft_ms":6.465,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"code","drafter":"bd2:adapt-old","block":8,"tok_per_s":114.024,"tokens_per_pass":7.6029,"cycle_ms":66.678,"main_ms":58.258,"draft_ms":6.304,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"code","drafter":"bd2:adapt-cost","block":8,"tok_per_s":114.639,"tokens_per_pass":7.7164,"cycle_ms":67.310,"main_ms":58.836,"draft_ms":6.347,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"story","drafter":"bd2:fixed8","block":8,"tok_per_s":41.454,"tokens_per_pass":2.4615,"cycle_ms":59.379,"main_ms":52.022,"draft_ms":5.746,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"story","drafter":"bd2:fixed16","block":8,"tok_per_s":36.066,"tokens_per_pass":2.4615,"cycle_ms":68.251,"main_ms":60.204,"draft_ms":6.438,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"story","drafter":"bd2:adapt-old","block":8,"tok_per_s":41.458,"tokens_per_pass":2.4615,"cycle_ms":59.375,"main_ms":52.023,"draft_ms":5.741,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"story","drafter":"bd2:adapt-cost","block":8,"tok_per_s":41.456,"tokens_per_pass":2.4615,"cycle_ms":59.377,"main_ms":52.021,"draft_ms":5.744,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"proof","drafter":"bd2:fixed8","block":8,"tok_per_s":99.710,"tokens_per_pass":5.9535,"cycle_ms":59.708,"main_ms":51.965,"draft_ms":5.751,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"proof","drafter":"bd2:fixed16","block":8,"tok_per_s":116.397,"tokens_per_pass":8.0000,"cycle_ms":68.731,"main_ms":60.102,"draft_ms":6.468,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"proof","drafter":"bd2:adapt-old","block":8,"tok_per_s":115.710,"tokens_per_pass":7.5294,"cycle_ms":65.071,"main_ms":56.769,"draft_ms":6.181,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"proof","drafter":"bd2:adapt-cost","block":8,"tok_per_s":116.818,"tokens_per_pass":7.6418,"cycle_ms":65.416,"main_ms":57.080,"draft_ms":6.209,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"japanese","drafter":"bd2:fixed8","block":8,"tok_per_s":33.786,"tokens_per_pass":2.0039,"cycle_ms":59.311,"main_ms":52.022,"draft_ms":5.757,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"japanese","drafter":"bd2:fixed16","block":8,"tok_per_s":29.394,"tokens_per_pass":2.0039,"cycle_ms":68.174,"main_ms":60.202,"draft_ms":6.439,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"japanese","drafter":"bd2:adapt-old","block":8,"tok_per_s":33.743,"tokens_per_pass":2.0039,"cycle_ms":59.387,"main_ms":52.108,"draft_ms":5.749,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"japanese","drafter":"bd2:adapt-cost","block":8,"tok_per_s":33.695,"tokens_per_pass":2.0039,"cycle_ms":59.471,"main_ms":52.183,"draft_ms":5.757,"taps_ms":0.000,"same_tokens":true,"same_state":true}
+]

@@ -18,7 +18,9 @@ official layer code. Greedy decode, mean of four benchmark prompts, output and
 state identical in every mode: 22.4 tok/s without speculation; 61.8 tok/s with
 the checkpoint's own MTP block as drafter; 86.6 tok/s with YASAKANI's bdraft2
 drafter attached through an optional experimental backend (level with the
-YASAKANI engine's reported 86.3 on the same card, not above it). 16.3 GiB
+YASAKANI engine's reported 86.3 on the same card, not above it).
+With the shared-K/V attention (PERFORMANCE.md Part E) the 8K-context decode with bdraft2 is 53 tok/s
+(35 before) and 30K fits at 31.5 tok/s; 60K does not fit in 24 GB with an FP32 KV cache. 16.3 GiB
 resident with an 8192-token cache, 19.1 GiB with both drafters. Fidelity to
 the original model (KL 0.069 on a held-out chat) is not yet at YASAKANI's
 published level. No tokenizer in Rust, no sampling other than greedy, no API

@@ -1,0 +1,11 @@
+KL(old||new) per position: mean 5.16e-05  median 2.09e-06  max 3.91e-02
+max |logit diff| per position: mean 0.029  max 1.757
+  pos 346 old 318 new 248046: old margin top1-top2 0.001, new margin 0.004
+  pos 366 old 248046 new 198: old margin top1-top2 0.001, new margin 0.007
+  pos 474 old 318 new 248046: old margin top1-top2 0.015, new margin 0.002
+  pos 545 old 17 new 15: old margin top1-top2 0.003, new margin 0.003
+  pos 594 old 553 new 11: old margin top1-top2 0.003, new margin 0.001
+  pos 805 old 553 new 8: old margin top1-top2 0.000, new margin 0.002
+  pos 2841 old 16 new 248046: old margin top1-top2 0.013, new margin 0.002
+  pos 2890 old 248046 new 20: old margin top1-top2 0.116, new margin 0.015
+  pos 3082 old 220 new 57020: old margin top1-top2 0.002, new margin 0.002

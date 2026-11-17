@@ -1,0 +1,30 @@
+legacy attention vs new attention (chunk 8)
+  layer  0 out: max|d| 0.000e+00  rms rel 0.000e+00  bit-identical True
+  layer  3 out: max|d| 0.000e+00  rms rel 0.000e+00  bit-identical True
+  layer  7 out: max|d| 4.803e-03  rms rel 9.925e-05  bit-identical False
+  layer 15 out: max|d| 1.248e-02  rms rel 2.292e-04  bit-identical False
+  layer 31 out: max|d| 5.598e-02  rms rel 6.961e-04  bit-identical False
+  layer 47 out: max|d| 1.960e+00  rms rel 1.693e-03  bit-identical False
+  layer 63 out: max|d| 4.437e+00  rms rel 3.975e-03  bit-identical False
+  layer 64 out: max|d| 9.976e+00  rms rel 3.740e-03  bit-identical False
+  logits: max|d| 1.757e+00  identical False; greedy tokens identical: False (3191 of 3200)
+new: chunk 8 vs chunk 16
+  layer  0 out: max|d| 0.000e+00  rms rel 0.000e+00  bit-identical True
+  layer  3 out: max|d| 0.000e+00  rms rel 0.000e+00  bit-identical True
+  layer  7 out: max|d| 0.000e+00  rms rel 0.000e+00  bit-identical True
+  layer 15 out: max|d| 0.000e+00  rms rel 0.000e+00  bit-identical True
+  layer 31 out: max|d| 0.000e+00  rms rel 0.000e+00  bit-identical True
+  layer 47 out: max|d| 0.000e+00  rms rel 0.000e+00  bit-identical True
+  layer 63 out: max|d| 0.000e+00  rms rel 0.000e+00  bit-identical True
+  layer 64 out: max|d| 0.000e+00  rms rel 0.000e+00  bit-identical True
+  logits: max|d| 0.000e+00  identical True; greedy tokens identical: True (3200 of 3200)
+new: chunk 8 vs chunk 1
+  layer  0 out: max|d| 0.000e+00  rms rel 0.000e+00  bit-identical True
+  layer  3 out: max|d| 0.000e+00  rms rel 0.000e+00  bit-identical True
+  layer  7 out: max|d| 0.000e+00  rms rel 0.000e+00  bit-identical True
+  layer 15 out: max|d| 0.000e+00  rms rel 0.000e+00  bit-identical True
+  layer 31 out: max|d| 0.000e+00  rms rel 0.000e+00  bit-identical True
+  layer 47 out: max|d| 0.000e+00  rms rel 0.000e+00  bit-identical True
+  layer 63 out: max|d| 0.000e+00  rms rel 0.000e+00  bit-identical True
+  layer 64 out: max|d| 0.000e+00  rms rel 0.000e+00  bit-identical True
+  logits: max|d| 0.000e+00  identical True; greedy tokens identical: True (3200 of 3200)

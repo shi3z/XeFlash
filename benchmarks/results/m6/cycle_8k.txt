@@ -1,0 +1,6 @@
+KT=0
+deep position 8104: cycle K=6, 4 fill rows: draft chain 17.77 ms, trunk pass 82.12 ms, whole cycle 99.86 ms
+deep position 8104: cycle K=7, 4 fill rows: draft chain 20.46 ms, trunk pass 87.44 ms, whole cycle 107.97 ms
+KT=1
+deep position 8104: cycle K=6, 4 fill rows: draft chain 16.81 ms, trunk pass 57.36 ms, whole cycle 74.16 ms
+deep position 8104: cycle K=7, 4 fill rows: draft chain 19.42 ms, trunk pass 58.32 ms, whole cycle 77.74 ms
