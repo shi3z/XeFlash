@@ -1,0 +1,22 @@
+[q35_g6] prefill only, temporary workspace 93978920 bytes
+[KV-PROTOCOL] target_kv=int8-row-f32-scale
+[TB-CAP] capacity mode (k=5): packed K streams 16/16, packed V streams 13/16; KV of the attention layers 43.2 MiB (INT8 containers: 65.0 MiB); staging 4096 rows
+[qwen3_5] 64 layers loaded, LNORD codes 9.76 GB, free 4.8 / 16.6 GB
+[qwen3_5] SHEAD drafter head loaded (/data/yasakani/model-speed/bdraft2_k8.shead): rank 512, 1.41 GB, score grid 72 blocks; GPU free 1.9 / 16.6 GB
+# max_ctx 2048, load 3.9s, GPU memory now 14088 MiB
+code                     on    201.6 tok/s | 7.30 tok/pass | 36.21 ms/pass (verify 35.97 draft 0.17) | prefill 223 tok/s | peak 14100 MiB
+code                     off    38.3 tok/s | 1.00 tok/pass | 26.10 ms/pass (verify 26.09 draft 0.00) | prefill 241 tok/s | peak 14108 MiB
+py_merge                 on    218.8 tok/s | 8.08 tok/pass | 36.93 ms/pass (verify 36.81 draft 0.07) | prefill 420 tok/s | peak 14112 MiB
+py_merge                 off    38.3 tok/s | 1.00 tok/pass | 26.11 ms/pass (verify 26.10 draft 0.00) | prefill 435 tok/s | peak 14112 MiB
+py_csv                   on    198.4 tok/s | 7.59 tok/pass | 38.27 ms/pass (verify 38.21 draft 0.02) | prefill 400 tok/s | peak 14124 MiB
+py_csv                   off    38.3 tok/s | 1.00 tok/pass | 26.12 ms/pass (verify 26.11 draft 0.00) | prefill 412 tok/s | peak 14124 MiB
+py_lru                   on    213.0 tok/s | 7.45 tok/pass | 34.96 ms/pass (verify 34.90 draft 0.01) | prefill 473 tok/s | peak 14128 MiB
+py_lru                   off    38.3 tok/s | 1.00 tok/pass | 26.12 ms/pass (verify 26.11 draft 0.00) | prefill 486 tok/s | peak 14130 MiB
+rs_balanced              on    167.6 tok/s | 6.34 tok/pass | 37.84 ms/pass (verify 37.78 draft 0.01) | prefill 451 tok/s | peak 14132 MiB
+rs_balanced              off    38.3 tok/s | 1.00 tok/pass | 26.10 ms/pass (verify 26.09 draft 0.00) | prefill 467 tok/s | peak 14132 MiB
+rs_merge                 on    216.2 tok/s | 8.72 tok/pass | 40.31 ms/pass (verify 40.25 draft 0.01) | prefill 398 tok/s | peak 14134 MiB
+rs_merge                 off    38.3 tok/s | 1.00 tok/pass | 26.12 ms/pass (verify 26.11 draft 0.00) | prefill 410 tok/s | peak 14134 MiB
+cpp_fib                  on    210.7 tok/s | 7.59 tok/pass | 36.04 ms/pass (verify 35.99 draft 0.01) | prefill 484 tok/s | peak 14136 MiB
+cpp_fib                  off    38.2 tok/s | 1.00 tok/pass | 26.15 ms/pass (verify 26.12 draft 0.00) | prefill 492 tok/s | peak 14142 MiB
+cpp_merge                on    248.0 tok/s | 9.24 tok/pass | 37.26 ms/pass (verify 37.16 draft 0.02) | prefill 388 tok/s | peak 14144 MiB
+cpp_merge                off    38.3 tok/s | 1.00 tok/pass | 26.12 ms/pass (verify 26.11 draft 0.00) | prefill 403 tok/s | peak 14144 MiB

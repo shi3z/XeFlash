@@ -1,0 +1,38 @@
+[
+ {
+  "prompt": "cpp_fib",
+  "label": "greedy",
+  "tokens": 1514,
+  "task": "cpp_fib",
+  "finished": true,
+  "complete_block": true,
+  "result": "compile_error",
+  "log": "gen.cpp: In function \u2018void fib_pair(long long int, long long int, long long int&, long long int&)\u2019:\ngen.cpp:44:22: error: \u2018f_2_k_plus_1\u2019 was not declared in this scope; did you mean \u2018f_2k_plus_1\u2019?\n   44 |         b = (f_2_k + f_2_k_plus_1) % m;\n      |                      ^~~~~~~~~~~~\n      |                      f_2k_plus_1\n",
+  "solution_only": "compile_error",
+  "solution_log": "gen.cpp: In function \u2018void fib_pair(long long int, long long int, long long int&, long long int&)\u2019:\ngen.cpp:44:22: error: \u2018f_2_k_plus_1\u2019 was not declared in this scope; did you mean \u2018f_2k_plus_1\u2019?\n   44 |         b = (f_2_k + f_2_k_plus_1) % m;\n      |                      ^~~~~~~~~~~~\n      |                      f_2k_plus_1\n"
+ },
+ {
+  "prompt": "cpp_merge",
+  "label": "greedy",
+  "tokens": 865,
+  "task": "cpp_merge",
+  "finished": true,
+  "complete_block": true,
+  "result": "pass",
+  "log": "OK\n",
+  "solution_only": "pass",
+  "solution_log": "OK\n"
+ },
+ {
+  "prompt": "py_lru",
+  "label": "greedy",
+  "tokens": 1235,
+  "task": "py_lru",
+  "finished": true,
+  "complete_block": true,
+  "result": "pass",
+  "log": "OK\n",
+  "solution_only": "pass",
+  "solution_log": "OK\n"
+ }
+]

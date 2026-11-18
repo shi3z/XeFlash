@@ -1,0 +1,14 @@
+[
+ {
+  "prompt": "codectx8k_cpp_fib",
+  "label": "greedy",
+  "tokens": 1295,
+  "task": "cpp_fib",
+  "finished": true,
+  "complete_block": true,
+  "result": "pass",
+  "log": "OK\n",
+  "solution_only": "pass",
+  "solution_log": "OK\n"
+ }
+]

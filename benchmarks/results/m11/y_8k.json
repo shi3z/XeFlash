@@ -1,0 +1,218 @@
+{
+ "max_ctx": 10240,
+ "peak_mib": 14384,
+ "rows": [
+  {
+   "prompt": "long8000",
+   "mode": "on",
+   "prompt_tokens": 8024,
+   "tokens": 256,
+   "passes": 77,
+   "prefill_ms": 10158.056132,
+   "gen_ms": 2693.463237,
+   "tok_s": 94.6736515639326,
+   "tok_per_pass": 3.311688311688312,
+   "prefill_tok_s": 789.9149104642888,
+   "per_pass_ms": {
+    "verify": 34.76768154545455,
+    "draft": 0.03693745454545453,
+    "commit": 0.0208597922077922,
+    "record": 0.004122623376623377,
+    "ctx": 0.0,
+    "total": 34.96712064935065
+   },
+   "rows_hist": {
+    "2": 1,
+    "3": 1,
+    "4": 1,
+    "5": 1,
+    "8": 69,
+    "16": 4
+   },
+   "sha": "19c2730e9de8",
+   "peak_mib_so_far": 14342
+  },
+  {
+   "prompt": "long8000",
+   "mode": "off",
+   "prompt_tokens": 8024,
+   "tokens": 256,
+   "passes": 255,
+   "prefill_ms": 10132.412786,
+   "gen_ms": 6861.213531,
+   "tok_s": 37.16543711223553,
+   "tok_per_pass": 1.0,
+   "prefill_tok_s": 791.9140454963299,
+   "per_pass_ms": {
+    "verify": 26.89667054117646,
+    "draft": 0.0,
+    "commit": 0.008629709803921562,
+    "record": 0.000990603921568627,
+    "ctx": 0.0,
+    "total": 26.90671214117647
+   },
+   "rows_hist": {
+    "1": 255
+   },
+   "sha": "19c2730e9de8",
+   "peak_mib_so_far": 14350
+  },
+  {
+   "prompt": "codectx8k_py_csv",
+   "mode": "on",
+   "prompt_tokens": 8104,
+   "tokens": 666,
+   "passes": 107,
+   "prefill_ms": 10258.735219,
+   "gen_ms": 3870.450088,
+   "tok_s": 171.81464296924426,
+   "tok_per_pass": 6.214953271028038,
+   "prefill_tok_s": 789.9609286133774,
+   "per_pass_ms": {
+    "verify": 36.00143801869158,
+    "draft": 0.07751912149532711,
+    "commit": 0.02775185046728972,
+    "record": 0.005240158878504675,
+    "ctx": 0.0,
+    "total": 36.16292613084112
+   },
+   "rows_hist": {
+    "8": 91,
+    "16": 16
+   },
+   "sha": "e441c4bc3868",
+   "peak_mib_so_far": 14362
+  },
+  {
+   "prompt": "codectx8k_py_csv",
+   "mode": "off",
+   "prompt_tokens": 8104,
+   "tokens": 666,
+   "passes": 665,
+   "prefill_ms": 10244.653002,
+   "gen_ms": 17903.757975,
+   "tok_s": 37.143040077316506,
+   "tok_per_pass": 1.0,
+   "prefill_tok_s": 791.0468025044779,
+   "per_pass_ms": {
+    "verify": 26.9149016992481,
+    "draft": 0.0,
+    "commit": 0.006920896240601503,
+    "record": 0.0007413007518796995,
+    "ctx": 0.0,
+    "total": 26.922941643609025
+   },
+   "rows_hist": {
+    "1": 665
+   },
+   "sha": "e441c4bc3868",
+   "peak_mib_so_far": 14362
+  },
+  {
+   "prompt": "codectx8k_rs_balanced",
+   "mode": "on",
+   "prompt_tokens": 8099,
+   "tokens": 678,
+   "passes": 111,
+   "prefill_ms": 10250.190534,
+   "gen_ms": 4278.582572,
+   "tok_s": 158.2299718674215,
+   "tok_per_pass": 6.099099099099099,
+   "prefill_tok_s": 790.1316539566288,
+   "per_pass_ms": {
+    "verify": 38.402534,
+    "draft": 0.053842846846846835,
+    "commit": 0.027398450450450442,
+    "record": 0.004094504504504504,
+    "ctx": 0.0,
+    "total": 38.53655996396397
+   },
+   "rows_hist": {
+    "8": 64,
+    "16": 47
+   },
+   "sha": "be07837f3747",
+   "peak_mib_so_far": 14370
+  },
+  {
+   "prompt": "codectx8k_rs_balanced",
+   "mode": "off",
+   "prompt_tokens": 8099,
+   "tokens": 678,
+   "passes": 677,
+   "prefill_ms": 10240.048523,
+   "gen_ms": 18228.411938,
+   "tok_s": 37.13982338684626,
+   "tok_per_pass": 1.0,
+   "prefill_tok_s": 790.9142209442635,
+   "per_pass_ms": {
+    "verify": 26.916264242245173,
+    "draft": 0.0,
+    "commit": 0.007808796159527334,
+    "record": 0.0007971196454948291,
+    "ctx": 0.0,
+    "total": 26.92527338404727
+   },
+   "rows_hist": {
+    "1": 677
+   },
+   "sha": "be07837f3747",
+   "peak_mib_so_far": 14370
+  },
+  {
+   "prompt": "codectx8k_cpp_fib",
+   "mode": "on",
+   "prompt_tokens": 8126,
+   "tokens": 768,
+   "passes": 99,
+   "prefill_ms": 10271.893911,
+   "gen_ms": 3987.359494,
+   "tok_s": 192.35787521896316,
+   "tok_per_pass": 7.747474747474747,
+   "prefill_tok_s": 791.0907248855056,
+   "per_pass_ms": {
+    "verify": 40.17097404040405,
+    "draft": 0.018409474747474754,
+    "commit": 0.016775282828282827,
+    "record": 0.004500343434343436,
+    "ctx": 0.0,
+    "total": 40.266263464646464
+   },
+   "rows_hist": {
+    "2": 1,
+    "7": 1,
+    "8": 35,
+    "13": 1,
+    "14": 1,
+    "16": 60
+   },
+   "sha": "39495c342033",
+   "peak_mib_so_far": 14376
+  },
+  {
+   "prompt": "codectx8k_cpp_fib",
+   "mode": "off",
+   "prompt_tokens": 8126,
+   "tokens": 768,
+   "passes": 767,
+   "prefill_ms": 10261.116809,
+   "gen_ms": 20654.786611,
+   "tok_s": 37.134249529913966,
+   "tok_per_pass": 1.0,
+   "prefill_tok_s": 791.9215959877492,
+   "per_pass_ms": {
+    "verify": 26.9213787340287,
+    "draft": 0.0,
+    "commit": 0.006833441981747078,
+    "record": 0.0006725475880052153,
+    "ctx": 0.0,
+    "total": 26.929315002607563
+   },
+   "rows_hist": {
+    "1": 767
+   },
+   "sha": "39495c342033",
+   "peak_mib_so_far": 14384
+  }
+ ]
+}

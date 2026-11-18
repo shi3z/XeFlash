@@ -1,0 +1,8 @@
+[q35_g6] prefill only, temporary workspace 93978920 bytes
+[KV-PROTOCOL] target_kv=int8-row-f32-scale
+[TB-CAP] capacity mode (k=5): packed K streams 16/16, packed V streams 13/16; KV of the attention layers 1384.0 MiB (INT8 containers: 2080.0 MiB); staging 4096 rows
+[qwen3_5] 64 layers loaded, LNORD codes 9.76 GB, free 3.4 / 16.6 GB
+[qwen3_5] SHEAD drafter head loaded (/data/yasakani/model-speed/bdraft2_k8.shead): rank 512, 1.41 GB, score grid 72 blocks; GPU free 0.5 / 16.6 GB
+# max_ctx 65536, load 3.8s, GPU memory now 15444 MiB
+long60000                on     77.4 tok/s | 3.27 tok/pass | 42.25 ms/pass (verify 41.53 draft 0.02) | prefill 644 tok/s | peak 15464 MiB
+long60000                off    31.7 tok/s | 1.00 tok/pass | 31.54 ms/pass (verify 31.54 draft 0.00) | prefill 645 tok/s | peak 15468 MiB

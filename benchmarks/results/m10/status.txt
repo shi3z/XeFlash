@@ -1,0 +1,5 @@
+short_xmx 0
+short_fp32 0
+k8_xmx 0
+k8_fp32 0
+k30_xmx 0

@@ -52,6 +52,51 @@ def extract(text, lang, name):
     return None, False
 
 
+def strip_tests(code, lang):
+    """Keep only the solution: drop the model's own tests / main / examples, so that a typo in test code does not hide a correct function."""
+    import ast
+    if lang == "python":
+        out, chunk = [], []
+        def flush():
+            if not chunk:
+                return
+            src = "\n".join(chunk)
+            try:
+                tree = ast.parse(src)
+            except SyntaxError:
+                chunk.clear()
+                return
+            keep = all(isinstance(n, (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.ClassDef, ast.Assign)) for n in tree.body) and \
+                not any(isinstance(n, (ast.FunctionDef, ast.ClassDef)) and (n.name.startswith("test") or n.name in ("main", "run_tests")) for n in tree.body)
+            if keep:
+                out.append(src)
+            chunk.clear()
+        for line in code.split("\n"):
+            if line and not line[0].isspace() and not line.startswith(("#", ")", "]", "}")) and chunk and not chunk[-1].startswith("@"):
+                flush()
+            chunk.append(line)
+        flush()
+        return "\n\n".join(out)
+    # rust / c++: split into top-level items at brace depth 0
+    items, cur, depth = [], [], 0
+    for line in code.split("\n"):
+        cur.append(line)
+        depth += line.count("{") - line.count("}")
+        if depth <= 0 and (line.rstrip().endswith("}") or line.rstrip().endswith(";") or line.startswith("#")):
+            items.append("\n".join(cur)); cur = []; depth = 0
+    if cur:
+        items.append("\n".join(cur))
+    keep = []
+    for it in items:
+        head = it.strip()
+        if lang == "rust" and ("#[cfg(test)]" in head or re.search(r"\bfn\s+main\b", head) or "mod tests" in head or "#[test]" in head):
+            continue
+        if lang == "cpp" and (re.search(r"\bint\s+main\s*\(", head) or re.search(r"\bvoid\s+(test|run_tests)\w*\s*\(", head)):
+            continue
+        keep.append(it)
+    return "\n".join(keep)
+
+
 def grade(task, code):
     t = TASKS[task]
     lang = t["lang"]
@@ -91,8 +136,12 @@ def main():
         prompt, label = f.stem.split("__", 1)
         task = re.sub(r"^codectx\d+k_", "", prompt)
         ids = json.loads(f.read_text())
+        eos = next((i for i, t in enumerate(ids) if t in (248046, 248044)), None)  # <|im_end|>, <|endoftext|>
+        finished = eos is not None
+        if finished:
+            ids = ids[:eos]
         text = tok.decode(ids)
-        row = dict(prompt=prompt, label=label, tokens=len(ids), task=task)
+        row = dict(prompt=prompt, label=label, tokens=len(ids), task=task, finished=finished)
         if task in TASKS:
             code, closed = extract(text, TASKS[task]["lang"], TASKS[task]["name"])
             row["complete_block"] = bool(closed)
@@ -100,6 +149,8 @@ def main():
                 row["result"] = "no_code"
             else:
                 row["result"], row["log"] = grade(task, code)
+                sol = strip_tests(code, TASKS[task]["lang"])
+                row["solution_only"], row["solution_log"] = grade(task, sol) if sol.strip() else ("no_code", "")
         else:
             row["result"] = "not graded (free-form prompt)"
         res.append(row)

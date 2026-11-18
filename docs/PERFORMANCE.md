@@ -1072,3 +1072,73 @@ passed / graded: short fp32: 2/7; short xmx: 2/7; 8K fp32: 0/3; 8K xmx: 0/3; 30K
 - At most 768 tokens were generated; some answers are cut off inside a code block (marked above).
 - Greedy decoding only; one run per condition; the 48K and 60K figures use 128 and 64 generated tokens.
 - The adaptive rule was not changed or tuned; its 16-row selection rates are reported as measured.
+
+
+## Part H. XeFlash on the B60 against YASAKANI on the RTX 5060 Ti (same Qwen3.8-27B prompts, greedy, same generation lengths)
+
+### H1. Method
+- Both engines receive the **same token ids** (`benchmarks/prompts/*.json`), greedy decoding, the same number of new tokens per prompt (512 for `code`, 768 for the code tasks, 256 for the long summary prompts), one run each.
+- B60: XeFlash with `XF_KV=xmx` (shared XMX attention, FP16 KV), bdraft2 attached, results of Parts G (`benchmarks/results/m8`, `m9`) and the 60K run with 256 tokens (`m11/b60_60k_256`).
+- 5060 Ti: YASAKANI (its tuned build, speed model, look-ahead with bdraft2 = its default `on`, `off` = plain decoding), driven by `tools/compare5060/run_yasakani.py` (reads the YASAKANI tree, writes nothing into it), `scripts/y5060_suite.sh`, results in `m11/y_*.json`.
+  The engine capacity was set per context group (2,048 / 10,240 / 32,768 / 65,536 tokens).
+- tok/s: YASAKANI's own definition, (generated - 1) / generation time without prefill; XeFlash: emitted tokens / decode time without prefill, state hash and logging. Verify, drafter and passes as each engine counts them.
+- VRAM: B60 = driver-reported allocation after loading (XeFlash buffers + bdraft2), 5060 Ti = peak `nvidia-smi` memory.used sampled every 0.2 s (includes the CUDA context).
+
+### H2. Results (tok/s; the last columns are B60 / 5060 Ti)
+
+#### 1. Code, 512 tokens
+
+| prompt | new tokens | B60 fixed 8 | B60 fixed 16 | B60 adaptive | **5060 Ti** | 5060 / B60 adaptive | tok/pass B60 / 5060 | main verify ms B60 / 5060 | drafter ms B60 / 5060 | VRAM GiB B60 / 5060 |
+|---|---:|---:|---:|---:|---:|---:|---|---|---|---|
+| code | 512 | 106.5 | 120.6 | 118.0 | **201.6** | 1.71x | 7.72 / 7.30 | 56.9 / 36.0 | 6.4 / 0.17 | 18.1 (ctx 1024) / 13.8 |
+
+#### 1b. Code tasks, short, 768 tokens
+
+| prompt | new tokens | B60 fixed 8 | B60 fixed 16 | B60 adaptive | **5060 Ti** | 5060 / B60 adaptive | tok/pass B60 / 5060 | main verify ms B60 / 5060 | drafter ms B60 / 5060 | VRAM GiB B60 / 5060 |
+|---|---:|---:|---:|---:|---:|---:|---|---|---|---|
+| py_merge | 768 | 102.1 | 107.9 | 109.3 | **218.8** | 2.00x | 7.07 / 8.08 | 56.3 / 36.8 | 6.4 / 0.07 | 18.1 (ctx 1024) / 13.8 |
+| py_csv | 768 | 93.2 | 96.9 | 96.5 | **198.4** | 2.06x | 6.19 / 7.59 | 55.9 / 38.2 | 6.3 / 0.02 | 18.1 (ctx 1024) / 13.8 |
+| py_lru | 768 | 114.0 | 130.6 | 131.9 | **213.0** | 1.61x | 8.80 / 7.45 | 57.9 / 34.9 | 6.5 / 0.01 | 18.1 (ctx 1024) / 13.8 |
+| rs_balanced | 768 | 54.6 | 55.7 | 55.1 | **167.6** | 3.04x | 3.32 / 6.34 | 52.6 / 37.8 | 6.0 / 0.01 | 18.1 (ctx 1024) / 13.8 |
+| rs_merge | 768 | 105.9 | 117.9 | 118.4 | **216.2** | 1.83x | 7.69 / 8.72 | 56.4 / 40.3 | 6.4 / 0.01 | 18.1 (ctx 1024) / 13.8 |
+| cpp_fib | 768 | 108.4 | 132.3 | 131.5 | **210.7** | 1.60x | 8.71 / 7.59 | 57.5 / 36.0 | 6.5 / 0.01 | 18.1 (ctx 1024) / 13.8 |
+| cpp_merge | 768 | 115.5 | 146.9 | 141.9 | **248.0** | 1.75x | 9.41 / 9.24 | 57.6 / 37.2 | 6.5 / 0.02 | 18.1 (ctx 1024) / 13.8 |
+
+#### 2. Long context, summary prompt, 256 tokens
+
+| prompt | new tokens | B60 fixed 8 | B60 fixed 16 | B60 adaptive | **5060 Ti** | 5060 / B60 adaptive | tok/pass B60 / 5060 | main verify ms B60 / 5060 | drafter ms B60 / 5060 | VRAM GiB B60 / 5060 |
+|---|---:|---:|---:|---:|---:|---:|---|---|---|---|
+| long8000 | 256 | 58.3 | 51.0 | 57.5 | **94.7** | 1.65x | 3.53 / 3.31 | 53.4 / 34.8 | 6.2 / 0.04 | 18.6 (ctx 8448) / 14.0 |
+| long30000 | 256 | 48.7 | 43.6 | 48.6 | **84.5** | 1.74x | 3.31 / 3.19 | 60.2 / 37.4 | 6.2 / 0.04 | 20.1 (ctx 30720) / 14.4 |
+| long60000 | 256 | 39.8 | 31.8 | 39.8 | **77.4** | 1.94x | 3.08 / 3.27 | 69.6 / 41.5 | 6.1 / 0.02 | 22.1 (ctx 61440) / 15.1 |
+
+#### 2b. Code with real source in front, 768 tokens
+
+| prompt | new tokens | B60 fixed 8 | B60 fixed 16 | B60 adaptive | **5060 Ti** | 5060 / B60 adaptive | tok/pass B60 / 5060 | main verify ms B60 / 5060 | drafter ms B60 / 5060 | VRAM GiB B60 / 5060 |
+|---|---:|---:|---:|---:|---:|---:|---|---|---|---|
+| codectx8k_py_csv | 768 | 78.1 | 79.7 | 81.4 | **171.8** | 2.11x | 5.37 / 6.21 | 57.4 / 36.0 | 6.7 / 0.08 | 18.6 (ctx 8960) / 14.0 |
+| codectx8k_rs_balanced | 768 | 73.6 | 74.2 | 78.0 | **158.2** | 2.03x | 5.22 / 6.10 | 58.3 / 38.4 | 6.8 / 0.05 | 18.6 (ctx 8960) / 14.0 |
+| codectx8k_cpp_fib | 768 | 98.4 | 111.3 | 109.4 | **192.4** | 1.76x | 7.71 / 7.75 | 61.1 / 40.2 | 7.2 / 0.02 | 18.6 (ctx 8960) / 14.0 |
+| codectx30k_py_csv | 768 | 72.8 | 76.9 | 79.1 | **152.7** | 1.93x | 6.15 / 6.00 | 68.8 / 39.0 | 7.0 / 0.06 | 20.1 (ctx 31040) / 14.4 |
+| codectx30k_rs_balanced | 768 | 69.6 | 73.2 | 73.9 | **130.7** | 1.77x | 5.73 / 5.11 | 68.6 / 38.9 | 7.0 / 0.03 | 20.1 (ctx 31040) / 14.4 |
+
+#### YASAKANI reference rows (same runs): look-ahead off = plain decoding
+
+| prompt | on tok/s | off tok/s | prefill tok/s | rows histogram (on) |
+|---|---:|---:|---:|---|
+| code | 201.6 | 38.3 | 223 | {'1': 1, '5': 1, '8': 43, '16': 25} |
+| long8000 | 94.7 | 37.2 | 790 | {'2': 1, '3': 1, '4': 1, '5': 1, '8': 69, '16': 4} |
+| long30000 | 84.5 | 34.6 | 720 | {'1': 1, '2': 1, '3': 1, '4': 1, '6': 1, '8': 75} |
+| long60000 | 77.4 | 31.7 | 644 | {'5': 1, '8': 77} |
+
+
+### H3. What this shows
+- **Code, 512 tokens: 201.6 tok/s on the 5060 Ti against 120.6 (fixed 16) / 118.0 (adaptive) on the B60**, i.e. 1.67x to 1.71x. With YASAKANI plain decoding (look-ahead off) at 38.3 tok/s against 22.7 for XeFlash K=0.
+- Time per pass is the main difference: one verify pass (5060 Ti) 36.0 ms against 56.9 ms (B60, adaptive; main verify only), plus 6.4 ms of drafter on the B60 (YASAKANI reports 0.17 ms: its drafter work is counted inside the verify pass / overlapped, so the drafter columns are not comparable, compare `ms/pass` = 36.2 against 63.3).
+  Tokens per pass are similar for code.json (7.7 against 7.3) but differ by task: rs_balanced 3.3 (B60) against 6.3 (5060 Ti).
+- **Long context** (summary prompt, 256 tokens): 8K 94.7 against 57.5 (1.65x), 30K 84.5 against 48.6 (1.74x), **60K 77.4 tok/s on the 5060 Ti against 39.8 on the B60 (1.94x)**.
+  YASAKANI's 5060 Ti loses little with context (94.7 -> 77.4, -18%) because its KV is INT8 and its verify pass grows from 34.8 to 41.5 ms; the B60 loses 31% (58.3 -> 39.8 with fixed 8 rows), its pass grows from 53 to 70 ms.
+- Memory at 60K: B60 22.1 of ~22.5 usable GiB (FP16 KV 3.75 GiB, bdraft2 included), 5060 Ti 15.1 of 16 GiB peak.
+- The two engines produce **different text** from the same prompt (the greedy sequences diverge after 15 to 51 tokens, e.g. code.json after 24): different weight quantisation (XeFlash INT4 s4 container vs YASAKANI speed model),
+  and different KV formats (FP16 vs INT8 rows). Acceptance and tokens per pass therefore differ per prompt, and the numbers compare engines on the same prompt and length, not on the same generated text.
+- Not measured: the same drafter state on both sides (each uses its own bdraft2 integration), repeated runs / variance, prefill speed of XeFlash for the long prompts at the same settings (YASAKANI prefill 644 to 790 tok/s is in the json).

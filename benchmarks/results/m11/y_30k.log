@@ -1,0 +1,12 @@
+[q35_g6] prefill only, temporary workspace 93978920 bytes
+[KV-PROTOCOL] target_kv=int8-row-f32-scale
+[TB-CAP] capacity mode (k=5): packed K streams 16/16, packed V streams 13/16; KV of the attention layers 692.0 MiB (INT8 containers: 1040.0 MiB); staging 4096 rows
+[qwen3_5] 64 layers loaded, LNORD codes 9.76 GB, free 4.1 / 16.6 GB
+[qwen3_5] SHEAD drafter head loaded (/data/yasakani/model-speed/bdraft2_k8.shead): rank 512, 1.41 GB, score grid 72 blocks; GPU free 1.2 / 16.6 GB
+# max_ctx 32768, load 3.8s, GPU memory now 14744 MiB
+long30000                on     84.5 tok/s | 3.19 tok/pass | 37.70 ms/pass (verify 37.39 draft 0.04) | prefill 720 tok/s | peak 14764 MiB
+long30000                off    34.6 tok/s | 1.00 tok/pass | 28.88 ms/pass (verify 28.87 draft 0.00) | prefill 720 tok/s | peak 14774 MiB
+codectx30k_py_csv        on    152.7 tok/s | 6.00 tok/pass | 39.30 ms/pass (verify 39.04 draft 0.06) | prefill 720 tok/s | peak 14784 MiB
+codectx30k_py_csv        off    34.6 tok/s | 1.00 tok/pass | 28.90 ms/pass (verify 28.90 draft 0.00) | prefill 720 tok/s | peak 14784 MiB
+codectx30k_rs_balanced   on    130.7 tok/s | 5.11 tok/pass | 39.13 ms/pass (verify 38.95 draft 0.03) | prefill 720 tok/s | peak 14792 MiB
+codectx30k_rs_balanced   off    34.6 tok/s | 1.00 tok/pass | 28.91 ms/pass (verify 28.90 draft 0.00) | prefill 720 tok/s | peak 14794 MiB
