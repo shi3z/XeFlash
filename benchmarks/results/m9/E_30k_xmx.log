@@ -1,0 +1,33 @@
+loaded /data/B60special/models/xfm/qwen38-27b-s4-cal.xfm in 6.6s, context capacity 31040 tokens
+device allocations      count          GiB
+  DeltaNet state           48       0.2168
+  KV cache                 16       1.8945
+  MTP                       5       0.3687
+  MTP KV cache              1       0.1184
+  RoPE table                2       0.0074
+  body matrices           256      11.3428
+  embedding (bf16)          1       2.3682
+  head sketch               4       0.1291
+  lm_head                   1       0.5920
+  matrix scales           779       0.0393
+  small tensors           408       0.0978
+  workspace                 1       0.0777
+  TOTAL requested        1522      17.2528
+driver free VRAM: 22.4843 GiB before, 5.1955 GiB after, difference 17.2888 GiB
+bdraft2 backend loaded: +2.808 GiB device memory (driver)
+codectx30k_py_csv none        19.75 tok/s | 1.00 tok/pass | main  50.62 ms/pass
+          taps device-to-device
+codectx30k_py_csv bd2:fixed8   72.84 tok/s | 4.96 tok/pass | cycle  68.12 ms | main  60.08, draft   6.14 (of which taps 0.00) ms/pass | accept% [81 87 88 88 89 87 91] | same tokens, same state
+          taps device-to-device
+codectx30k_py_csv bd2:fixed16   76.88 tok/s | 6.30 tok/pass | cycle  81.99 ms | main  72.62, draft   7.36 (of which taps 0.00) ms/pass | accept% [78 84 89 92 94 87 91 92 86 79 77 65 80 58 71] | same tokens, same state
+          cost probe at position 30104: 8 rows 59.5 ms, 16 rows 71.9 ms -> c16 = 1.188
+          adaptive block: 87 of 125 passes used 16 rows; taps device-to-device
+codectx30k_py_csv bd2:adapt-cost   79.09 tok/s | 6.15 tok/pass | cycle  77.78 ms | main  68.80, draft   6.98 (of which taps 0.00) ms/pass | accept% [78 85 89 93 94 86 91 95 87 79 74 55 82 56 60] | same tokens, same state
+codectx30k_rs_balanced none        19.75 tok/s | 1.00 tok/pass | main  50.62 ms/pass
+          taps device-to-device
+codectx30k_rs_balanced bd2:fixed8   69.64 tok/s | 4.74 tok/pass | cycle  68.07 ms | main  60.07, draft   6.12 (of which taps 0.00) ms/pass | accept% [81 81 86 91 89 83 87] | same tokens, same state
+          taps device-to-device
+codectx30k_rs_balanced bd2:fixed16   73.22 tok/s | 6.00 tok/pass | cycle  81.95 ms | main  72.61, draft   7.35 (of which taps 0.00) ms/pass | accept% [77 78 88 93 94 91 87 89 88 86 74 87 75 60 56] | same tokens, same state
+          cost probe at position 30099: 8 rows 59.5 ms, 16 rows 71.9 ms -> c16 = 1.187
+          adaptive block: 91 of 134 passes used 16 rows; taps device-to-device
+codectx30k_rs_balanced bd2:adapt-cost   73.95 tok/s | 5.73 tok/pass | cycle  77.50 ms | main  68.58, draft   6.96 (of which taps 0.00) ms/pass | accept% [78 78 88 94 91 87 89 92 83 83 75 89 62 80 38] | same tokens, same state

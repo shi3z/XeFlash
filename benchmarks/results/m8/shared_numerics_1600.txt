@@ -1,0 +1,5 @@
+s8 vs s16 : KL mean 0.00e+00 max 0.00e+00 max|dlogit| 0.0000 flips 0/1600
+s8 vs s1 : KL mean 0.00e+00 max 0.00e+00 max|dlogit| 0.0000 flips 0/1600
+u8 vs s8 : KL mean 1.19e-05 max 1.23e-03 max|dlogit| 0.3977 flips 5/1600
+fp32 vs s8 : KL mean 1.71e-05 max 6.79e-03 max|dlogit| 0.5056 flips 6/1600
+fp32 vs u8 : KL mean 1.62e-05 max 3.85e-03 max|dlogit| 0.3616 flips 7/1600

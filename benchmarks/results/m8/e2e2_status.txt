@@ -1,0 +1,6 @@
+xmx_8k 0
+xmx_30k 0
+xmx_short 0
+xmx_48k 0
+fp16_48k 0
+xmx_60k 0

@@ -1,0 +1,3 @@
+fused XMX chunk 8 vs 16: KL mean 0.00e+00 max 0.00e+00 max|dlogit| 0.0000 flips 0/1600
+fused XMX chunk 8 vs 1: KL mean 0.00e+00 max 0.00e+00 max|dlogit| 0.0000 flips 0/1600
+FP32 KV (SLM/part3) vs fused XMX chunk 8: KL mean 1.62e-05 max 3.85e-03 max|dlogit| 0.3616 flips 7/1600

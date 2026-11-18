@@ -1,0 +1,33 @@
+loaded /data/B60special/models/xfm/qwen38-27b-s4-cal.xfm in 6.2s, context capacity 1280 tokens
+device allocations      count          GiB
+  DeltaNet state           48       0.2168
+  KV cache                 16       0.0781
+  MTP                       5       0.3687
+  MTP KV cache              1       0.0049
+  RoPE table                2       0.0003
+  body matrices           256      11.3428
+  embedding (bf16)          1       2.3682
+  lm_head                   1       0.5920
+  matrix scales           779       0.0393
+  small tensors           408       0.0978
+  workspace                 1       0.0336
+  TOTAL requested        1518      15.1425
+driver free VRAM: 22.4843 GiB before, 7.3056 GiB after, difference 15.1787 GiB
+ctx1024  K=0    22.64 tok/s | 1.00 tok/pass | trunk  43.82 ms/pass, MTP   0.00 ms/pass | prefill 261 tok/s | accept []
+[248046, 198, 248045, 248068]
+outputs identical across draft lengths: true
+sweep pos 1104 cfg 3:4:1: m1 attn 1.31 m8 attn 1.48 m16 attn 1.59
+profile ( 1 tokens/pass, sync per stage, ms): norm 1.54 quant 3.09 gemm 35.71 gdn 4.44 attn 1.33 mlp 0.93 head 1.54 | total 48.58
+          unprofiled: 42.32 ms/pass
+profile ( 8 tokens/pass, sync per stage, ms): norm 1.58 quant 3.52 gemm 41.30 gdn 5.28 attn 1.48 mlp 1.47 head 1.81 | total 56.45
+          unprofiled: 49.94 ms/pass
+profile (16 tokens/pass, sync per stage, ms): norm 1.61 quant 3.54 gemm 45.73 gdn 8.09 attn 1.58 mlp 2.07 head 1.88 | total 64.50
+          unprofiled: 58.23 ms/pass
+profile (MTP step, 1 row, sync per stage, ms): norm 0.464 quant 0.067 gemm 0.554 gdn 0.000 attn 0.040 mlp 0.015 head 1.549 | total 2.689
+          unprofiled (includes argmax read-back): 2.534 ms/step
+deep position 1104: cycle K=6, 4 fill rows: draft chain 16.26 ms, trunk pass 49.46 ms, whole cycle 65.76 ms
+deep position 1104: cycle K=7, 4 fill rows: draft chain 18.82 ms, trunk pass 49.93 ms, whole cycle 68.73 ms
+profile (device chain, 1 fill row, 1 drafts, full head, ms): norm 0.434 quant 0.061 gemm 0.552 gdn 0.000 attn 0.040 mlp 0.014 head 1.545 | total 2.647
+          unprofiled: 2.525 ms per chain
+profile (device chain, 1 fill row, 7 drafts, full head, ms): norm 3.014 quant 0.441 gemm 3.878 gdn 0.000 attn 0.284 mlp 0.105 head 10.828 | total 18.548
+          unprofiled: 17.593 ms per chain

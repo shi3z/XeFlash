@@ -1,0 +1,4 @@
+[
+  {"prompt":"long48500","drafter":"bd2:fixed8","block":8,"tok_per_s":31.994,"tokens_per_pass":3.2927,"cycle_ms":102.914,"main_ms":95.026,"draft_ms":6.197,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"long48500","drafter":"bd2:adapt-cost","block":8,"tok_per_s":32.023,"tokens_per_pass":3.2927,"cycle_ms":102.822,"main_ms":94.989,"draft_ms":6.138,"taps_ms":0.000,"same_tokens":true,"same_state":true}
+]

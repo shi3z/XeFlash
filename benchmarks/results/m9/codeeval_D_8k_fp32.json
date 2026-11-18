@@ -1,0 +1,29 @@
+[
+ {
+  "prompt": "codectx8k_cpp_fib",
+  "label": "greedy",
+  "tokens": 768,
+  "task": "cpp_fib",
+  "complete_block": false,
+  "result": "compile_error",
+  "log": "gen.cpp: In function \u2018int gen_main()\u2019:\ngen.cpp:69:12: error: a function-definition is not allowed here before \u2018{\u2019 token\n   69 | int main() {\n      |            ^\ngen.cpp:79:2: error: expected \u2018}\u2019 at end of input\n   79 | }\n      |  ^\ngen.cpp:50:12: note: to match this \u2018{\u2019\n   50 | int main() {\n      |            ^\n"
+ },
+ {
+  "prompt": "codectx8k_py_csv",
+  "label": "greedy",
+  "tokens": 768,
+  "task": "py_csv",
+  "complete_block": true,
+  "result": "fail",
+  "log": "Traceback (most recent call last):\n  File \"/work/test.py\", line 2, in <module>\n    import gen\n  File \"/work/gen.py\", line 84\n    assert parse_csv_line(\",a,b\") = [\"\", \"a\", \"b\"]\n                                  ^\nSyntaxError: invalid syntax\n"
+ },
+ {
+  "prompt": "codectx8k_rs_balanced",
+  "label": "greedy",
+  "tokens": 768,
+  "task": "rs_balanced",
+  "complete_block": true,
+  "result": "compile_error",
+  "log": "error[E0425]: cannot find function `is_baligned` in this scope\n  --> gen.rs:59:17\n   |\n59 |         assert!(is_baligned(\"a[b]c\"));\n   |                 ^^^^^^^^^^^ not found in this scope\n   |\nnote: similarly named function `is_balanced` defined here\n  --> gen.rs:3:1\n   |\n 3 | pub fn is_balanced(s: &str) -> bool {\n   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nhelp: a function with a similar name exists\n   |\n59 -         assert!(is_baligned(\"a[b]c\"));\n59 +         assert!(is_balanced(\"a[b]c\"));\n   |\n\nerror: aborting due to 1 previous error\n\nFor more information about this error, try `rustc --explain E0425`.\n"
+ }
+]

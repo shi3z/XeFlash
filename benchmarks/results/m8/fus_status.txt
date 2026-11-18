@@ -1,0 +1,16 @@
+f8 0
+f16 0
+f1 0
+fp32 0
+8k_xb8dq4 0
+8k_xb4dq4 0
+8k_xb8dq8 0
+8k_xb4dq8 0
+1k 0
+4k 0
+30k_xb8dq4 0
+30k_xb4dq4 0
+30k_xb8dq8 0
+30k_skipqk 0
+30k_skippv 0
+30k_skipboth 0

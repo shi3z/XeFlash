@@ -1,0 +1,87 @@
+loaded /data/B60special/models/xfm/qwen38-27b-s4-cal.xfm in 6.6s, context capacity 1024 tokens
+device allocations      count          GiB
+  DeltaNet state           48       0.2168
+  KV cache                 16       0.0625
+  MTP                       5       0.3687
+  MTP KV cache              1       0.0039
+  RoPE table                2       0.0002
+  body matrices           256      11.3428
+  embedding (bf16)          1       2.3682
+  head sketch               4       0.1291
+  lm_head                   1       0.5920
+  matrix scales           779       0.0393
+  small tensors           408       0.0978
+  workspace                 1       0.0332
+  TOTAL requested        1522      15.2545
+driver free VRAM: 22.4843 GiB before, 7.1945 GiB after, difference 15.2898 GiB
+bdraft2 backend loaded: +2.794 GiB device memory (driver)
+py_merge  none        22.73 tok/s | 1.00 tok/pass | main  44.00 ms/pass
+          taps device-to-device
+py_merge  bd2:fixed8  102.08 tok/s | 5.93 tok/pass | cycle  58.10 ms | main  50.30, draft   5.81 (of which taps 0.00) ms/pass | accept% [91 92 92 92 91 90 89] | same tokens, same state
+          taps device-to-device
+py_merge  bd2:fixed16  107.90 tok/s | 7.25 tok/pass | cycle  67.21 ms | main  58.54, draft   6.59 (of which taps 0.00) ms/pass | accept% [86 91 92 86 94 82 88 91 80 79 92 88 90 79 87] | same tokens, same state
+          adaptive block: 76 of 109 passes used 16 rows; taps device-to-device
+py_merge  bd2:adapt-old  109.75 tok/s | 7.07 tok/pass | cycle  64.45 ms | main  56.03, draft   6.34 (of which taps 0.00) ms/pass | accept% [89 90 93 86 91 81 87 89 82 75 95 95 95 78 86] | same tokens, same state
+          cost probe at position 80: 8 rows 49.5 ms, 16 rows 57.6 ms -> c16 = 1.146
+          adaptive block: 79 of 109 passes used 16 rows; taps device-to-device
+py_merge  bd2:adapt-cost  109.33 tok/s | 7.07 tok/pass | cycle  64.70 ms | main  56.26, draft   6.36 (of which taps 0.00) ms/pass | accept% [89 90 93 86 91 81 87 89 82 75 95 95 95 78 86] | same tokens, same state
+py_csv    none        22.73 tok/s | 1.00 tok/pass | main  43.99 ms/pass
+          taps device-to-device
+py_csv    bd2:fixed8   93.18 tok/s | 5.41 tok/pass | cycle  58.04 ms | main  50.31, draft   5.80 (of which taps 0.00) ms/pass | accept% [89 89 90 83 91 86 85] | same tokens, same state
+          taps device-to-device
+py_csv    bd2:fixed16   96.95 tok/s | 6.51 tok/pass | cycle  67.13 ms | main  58.53, draft   6.57 (of which taps 0.00) ms/pass | accept% [86 89 88 76 95 90 83 84 86 77 75 100 78 93 69] | same tokens, same state
+          adaptive block: 82 of 123 passes used 16 rows; taps device-to-device
+py_csv    bd2:adapt-old   97.40 tok/s | 6.24 tok/pass | cycle  64.10 ms | main  55.80, draft   6.30 (of which taps 0.00) ms/pass | accept% [86 89 86 80 95 89 80 88 89 80 80 100 75 100 75] | same tokens, same state
+          cost probe at position 75: 8 rows 49.5 ms, 16 rows 57.6 ms -> c16 = 1.146
+          adaptive block: 84 of 124 passes used 16 rows; taps device-to-device
+py_csv    bd2:adapt-cost   96.50 tok/s | 6.19 tok/pass | cycle  64.18 ms | main  55.88, draft   6.30 (of which taps 0.00) ms/pass | accept% [86 87 87 80 95 89 80 88 86 83 80 100 75 100 75] | same tokens, same state
+py_lru    none        22.72 tok/s | 1.00 tok/pass | main  44.00 ms/pass
+          taps device-to-device
+py_lru    bd2:fixed8  114.03 tok/s | 6.64 tok/pass | cycle  58.21 ms | main  50.32, draft   5.84 (of which taps 0.00) ms/pass | accept% [94 96 95 91 99 92 92] | same tokens, same state
+          taps device-to-device
+py_lru    bd2:fixed16  130.55 tok/s | 8.80 tok/pass | cycle  67.37 ms | main  58.53, draft   6.60 (of which taps 0.00) ms/pass | accept% [91 98 94 92 94 92 95 93 82 81 74 84 76 81 77] | same tokens, same state
+          adaptive block: 79 of 89 passes used 16 rows; taps device-to-device
+py_lru    bd2:adapt-old  131.05 tok/s | 8.70 tok/pass | cycle  66.36 ms | main  57.61, draft   6.52 (of which taps 0.00) ms/pass | accept% [92 98 95 91 94 92 95 92 81 85 70 83 74 79 82] | same tokens, same state
+          cost probe at position 95: 8 rows 49.4 ms, 16 rows 57.6 ms -> c16 = 1.147
+          adaptive block: 81 of 88 passes used 16 rows; taps device-to-device
+py_lru    bd2:adapt-cost  131.95 tok/s | 8.80 tok/pass | cycle  66.66 ms | main  57.87, draft   6.54 (of which taps 0.00) ms/pass | accept% [92 98 95 91 94 92 95 92 81 85 76 84 71 87 77] | same tokens, same state
+rs_balanced none        22.73 tok/s | 1.00 tok/pass | main  43.99 ms/pass
+          taps device-to-device
+rs_balanced bd2:fixed8   54.62 tok/s | 3.16 tok/pass | cycle  57.87 ms | main  50.36, draft   5.83 (of which taps 0.00) ms/pass | accept% [66 58 72 88 90 92 88] | same tokens, same state
+          taps device-to-device
+rs_balanced bd2:fixed16   55.69 tok/s | 3.73 tok/pass | cycle  66.94 ms | main  58.61, draft   6.61 (of which taps 0.00) ms/pass | accept% [70 66 58 87 85 93 87 82 74 95 74 71 70 86 83] | same tokens, same state
+          adaptive block: 56 of 232 passes used 16 rows; taps device-to-device
+rs_balanced bd2:adapt-old   55.14 tok/s | 3.31 tok/pass | cycle  60.03 ms | main  52.37, draft   5.99 (of which taps 0.00) ms/pass | accept% [64 55 71 88 92 94 84 82 67 92 64 86 83 100 80] | same tokens, same state
+          cost probe at position 70: 8 rows 49.4 ms, 16 rows 57.6 ms -> c16 = 1.147
+          adaptive block: 63 of 231 passes used 16 rows; taps device-to-device
+rs_balanced bd2:adapt-cost   55.13 tok/s | 3.32 tok/pass | cycle  60.31 ms | main  52.61, draft   6.01 (of which taps 0.00) ms/pass | accept% [64 54 72 88 92 91 88 83 65 92 58 86 83 100 80] | same tokens, same state
+rs_merge  none        22.73 tok/s | 1.00 tok/pass | main  43.99 ms/pass
+          taps device-to-device
+rs_merge  bd2:fixed8  105.90 tok/s | 6.15 tok/pass | cycle  58.09 ms | main  50.29, draft   5.78 (of which taps 0.00) ms/pass | accept% [93 93 91 95 94 85 92] | same tokens, same state
+          taps device-to-device
+rs_merge  bd2:fixed16  117.92 tok/s | 7.93 tok/pass | cycle  67.23 ms | main  58.50, draft   6.56 (of which taps 0.00) ms/pass | accept% [91 90 89 91 94 82 94 83 97 89 85 89 80 100 75] | same tokens, same state
+          adaptive block: 72 of 100 passes used 16 rows; taps device-to-device
+rs_merge  bd2:adapt-old  118.86 tok/s | 7.69 tok/pass | cycle  64.70 ms | main  56.19, draft   6.36 (of which taps 0.00) ms/pass | accept% [90 94 88 93 93 82 94 89 97 90 86 88 81 94 75] | same tokens, same state
+          cost probe at position 74: 8 rows 49.4 ms, 16 rows 57.6 ms -> c16 = 1.146
+          adaptive block: 75 of 100 passes used 16 rows; taps device-to-device
+rs_merge  bd2:adapt-cost  118.36 tok/s | 7.69 tok/pass | cycle  64.97 ms | main  56.45, draft   6.39 (of which taps 0.00) ms/pass | accept% [90 94 87 93 93 80 94 89 100 91 86 88 82 94 76] | same tokens, same state
+cpp_fib   none        22.72 tok/s | 1.00 tok/pass | main  44.01 ms/pass
+          taps device-to-device
+cpp_fib   bd2:fixed8  108.39 tok/s | 6.30 tok/pass | cycle  58.13 ms | main  50.29, draft   5.81 (of which taps 0.00) ms/pass | accept% [94 93 93 92 93 91 92] | same tokens, same state
+          taps device-to-device
+cpp_fib   bd2:fixed16  132.32 tok/s | 8.91 tok/pass | cycle  67.32 ms | main  58.50, draft   6.57 (of which taps 0.00) ms/pass | accept% [92 94 93 89 94 91 92 88 88 89 88 97 86 92 83] | same tokens, same state
+          adaptive block: 75 of 92 passes used 16 rows; taps device-to-device
+cpp_fib   bd2:adapt-old  128.38 tok/s | 8.42 tok/pass | cycle  65.62 ms | main  56.97, draft   6.44 (of which taps 0.00) ms/pass | accept% [93 95 93 91 91 90 89 86 86 90 89 100 84 86 83] | same tokens, same state
+          cost probe at position 97: 8 rows 49.5 ms, 16 rows 57.7 ms -> c16 = 1.146
+          adaptive block: 78 of 89 passes used 16 rows; taps device-to-device
+cpp_fib   bd2:adapt-cost  131.54 tok/s | 8.71 tok/pass | cycle  66.20 ms | main  57.48, draft   6.49 (of which taps 0.00) ms/pass | accept% [92 94 94 90 94 92 91 87 85 89 90 96 81 91 90] | same tokens, same state
+cpp_merge none        22.73 tok/s | 1.00 tok/pass | main  43.99 ms/pass
+          taps device-to-device
+cpp_merge bd2:fixed8  115.49 tok/s | 6.71 tok/pass | cycle  58.12 ms | main  50.28, draft   5.78 (of which taps 0.00) ms/pass | accept% [98 96 92 94 95 92 93] | same tokens, same state
+          taps device-to-device
+cpp_merge bd2:fixed16  146.87 tok/s | 9.90 tok/pass | cycle  67.39 ms | main  58.49, draft   6.57 (of which taps 0.00) ms/pass | accept% [97 93 92 94 90 95 96 88 100 89 87 91 87 93 80] | same tokens, same state
+          adaptive block: 71 of 82 passes used 16 rows; taps device-to-device
+cpp_merge bd2:adapt-old  142.36 tok/s | 9.41 tok/pass | cycle  66.13 ms | main  57.38, draft   6.46 (of which taps 0.00) ms/pass | accept% [98 95 91 94 89 91 94 91 100 88 86 90 93 92 83] | same tokens, same state
+          cost probe at position 72: 8 rows 49.5 ms, 16 rows 57.6 ms -> c16 = 1.146
+          adaptive block: 73 of 82 passes used 16 rows; taps device-to-device
+cpp_merge bd2:adapt-cost  141.90 tok/s | 9.41 tok/pass | cycle  66.35 ms | main  57.57, draft   6.48 (of which taps 0.00) ms/pass | accept% [98 95 91 94 89 91 92 91 100 88 86 90 93 92 87] | same tokens, same state

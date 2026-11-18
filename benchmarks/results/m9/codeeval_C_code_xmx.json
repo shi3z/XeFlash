@@ -1,0 +1,65 @@
+[
+ {
+  "prompt": "cpp_fib",
+  "label": "greedy",
+  "tokens": 768,
+  "task": "cpp_fib",
+  "complete_block": false,
+  "result": "compile_error",
+  "log": "gen.cpp:76:2: error: unterminated argument list invoking macro \u2018assert\u2019\n   76 | }\n      |  ^\ngen.cpp: In function \u2018void fib_pair(long long int, long long int, long long int&, long long int&)\u2019:\ngen.cpp:44:22: error: \u2018f_2_k_plus_1\u2019 was not declared in this scope; did you mean \u2018f_2k_plus_1\u2019?\n   44 |         b = (f_2_k + f_2_k_plus_1) % m;\n      |                      ^~~~~~~~~~~~\n      |                      f_2k_plus_1\ngen.cpp: In function \u2018int gen_main()\u2019:\ngen.cpp:62:5: error: \u2018assert\u2019 was not declared in this scope\n   62 |     assert(fib_mod(5, 1000000007) ==\n      |     ^~~~~~\ngen.cpp:8:1: note: \u2018assert\u2019 is defined in header \u2018<cassert>\u2019; this is probably fixable by adding \u2018#include <cassert>\u2019\n    7 | #include <cassert>\n  +++ |+#include <cassert>\n    8 | \ngen.cpp:62:11: error: expected \u2018}\u2019 at end of input\n   62 |     assert(fib_mod(5, 1000000007) ==\n      |           ^\ngen.cpp:55:12: note: to match this \u2018{\u2019\n   55 | int main() {\n      |            ^\n"
+ },
+ {
+  "prompt": "cpp_merge",
+  "label": "greedy",
+  "tokens": 768,
+  "task": "cpp_merge",
+  "complete_block": false,
+  "result": "compile_error",
+  "log": "gen.cpp: In function \u2018int gen_main()\u2019:\ngen.cpp:82:1: error: expected primary-expression before \u2018int\u2019\n   82 | int main() {\n      | ^~~\ngen.cpp:82:1: error: expected \u2018}\u2019 before \u2018int\u2019\ngen.cpp:78:51: note: to match this \u2018{\u2019\n   78 |     std::vector<std::pair<int, int>> intervals5 = {{1, 10}, {2, 5},\n      |                                                   ^\ngen.cpp:92:1: error: could not convert \u2018{{1, 10}, {2, 5}, <expression error>}\u2019 from \u2018<brace-enclosed initializer list>\u2019 to \u2018std::vector<std::pair<int, int> >\u2019\n   92 | }\n      | ^\n      | |\n      | <brace-enclosed initializer list>\ngen.cpp:92:2: error: expected \u2018,\u2019 or \u2018;\u2019 at end of input\n   92 | }\n      |  ^\ngen.cpp:92:2: error: expected \u2018}\u2019 at end of input\ngen.cpp:40:12: note: to match this \u2018{\u2019\n   40 | int main() {\n      |            ^\n"
+ },
+ {
+  "prompt": "py_csv",
+  "label": "greedy",
+  "tokens": 768,
+  "task": "py_csv",
+  "complete_block": true,
+  "result": "fail",
+  "log": "Traceback (most recent call last):\n  File \"/work/test.py\", line 2, in <module>\n    import gen\n  File \"/work/gen.py\", line 69\n    assert parse_csv_line('\"a\"\"b\", \"c\"\"d\"') = ['a\"b', 'c\"d']\n                                            ^\nSyntaxError: invalid syntax\n"
+ },
+ {
+  "prompt": "py_lru",
+  "label": "greedy",
+  "tokens": 768,
+  "task": "py_lru",
+  "complete_block": false,
+  "result": "pass",
+  "log": "OK\n"
+ },
+ {
+  "prompt": "py_merge",
+  "label": "greedy",
+  "tokens": 768,
+  "task": "py_merge",
+  "complete_block": true,
+  "result": "fail",
+  "log": "Traceback (most recent call last):\n  File \"/work/test.py\", line 2, in <module>\n    import gen\n  File \"/work/gen.py\", line 58\n    assert merge_intervals([[1, 10], [2, 5], [6, 8]) == [[1, 10]\n                                                   ^\nSyntaxError: closing parenthesis ')' does not match opening parenthesis '['\n"
+ },
+ {
+  "prompt": "rs_balanced",
+  "label": "greedy",
+  "tokens": 768,
+  "task": "rs_balanced",
+  "complete_block": true,
+  "result": "compile_error",
+  "log": "error[E0762]: unterminated character literal\n --> gen.rs:6:25\n  |\n6 |             '(' | '[' | '{\n  |                         ^^\n\nerror: aborting due to 1 previous error\n\nFor more information about this error, try `rustc --explain E0762`.\n"
+ },
+ {
+  "prompt": "rs_merge",
+  "label": "greedy",
+  "tokens": 768,
+  "task": "rs_merge",
+  "complete_block": true,
+  "result": "pass",
+  "log": "\nrunning 8 tests\ntest tests::test_all_overlapping ... ok\ntest hidden_tests::t ... ok\ntest tests::test_empty_input ... ok\ntest tests::test_no_overlap ... ok\ntest tests::test_touching_intervals ... ok\ntest tests::test_overlapping_intervals ... ok\ntest tests::test_unsorted_input ... ok\ntest tests::test_single_interval ... ok\n\ntest result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+ }
+]

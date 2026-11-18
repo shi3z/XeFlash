@@ -188,6 +188,8 @@ struct RunStats {
     /// cannot be taken (a cycle may overshoot), so it is taken at the first
     /// commit boundary at or after 64 new tokens together with that length.
     state: (usize, u64),
+    /// Verify passes that used 16 rows (adaptive runs).
+    n16: usize,
 }
 
 /// Prefill `prompt`, then decode `n_new` tokens greedily with `k` MTP draft
@@ -294,7 +296,7 @@ fn run_once(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, k: usize
     let decode_s = t1.elapsed().as_secs_f64() - hash_s;
     let emitted = out.len();
     out.truncate(n_new);
-    Ok(RunStats { out, emitted, prefill_s, decode_s, passes, t_main, t_mtp, tried, accepted, state })
+    Ok(RunStats { out, emitted, prefill_s, decode_s, passes, t_main, t_mtp, tried, accepted, state, n16: 0 })
 }
 
 /// Speculative decoding with the draft chain on the device: one submission
@@ -358,7 +360,7 @@ fn run_spec(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, k: usize
     let emitted = out.len();
     out.truncate(n_new);
     // The cycle is one submission, so trunk and MTP time are not separable here; see --profile.
-    Ok(RunStats { out, emitted, prefill_s, decode_s, passes, t_main: decode_s, t_mtp: 0.0, tried, accepted, state })
+    Ok(RunStats { out, emitted, prefill_s, decode_s, passes, t_main: decode_s, t_mtp: 0.0, tried, accepted, state, n16: 0 })
 }
 
 /// gen: `<ids.json>[,<ids2.json>...] <n_new> [--mtp K[,K2...]]`. Every prompt
@@ -759,7 +761,7 @@ fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, bloc
         eprintln!("          taps {}", if zero_copy { "device-to-device" } else { "through host" });
     }
     t_taps += 0.0;
-    Ok((RunStats { out, emitted, prefill_s, decode_s, passes, t_main, t_mtp: t_draft, tried, accepted, state }, t_taps))
+    Ok((RunStats { out, emitted, prefill_s, decode_s, passes, t_main, t_mtp: t_draft, tried, accepted, state, n16 }, t_taps))
 }
 
 /// YASAKANI's rule for choosing between 8 and 16 verify rows (from its port
@@ -845,6 +847,10 @@ fn compare(dev: &Device, args: &[String]) -> Result<()> {
             }
         }
         eprintln!("{name:<9} none      {:>7.2} tok/s | 1.00 tok/pass | main {:>6.2} ms/pass", base.emitted as f64 / base.decode_s, base.t_main / base.passes as f64 * 1e3);
+        if let Some(dir) = opt(args, "--save-tokens") {
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(format!("{dir}/{name}__greedy.json"), format!("{:?}", base.out));
+        }
         let mut report = |label: &str, r: &RunStats, taps_s: f64, split: bool| {
             let tps = r.emitted as f64 / r.decode_s;
             let cyc = r.decode_s / r.passes as f64 * 1e3;
@@ -870,14 +876,25 @@ fn compare(dev: &Device, args: &[String]) -> Result<()> {
             let _ = std::fmt::Write::write_fmt(
                 &mut json,
                 format_args!(
-                    "  {{\"prompt\":\"{name}\",\"drafter\":\"{label}\",\"block\":{block},\"tok_per_s\":{tps:.3},\"tokens_per_pass\":{:.4},\"cycle_ms\":{cyc:.3},\"main_ms\":{:.3},\"draft_ms\":{:.3},\"taps_ms\":{:.3},\"same_tokens\":{same},\"same_state\":{}}},\n",
+                    "  {{\"prompt\":\"{name}\",\"drafter\":\"{label}\",\"block\":{block},\"tok_per_s\":{tps:.3},\"tokens_per_pass\":{:.4},\"cycle_ms\":{cyc:.3},\"main_ms\":{:.3},\"draft_ms\":{:.3},\"taps_ms\":{:.3},\"same_tokens\":{same},\"same_state\":{},\"passes\":{},\"passes16\":{},\"emitted\":{},\"new_tokens\":{},\"accept1\":{:.4},\"prefill_tok_s\":{:.1}}},\n",
                     r.emitted as f64 / r.passes as f64,
                     if split { r.t_main / r.passes as f64 * 1e3 } else { -1.0 },
                     if split { (r.t_mtp + taps_s) / r.passes as f64 * 1e3 } else { -1.0 },
                     taps_s / r.passes as f64 * 1e3,
-                    st.unwrap_or(false)
+                    st.unwrap_or(false),
+                    r.passes,
+                    r.n16,
+                    r.emitted,
+                    r.out.len(),
+                    r.accepted.get(1).copied().unwrap_or(0) as f64 / r.tried.get(1).copied().unwrap_or(1).max(1) as f64,
+                    prompt.len() as f64 / r.prefill_s.max(1e-9)
                 ),
             );
+            if let Some(dir) = opt(args, "--save-tokens") {
+                let _ = std::fs::create_dir_all(&dir);
+                let file = format!("{dir}/{name}__{}.json", label.replace(':', "_"));
+                let _ = std::fs::write(file, format!("{:?}", r.out));
+            }
         };
         let only_bd = args.iter().any(|a| a == "--only-bd");
         if e.has_mtp() && !only_bd {

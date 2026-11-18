@@ -456,8 +456,9 @@ impl Engine {
         for (l, st) in self.states.iter().take(LAYERS).enumerate() {
             if l % 4 == 3 {
                 let rows = self.pos * 4 * 256;
+                let xmx = std::env::var("XF_KV").as_deref() == Ok("xmx");
                 let kvm = match std::env::var("XF_KV").as_deref() {
-                    Ok("bf16") | Ok("fp16") => 2usize,
+                    Ok("bf16") | Ok("fp16") | Ok("xmx") => 2usize,
                     _ => 4,
                 };
                 let mut buf = vec![0u32; rows];
@@ -468,14 +469,35 @@ impl Engine {
                     for p in 0..self.pos {
                         for kh in 0..4 {
                             for d in 0..256 {
-                                buf[(p * 4 + kh) * 256 + d] = all[((p / 64 * 4 + kh) * 256 + d) * 64 + p % 64] as u32;
+                                buf[(p * 4 + kh) * 256 + d] = if xmx {
+                                    // K tile layout: [block][kv head][key tile of 8][dim chunk of 16][8 keys][16 dims]
+                                    all[((((p / 64 * 4 + kh) * 8 + (p % 64) / 8) * 16 + d / 16) * 8 + p % 8) * 16 + d % 16] as u32
+                                } else {
+                                    all[((p / 64 * 4 + kh) * 256 + d) * 64 + p % 64] as u32
+                                };
                             }
                         }
                     }
                     eat(&buf);
-                    let mut vb = vec![0u16; rows];
-                    st.read(self.ctx * 4 * 256 * 2, &mut vb)?;
-                    let vb: Vec<u32> = vb.iter().map(|&x| x as u32).collect();
+                    let vb: Vec<u32> = if xmx {
+                        let mut all = vec![0u16; self.ctx * 4 * 256];
+                        st.read(self.ctx * 4 * 256 * 2, &mut all)?;
+                        let mut o = vec![0u32; rows];
+                        for p in 0..self.pos {
+                            for kh in 0..4 {
+                                for d in 0..256 {
+                                    // V tile layout: [block][kv head][key chunk of 16][dim tile of 8][8 dims][16 keys]
+                                    o[(p * 4 + kh) * 256 + d] =
+                                        all[((((p / 64 * 4 + kh) * 4 + (p % 64) / 16) * 32 + d / 8) * 8 + d % 8) * 16 + p % 16] as u32;
+                                }
+                            }
+                        }
+                        o
+                    } else {
+                        let mut vb = vec![0u16; rows];
+                        st.read(self.ctx * 4 * 256 * 2, &mut vb)?;
+                        vb.iter().map(|&x| x as u32).collect()
+                    };
                     eat(&vb);
                     continue;
                 }

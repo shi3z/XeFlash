@@ -871,3 +871,204 @@ both block sizes: 6 of 53 passes used 16 rows in the 8K run of E6's first compar
   KL 4.0e-5 (BF16) / 3.1e-5 (FP16), 10 / 8 greedy flips in 3,200 tokens (nearly all with FP32 margin < 0.02).
 - Not yet measured: 16-bit KV quality on retrieval/multi-needle/Japanese/code/math, prefix reuse and EOS at 60K, 48K with bdraft2.
 - Next bottleneck at long context: the attention kernel is now FMA-issue bound (~3.3 TFLOP/s); next step would be DPAS-based attention (16-bit operands).
+
+## Part G. XMX (DPAS) attention with a shared QK^T, and the Code study (XeFlash + bdraft2)
+
+### G1. What was built
+`XF_KV=xmx` (experimental; FP32 KV stays the default): K, V and Q in FP16, QK^T and PV on the XMX units (`dpas.8x8`, hf x hf -> f32), softmax in registers.
+Layouts (K: DPAS A tiles [8 keys x 16 dims]; V^T: A tiles [8 dims x 16 keys]; Q^T: B tiles, pre-scaled by 1/16) are in ATTENTION_OPTIMIZATION.md.
+Default kernel `k_attn_xmx3<XB=8>`: a work-group of 8 threads per (kv head, group of 16 (token, head) rows, segment of 8 blocks); the QK^T of each 32-key
+sub-block is split over the 8 threads (4 key tiles x 2 halves of the dims), exchanged through 8 KiB of SLM (one barrier per sub-block); then every thread runs the online
+softmax in registers and PV for its 32 V dims. One partial per segment is written and `k_attn_comb2` merges them. ISA check: no spill, 128 GRF, 1 barrier.
+Steps measured on the way: block-partial buffers with a gather combine (combine alone 16-18 ms at 30K), a two-stage combine, the fused kernel with DQ=4 (spills, 114 sends)
+against DQ=8 (no spill), and QK^T = 55-70% of the fused kernel's time at 30K (skip tests, `benchmarks/results/m8/fus_30k_skip*.log`).
+
+Attention stage, ms for 16 layers (profile with per-stage sync), rows 1 / 8 / 16:
+| context | part3 (FP32 KV) | SLM kernel (FP32 KV, 8 / 16 rows) | XMX shared XB8 |
+|---|---|---|---|
+| 1K | 3.7 / 3.8 / 3.8 | 1.6 / 2.6 | 1.3 / 1.5 / 1.6 |
+| 8K | 4.7 / 9.0 / 17.5 | 8.7 / 15.9 | 2.2 / 3.5 / 4.7 |
+| 30K | 18.5 / 44.2 / 90.4 | 29.2 / 54.8 | 7.5 / 10.5 / 14.8 |
+| 48K | 36.9 / 86.6 / 176 | 46.3 / 87.2 | 12.5 / 16.8 / 23.7 |
+
+Numerics (1,600 teacher-forced tokens, `benchmarks/results/m8/shared_numerics_1600.txt`): bit-identical for pass sizes 1 / 8 / 16 (exact speculative verification holds);
+against FP32 KV: KL 1.7e-5 mean, 6 of 1,600 greedy flips (FP16 KV alone: KL 1.3e-5, 6 flips). Not lossless; the FP32 path remains available.
+
+### G2. Long contexts, bdraft2 adaptive, same model and settings (tok/s; tokens and committed state equal to plain greedy in every run)
+| context | FP32 KV, SLM kernels | FP16 KV, SLM kernels | XMX shared |
+|---|---:|---:|---:|
+| 8K (long-document summary prompt) | 53.4 | - | 58.3 (fixed 8), 57.5 (adaptive-cost) |
+| 30K | 38.5 | 38.9 | 48.6 |
+| 48K | does not fit with bdraft2 | 32.0 | 43.5 |
+| 60K (64 tokens only) | does not fit | 40.4 (BF16 KV) | 51.6 |
+60K fits in 22.4 of 22.48 GiB with the MTP head still loaded; with XF_KV=xmx the 378 MB block-partial buffer is no longer allocated.
+
+### G3. Code: same prompt and conditions as the earlier 115.1 tok/s (code.json, 512 tokens, short context)
+| backend | fixed 8 | fixed 16 | adaptive (old rule) | adaptive (measured cost) |
+|---|---:|---:|---:|---:|
+| FP32 KV, SLM kernels | 105.0 | 120.0 | 116.7 | 116.0 |
+| XMX shared | 106.5 | 120.5 | 118.8 | 118.1 |
+The earlier 115.1 (D2 above, 8-row pass 51.0 ms) is reproduced by the adaptive rule (116.7 / 116.0). Fixed 16 rows is faster than fixed 8 (+13 to +15%) and slightly faster
+than either adaptive rule: the 16-row pass costs 1.16x an 8-row pass but adds 32% more tokens per pass (6.1 -> 8.1).
+
+### G4. Code tasks (new prompts, hidden-test graded)
+Mean tok/s over the tasks of each scenario (768 new tokens; 8K and 30K have the repository's own sources in front, then the same tasks):
+| scenario | backend | fixed 8 | fixed 16 | adaptive (old rule) | adaptive (measured cost) |
+|---|---|---:|---:|---:|---:|
+| short, 7 code tasks (768 tok), mean | FP32 KV, SLM kernels | 98.4 | 111.5 | 110.9 | 111.0 |
+| short, 7 code tasks (768 tok), mean | XMX shared, FP16 KV | 99.1 | 112.6 | 111.8 | 112.1 |
+| 8K code context, 3 tasks, mean | FP32 KV, SLM kernels | 74.0 | 74.1 | 76.4 | 76.4 |
+| 8K code context, 3 tasks, mean | XMX shared, FP16 KV | 83.3 | 88.4 | 89.7 | 89.6 |
+| 30K code context, 2 tasks, mean | FP32 KV, SLM kernels | 56.2 | 50.5 | - | 56.2 |
+| 30K code context, 2 tasks, mean | XMX shared, FP16 KV | 71.2 | 75.0 | - | 76.5 |
+
+Per task, short context, XMX shared:
+
+### C_code_xmx
+
+| prompt | config | tok/s | tok/pass | 1st-draft accept | 16-row passes | main ms | draft ms | new tokens | exact |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---|
+| py_merge | fixed 8 | 102.1 | 5.93 | 91% | 0/130 (0%) | 50.3 | 5.8 | 768 | tokens+state |
+| py_merge | fixed 16 | 107.9 | 7.25 | 86% | 107/107 (100%) | 58.5 | 6.6 | 768 | tokens+state |
+| py_merge | adaptive (old rule) | 109.8 | 7.07 | 89% | 76/109 (70%) | 56.0 | 6.3 | 768 | tokens+state |
+| py_merge | adaptive (measured cost) | 109.3 | 7.07 | 89% | 79/109 (72%) | 56.3 | 6.4 | 768 | tokens+state |
+| py_csv | fixed 8 | 93.2 | 5.41 | 89% | 0/142 (0%) | 50.3 | 5.8 | 768 | tokens+state |
+| py_csv | fixed 16 | 96.9 | 6.51 | 86% | 118/118 (100%) | 58.5 | 6.6 | 768 | tokens+state |
+| py_csv | adaptive (old rule) | 97.4 | 6.24 | 86% | 82/123 (67%) | 55.8 | 6.3 | 768 | tokens+state |
+| py_csv | adaptive (measured cost) | 96.5 | 6.19 | 86% | 84/124 (68%) | 55.9 | 6.3 | 768 | tokens+state |
+| py_lru | fixed 8 | 114.0 | 6.64 | 94% | 0/116 (0%) | 50.3 | 5.8 | 768 | tokens+state |
+| py_lru | fixed 16 | 130.6 | 8.80 | 91% | 88/88 (100%) | 58.5 | 6.6 | 768 | tokens+state |
+| py_lru | adaptive (old rule) | 131.0 | 8.70 | 92% | 79/89 (89%) | 57.6 | 6.5 | 768 | tokens+state |
+| py_lru | adaptive (measured cost) | 131.9 | 8.80 | 92% | 81/88 (92%) | 57.9 | 6.5 | 768 | tokens+state |
+| rs_balanced | fixed 8 | 54.6 | 3.16 | 66% | 0/243 (0%) | 50.4 | 5.8 | 768 | tokens+state |
+| rs_balanced | fixed 16 | 55.7 | 3.73 | 70% | 206/206 (100%) | 58.6 | 6.6 | 768 | tokens+state |
+| rs_balanced | adaptive (old rule) | 55.1 | 3.31 | 64% | 56/232 (24%) | 52.4 | 6.0 | 768 | tokens+state |
+| rs_balanced | adaptive (measured cost) | 55.1 | 3.32 | 64% | 63/231 (27%) | 52.6 | 6.0 | 768 | tokens+state |
+| rs_merge | fixed 8 | 105.9 | 6.15 | 93% | 0/125 (0%) | 50.3 | 5.8 | 768 | tokens+state |
+| rs_merge | fixed 16 | 117.9 | 7.93 | 91% | 97/97 (100%) | 58.5 | 6.6 | 768 | tokens+state |
+| rs_merge | adaptive (old rule) | 118.9 | 7.69 | 90% | 72/100 (72%) | 56.2 | 6.4 | 768 | tokens+state |
+| rs_merge | adaptive (measured cost) | 118.4 | 7.69 | 90% | 75/100 (75%) | 56.4 | 6.4 | 768 | tokens+state |
+| cpp_fib | fixed 8 | 108.4 | 6.30 | 94% | 0/123 (0%) | 50.3 | 5.8 | 768 | tokens+state |
+| cpp_fib | fixed 16 | 132.3 | 8.91 | 92% | 87/87 (100%) | 58.5 | 6.6 | 768 | tokens+state |
+| cpp_fib | adaptive (old rule) | 128.4 | 8.42 | 93% | 75/92 (82%) | 57.0 | 6.4 | 768 | tokens+state |
+| cpp_fib | adaptive (measured cost) | 131.5 | 8.71 | 92% | 78/89 (88%) | 57.5 | 6.5 | 768 | tokens+state |
+| cpp_merge | fixed 8 | 115.5 | 6.71 | 98% | 0/115 (0%) | 50.3 | 5.8 | 768 | tokens+state |
+| cpp_merge | fixed 16 | 146.9 | 9.90 | 97% | 78/78 (100%) | 58.5 | 6.6 | 768 | tokens+state |
+| cpp_merge | adaptive (old rule) | 142.4 | 9.41 | 98% | 71/82 (87%) | 57.4 | 6.5 | 768 | tokens+state |
+| cpp_merge | adaptive (measured cost) | 141.9 | 9.41 | 98% | 73/82 (89%) | 57.6 | 6.5 | 768 | tokens+state |
+
+Per task, 8K context:
+
+### D_8k_xmx
+
+| prompt | config | tok/s | tok/pass | 1st-draft accept | 16-row passes | main ms | draft ms | new tokens | exact |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---|
+| codectx8k_py_csv | fixed 8 | 78.1 | 4.77 | 82% | 0/162 (0%) | 53.1 | 6.1 | 768 | tokens+state |
+| codectx8k_py_csv | fixed 16 | 79.7 | 5.73 | 79% | 135/135 (100%) | 62.6 | 7.4 | 768 | tokens+state |
+| codectx8k_py_csv | adaptive (old rule) | 81.4 | 5.37 | 80% | 65/144 (45%) | 57.4 | 6.7 | 768 | tokens+state |
+| codectx8k_py_csv | adaptive (measured cost) | 81.4 | 5.37 | 80% | 65/144 (45%) | 57.4 | 6.7 | 768 | tokens+state |
+| codectx8k_rs_balanced | fixed 8 | 73.6 | 4.49 | 78% | 0/171 (0%) | 53.1 | 6.1 | 768 | tokens+state |
+| codectx8k_rs_balanced | fixed 16 | 74.2 | 5.33 | 75% | 144/144 (100%) | 62.6 | 7.4 | 768 | tokens+state |
+| codectx8k_rs_balanced | adaptive (old rule) | 78.4 | 5.26 | 75% | 81/146 (55%) | 58.4 | 6.8 | 768 | tokens+state |
+| codectx8k_rs_balanced | adaptive (measured cost) | 78.0 | 5.22 | 76% | 81/147 (55%) | 58.3 | 6.8 | 768 | tokens+state |
+| codectx8k_cpp_fib | fixed 8 | 98.4 | 6.02 | 92% | 0/128 (0%) | 53.1 | 6.1 | 768 | tokens+state |
+| codectx8k_cpp_fib | fixed 16 | 111.3 | 8.03 | 94% | 96/96 (100%) | 62.6 | 7.4 | 768 | tokens+state |
+| codectx8k_cpp_fib | adaptive (old rule) | 109.4 | 7.71 | 93% | 85/100 (85%) | 61.1 | 7.2 | 768 | tokens+state |
+| codectx8k_cpp_fib | adaptive (measured cost) | 109.4 | 7.71 | 93% | 85/100 (85%) | 61.1 | 7.2 | 768 | tokens+state |
+
+### D_8k_fp32
+
+| prompt | config | tok/s | tok/pass | 1st-draft accept | 16-row passes | main ms | draft ms | new tokens | exact |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---|
+| codectx8k_py_csv | fixed 8 | 65.0 | 4.31 | 80% | 0/178 (0%) | 58.5 | 6.1 | 768 | tokens+state |
+| codectx8k_py_csv | fixed 16 | 62.8 | 5.22 | 79% | 147/147 (100%) | 73.9 | 7.3 | 768 | tokens+state |
+| codectx8k_py_csv | adaptive (old rule) | 65.4 | 4.80 | 78% | 67/160 (42%) | 64.9 | 6.6 | 768 | tokens+state |
+| codectx8k_py_csv | adaptive (measured cost) | 65.6 | 4.52 | 79% | 25/170 (15%) | 60.8 | 6.3 | 768 | tokens+state |
+| codectx8k_rs_balanced | fixed 8 | 67.2 | 4.47 | 78% | 0/172 (0%) | 58.5 | 6.1 | 768 | tokens+state |
+| codectx8k_rs_balanced | fixed 16 | 64.1 | 5.33 | 75% | 144/144 (100%) | 73.9 | 7.4 | 768 | tokens+state |
+| codectx8k_rs_balanced | adaptive (old rule) | 69.4 | 5.26 | 75% | 81/146 (55%) | 67.1 | 6.8 | 768 | tokens+state |
+| codectx8k_rs_balanced | adaptive (measured cost) | 68.4 | 4.68 | 79% | 20/164 (12%) | 60.3 | 6.3 | 768 | tokens+state |
+| codectx8k_cpp_fib | fixed 8 | 89.8 | 5.98 | 91% | 0/129 (0%) | 58.4 | 6.1 | 768 | tokens+state |
+| codectx8k_cpp_fib | fixed 16 | 95.4 | 7.95 | 93% | 97/97 (100%) | 73.7 | 7.4 | 768 | tokens+state |
+| codectx8k_cpp_fib | adaptive (old rule) | 94.4 | 7.63 | 92% | 86/101 (85%) | 71.5 | 7.2 | 768 | tokens+state |
+| codectx8k_cpp_fib | adaptive (measured cost) | 95.0 | 7.14 | 92% | 55/108 (51%) | 66.3 | 6.7 | 768 | tokens+state |
+
+Per task, 30K context:
+
+### E_30k_xmx
+
+| prompt | config | tok/s | tok/pass | 1st-draft accept | 16-row passes | main ms | draft ms | new tokens | exact |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---|
+| codectx30k_py_csv | fixed 8 | 72.8 | 4.96 | 81% | 0/155 (0%) | 60.1 | 6.1 | 768 | tokens+state |
+| codectx30k_py_csv | fixed 16 | 76.9 | 6.30 | 78% | 122/122 (100%) | 72.6 | 7.4 | 768 | tokens+state |
+| codectx30k_py_csv | adaptive (measured cost) | 79.1 | 6.15 | 78% | 87/125 (70%) | 68.8 | 7.0 | 768 | tokens+state |
+| codectx30k_rs_balanced | fixed 8 | 69.6 | 4.74 | 81% | 0/162 (0%) | 60.1 | 6.1 | 768 | tokens+state |
+| codectx30k_rs_balanced | fixed 16 | 73.2 | 6.00 | 77% | 128/128 (100%) | 72.6 | 7.4 | 768 | tokens+state |
+| codectx30k_rs_balanced | adaptive (measured cost) | 73.9 | 5.73 | 78% | 91/134 (68%) | 68.6 | 7.0 | 768 | tokens+state |
+
+### E_30k_fp32
+
+| prompt | config | tok/s | tok/pass | 1st-draft accept | 16-row passes | main ms | draft ms | new tokens | exact |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---|
+| codectx30k_py_csv | fixed 8 | 57.1 | 4.93 | 80% | 0/156 (0%) | 78.3 | 6.1 | 768 | tokens+state |
+| codectx30k_py_csv | fixed 16 | 51.3 | 6.25 | 78% | 123/123 (100%) | 112.4 | 7.4 | 768 | tokens+state |
+| codectx30k_py_csv | adaptive (measured cost) | 57.1 | 4.93 | 80% | 0/156 (0%) | 78.3 | 6.1 | 768 | tokens+state |
+| codectx30k_rs_balanced | fixed 8 | 55.3 | 4.77 | 82% | 0/161 (0%) | 78.3 | 6.1 | 768 | tokens+state |
+| codectx30k_rs_balanced | fixed 16 | 49.7 | 6.05 | 79% | 127/127 (100%) | 112.4 | 7.4 | 768 | tokens+state |
+| codectx30k_rs_balanced | adaptive (measured cost) | 55.3 | 4.77 | 82% | 0/161 (0%) | 78.3 | 6.1 | 768 | tokens+state |
+
+
+16-row selection of the measured-cost adaptive rule over all passes: short code tasks 65%, 8K 59%, 30K 69% (FP32 kernels: short 65%, 8K 23%, 30K 0%).
+
+### G5. Is fixed 16 better than fixed 8 for code?
+Yes, on every task and context measured with the XMX attention: short +2% (rs_balanced, first-draft acceptance 66%) to +27% (cpp_merge, 98%); 8K +1% to +13%; 30K +5%.
+With the FP32-KV kernels it is not always so: at 30K the 16-row pass costs 1.43x (112 vs 78 ms) and for rs_balanced fixed 16 loses to fixed 8 (49.7 vs 55.3 tok/s).
+The XMX attention makes the 16-row pass cheaper (cost ratio 1.21 at 30K, 1.18 at 8K, 1.16 short), which is why 16 rows pays more.
+The adaptive rule (`Adapt`: expected extra accepted tokens `g16` against `(c16-1) * t8`) starts at g16 = 0 and decays by 0.85 on every pass with fewer than 7 accepted drafts, so it uses 8 rows at the start and
+after a miss. On the highest-acceptance tasks it stays 1 to 3.5% below always-16 (cpp_merge 141.9 vs 146.9), and it is better than both fixed settings where acceptance is mixed (py_csv and rs_balanced at 8K and 30K).
+Checked from the source and from the 16-row counts; the rule was not changed.
+
+### G6. Overall comparison, short context, 512 tokens (tok/s)
+| prompt | backend | fixed 8 | fixed 16 | adaptive (old) | adaptive (cost) | tok/pass @8 / @16 | 1st-draft accept | 16-row passes (adaptive-cost) |
+|---|---|---:|---:|---:|---:|---|---:|---:|
+| explain | FP32 KV (SLM kernels) | 76.6 | 74.5 | 77.4 | 76.9 | 4.44 / 5.00 | 84% | 9% |
+| explain | XMX shared (FP16 KV) | 76.8 | 74.9 | 77.6 | 77.0 | 4.44 / 5.00 | 84% | 10% |
+| code | FP32 KV (SLM kernels) | 105.0 | 120.0 | 116.7 | 116.0 | 6.10 / 8.08 | 90% | 81% |
+| code | XMX shared (FP16 KV) | 106.5 | 120.5 | 118.8 | 118.1 | 6.17 / 8.08 | 90% | 82% |
+| story | FP32 KV (SLM kernels) | 42.7 | 36.9 | 42.7 | 42.7 | 2.46 / 2.46 | 68% | 0% |
+| story | XMX shared (FP16 KV) | 43.0 | 37.0 | 43.0 | 43.0 | 2.47 / 2.46 | 68% | 0% |
+| proof | FP32 KV (SLM kernels) | 102.5 | 118.9 | 118.5 | 119.6 | 5.95 / 8.00 | 97% | 63% |
+| proof | XMX shared (FP16 KV) | 102.8 | 119.4 | 119.0 | 120.1 | 5.95 / 8.00 | 97% | 63% |
+| japanese | FP32 KV (SLM kernels) | 34.8 | 30.0 | 34.7 | 34.7 | 2.00 / 2.00 | 47% | 2% |
+| japanese | XMX shared (FP16 KV) | 34.8 | 30.3 | 34.8 | 34.8 | 2.00 / 2.01 | 48% | 2% |
+| mean of explain/code/story/proof | FP32 KV | 81.7 | 87.6 | 88.8 | 88.8 | | | |
+| mean of explain/code/story/proof | XMX shared | 82.2 | 88.0 | 89.6 | 89.5 | | | |
+
+### G7. Correctness of the generated code
+Hidden tests run in a bubblewrap sandbox (no network, read-only system, tmpfs work dir, CPU / memory / process limits); `tools/code_eval/`. The engine's greedy output is the same for every verify setting (decoding is exact).
+| run | task | FP32-KV engine | XMX engine |
+|---|---|---|---|
+| short | cpp_fib | compile_error (block cut off) | compile_error (block cut off) |
+| short | cpp_merge | compile_error (block cut off) | compile_error (block cut off) |
+| short | py_csv | fail | fail |
+| short | py_lru | pass (block cut off) | pass (block cut off) |
+| short | py_merge | fail | fail |
+| short | rs_balanced | compile_error | compile_error |
+| short | rs_merge | pass | pass |
+| 8K | codectx8k_cpp_fib | compile_error (block cut off) | compile_error (block cut off) |
+| 8K | codectx8k_py_csv | fail | fail |
+| 8K | codectx8k_rs_balanced | compile_error | compile_error |
+| 30K | codectx30k_py_csv | fail | fail |
+| 30K | codectx30k_rs_balanced | compile_error | compile_error |
+
+passed / graded: short fp32: 2/7; short xmx: 2/7; 8K fp32: 0/3; 8K xmx: 0/3; 30K fp32: 0/2; 30K xmx: 0/2
+
+### G8. Caveats
+- Pass rates are low. Part of the failures are answers cut off at 768 tokens inside the code block (short cpp_fib and cpp_merge, 8K cpp_fib: marked above), which cannot compile.
+  The failures I inspected in the log (short py_csv, py_merge, rs_balanced) are small syntax slips (`=` for `==`, a `]` closed with `)`, an unclosed `'{`); I did not inspect the 8K and 30K failures one by one.
+  The results are the same with FP32 KV and with the XMX attention (11 of the 12 greedy sequences are token-identical between the two), so the failures do not come from this attention work.
+  At the failing `'{'` position of rs_balanced the engine puts 9% on the closing quote and 24% on a newline (teacher-forced `xf-run dump`). Whether the BF16 model behaves differently was not measured
+  (27B BF16 does not fit in the 56 GB of free host RAM). This is a model-quality question (INT4), not an attention one.
+- At most 768 tokens were generated; some answers are cut off inside a code block (marked above).
+- Greedy decoding only; one run per condition; the 48K and 60K figures use 128 and 64 generated tokens.
+- The adaptive rule was not changed or tuned; its 16-row selection rates are reported as measured.

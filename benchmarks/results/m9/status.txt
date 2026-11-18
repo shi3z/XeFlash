@@ -1,0 +1,10 @@
+A_code_xmx 0
+A_code_fp32 0
+B_all_xmx 0
+B_all_fp32 0
+C_code_xmx 0
+C_code_fp32 0
+D_8k_xmx 0
+D_8k_fp32 0
+E_30k_xmx 0
+E_30k_fp32 0

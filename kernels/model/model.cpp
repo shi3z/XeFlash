@@ -23,6 +23,7 @@
 #include "../ctx.hpp"
 
 namespace es = sycl::ext::intel::esimd;
+namespace xmx = sycl::ext::intel::esimd::xmx;
 using es::simd;
 
 namespace {
@@ -85,6 +86,8 @@ struct WS {
   float *act, *yz, *yab, *qn, *gout, *go, *yq, *yk, *yv, *qr, *g, *u, *logits, *amv;
   int32_t *ami;
   float *pm, *pd, *pv;
+  uint16_t *q16; // XMX attention: Q^T operand tiles (fp16)
+  float *pseg, *psm, *psd; // XMX attention: combined partials per segment of XSEG blocks
   // MTP scratch
   float *mh, *me;
   size_t total;
@@ -100,6 +103,7 @@ struct Bump {
   }
 };
 
+int kv_mode();
 WS carve_ws(void *base, int ctx) {
   Bump b{static_cast<char *>(base)};
   const size_t nb = size_t(ctx) / 64 + 1;
@@ -133,7 +137,8 @@ WS carve_ws(void *base, int ctx) {
   w.ami = b.take<int32_t>(MAXM * AMC * 64);
   w.pm = b.take<float>(MAXM * AH * nb);
   w.pd = b.take<float>(MAXM * AH * nb);
-  w.pv = b.take<float>(MAXM * AH * nb * AD);
+  // XF_KV=xmx uses the fused kernel (segment partials in pseg), so the 378 MB (at 60K) block-partial buffer is only kept for XF_XMX_OLD
+  w.pv = b.take<float>((kv_mode() == 3 && !std::getenv("XF_XMX_OLD")) ? size_t(4096) : size_t(MAXM) * AH * nb * AD);
   w.mh = b.take<float>(MAXM * D);
   w.me = b.take<float>(MAXM * 2 * D);
   w.cap = b.take<float>(size_t(5) * MAXM * D);
@@ -142,6 +147,10 @@ WS carve_ws(void *base, int ctx) {
   w.cand = b.take<int32_t>(4096);
   w.candi = b.take<int32_t>(4096);
   w.candv = b.take<float>(4096);
+  w.q16 = b.take<uint16_t>(size_t(AKH) * 6 * 16 * 256);
+  w.pseg = b.take<float>(size_t(AKH) * 6 * (nb / 4 + 2) * 4096);
+  w.psm = b.take<float>(size_t(AKH) * 6 * (nb / 4 + 2) * 16);
+  w.psd = b.take<float>(size_t(AKH) * 6 * (nb / 4 + 2) * 16);
   w.total = b.off;
   return w;
 }
@@ -163,13 +172,14 @@ GdnState carve_gdn(void *base) {
   s.total = b.off;
   return s;
 }
-// KV storage: 0 = FP32 (default), 1 = BF16, 2 = FP16 (XF_KV=bf16|fp16; experimental, not bit-identical to FP32).
+// KV storage: 0 = FP32 (default), 1 = BF16, 2 = FP16, 3 = FP16 tile layouts for the XMX attention (XF_KV=bf16|fp16|xmx; experimental, not bit-identical to FP32).
 int kv_mode() {
   static const int m = [] {
     const char *e = std::getenv("XF_KV");
     if (!e) return 0;
     if (!std::strcmp(e, "bf16")) return 1;
     if (!std::strcmp(e, "fp16")) return 2;
+    if (!std::strcmp(e, "xmx")) return 3; // FP16 KV in DPAS tile layouts + XMX attention
     return 0;
   }();
   return m;
@@ -896,6 +906,525 @@ void k_attn_slm(Q &q, const float *qr, const void *KT, const void *V, float *pm,
   });
 }
 
+
+// ---------------------------------------------------------------- XMX (DPAS) attention, FP16 operands, FP32 accumulation
+// Layouts (16-bit elements). K: [block of 64 keys][kv head][key tile of 8][dim chunk of 16][8 keys][16 dims] (DPAS A operand, 8 keys x 16 dims).
+// V: [block][kv head][key chunk of 16][dim tile of 8][8 dims][16 keys] (A operand of V^T, 8 dims x 16 keys). Q^T (B operand, VNNI) per
+// (kv head, row group of 16 rows = (token, head) pairs, dim chunk): [8 dim pairs][16 rows][2]; pre-scaled by 1/16 (exact).
+// S^T[key][row] = K . Q^T (DPAS), softmax down the key axis in registers, P^T (FP16) is the B operand of O^T[dim][row] = V^T . P^T.
+// Output partials: pm/pd as before, pvx[(kv head, row group, block)][dim][16 rows] FP32.
+using XT = xmx::dpas_argument_type;
+void k_attn_q16(Q &q, const float *qr, uint16_t *Q16, int m) {
+  const int G = (6 * m + 15) / 16;
+  q.parallel_for(sycl::range<1>(size_t(AKH) * G * 16), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const size_t c = id[0] % 16, g = id[0] / 16 % G, kh = id[0] / 16 / G;
+    simd<uint16_t, 256> tile(0);
+#pragma unroll
+    for (int n = 0; n < 16; n++) {
+      const int r = int(g) * 16 + n;
+      if (r < 6 * m) {
+        const int tok = r / 6, hh = r % 6;
+        simd<float, 16> row;
+        row.copy_from(qr + (size_t(tok) * AH + kh * 6 + hh) * AD + c * 16);
+        simd<sycl::half, 16> hv = es::convert<sycl::half>(simd<float, 16>(row * 0.0625f));
+        simd<uint16_t, 16> u = hv.template bit_cast_view<uint16_t>();
+        tile.template select<8, 32>(n * 2 + 0) = u.template select<8, 2>(0);
+        tile.template select<8, 32>(n * 2 + 1) = u.template select<8, 2>(1);
+      }
+    }
+    tile.copy_to(Q16 + ((kh * G + g) * 16 + c) * 256);
+  });
+}
+
+void k_attn_kv_x(Q &q, const float *yk, const float *yv, size_t ks, const float *gain, const float *cs, const float *sn, uint16_t *K,
+                 uint16_t *V, int m, int pos0) {
+  q.parallel_for(sycl::range<1>(size_t(m) * AKH), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const size_t mi = id[0] / AKH, kh = id[0] % AKH;
+    simd<float, 64> v[4];
+#pragma unroll
+    for (int i = 0; i < 4; i++) v[i].copy_from(yk + mi * ks + kh * AD + i * 64);
+    norm_rope(v, gain, cs + (pos0 + mi) * 32, sn + (pos0 + mi) * 32);
+    const size_t pos = pos0 + mi, b = pos / 64;
+    const int j = int(pos % 64);
+    uint16_t *kt = K + ((b * AKH + kh) * 8 + j / 8) * 16 * 128 + (j % 8) * 16;
+#pragma unroll
+    for (int c = 0; c < 16; c++) {
+      simd<float, 16> t = v[c / 4].template select<16, 1>((c % 4) * 16);
+      simd<sycl::half, 16> h16 = es::convert<sycl::half>(t);
+      simd<uint16_t, 16> u = h16.template bit_cast_view<uint16_t>();
+      u.copy_to(kt + c * 128);
+    }
+    uint16_t *vt = V + (b * AKH + kh) * 4 * 32 * 128;
+#pragma unroll
+    for (int i = 0; i < 4; i++) {
+      simd<float, 64> x;
+      x.copy_from(yv + mi * ks + kh * AD + i * 64);
+      simd<uint32_t, 64> d(i * 64, 1);
+      simd<uint32_t, 64> off = (((d >> 3) + uint32_t(j / 16) * 32u) * 128u + (d & 7u) * 16u + uint32_t(j % 16)) * 2u;
+      simd<sycl::half, 64> h64 = es::convert<sycl::half>(x);
+      simd<uint16_t, 64> u = h64.template bit_cast_view<uint16_t>();
+      es::scatter<uint16_t, 64>(vt, off, u);
+    }
+  });
+}
+
+void k_attn_xmx(Q &q, const uint16_t *Q16, const uint16_t *K, const uint16_t *V, float *pm, float *pd, float *pvx, int m, int pos0,
+                size_t nbs) {
+  const int G = (6 * m + 15) / 16;
+  const size_t nb = size_t(pos0 + m - 1) / 64 + 1;
+  q.parallel_for(sycl::range<1>(AKH * size_t(G) * nb), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const size_t g = id[0] % G, b = id[0] / G % nb, kh = id[0] / G / nb; // row groups of one tile are adjacent threads (L2 sharing)
+    simd<int, 16> limv(-1);
+    simd<uint32_t, 16> mhv(0);
+#pragma unroll
+    for (int n = 0; n < 16; n++) {
+      const int r = int(g) * 16 + n;
+      if (r < 6 * m) {
+        limv[n] = pos0 + r / 6 - int(b) * 64;
+        mhv[n] = uint32_t((r / 6) * AH + kh * 6 + r % 6);
+      }
+    }
+    const uint16_t *qt = Q16 + (kh * G + g) * 16 * 256;
+    const uint16_t *kbase = K + (b * AKH + kh) * 8 * 16 * 128;
+    simd<float, 128> S[8];
+#pragma unroll
+    for (int jt = 0; jt < 8; jt++) S[jt] = 0.0f;
+    for (int c = 0; c < 16; c++) {
+      simd<int32_t, 128> w;
+      w.copy_from(reinterpret_cast<const int32_t *>(qt + c * 256));
+#pragma unroll
+      for (int jt = 0; jt < 8; jt++) {
+        simd<int32_t, 64> a;
+        a.copy_from(reinterpret_cast<const int32_t *>(kbase + (jt * 16 + c) * 128));
+        S[jt] = xmx::dpas<8, 8, float, float, int32_t, int32_t, XT::fp16, XT::fp16>(S[jt], w, a);
+      }
+    }
+    // causal mask + softmax down the key axis (rows of the S^T tiles)
+    simd<int, 128> kidx;
+#pragma unroll
+    for (int i = 0; i < 8; i++) kidx.template select<16, 1>(i * 16) = i;
+    const simd<int, 128> limr = limv.template replicate<8>();
+    simd<float, 16> mx(-1e30f);
+#pragma unroll
+    for (int jt = 0; jt < 8; jt++) {
+      S[jt].merge(simd<float, 128>(-1e30f), (kidx + jt * 8) > limr);
+#pragma unroll
+      for (int i = 0; i < 8; i++) mx = es::max(mx, simd<float, 16>(S[jt].template select<16, 1>(i * 16)));
+    }
+    const simd<float, 128> mxr = mx.template replicate<8>();
+    simd<sycl::half, 128> P[8];
+    simd<float, 16> den(0.0f);
+#pragma unroll
+    for (int jt = 0; jt < 8; jt++) {
+      simd<float, 128> e = es::exp(S[jt] - mxr);
+      P[jt] = es::convert<sycl::half>(e);
+      simd<float, 128> er = es::convert<float>(P[jt]); // the weights PV really uses
+#pragma unroll
+      for (int i = 0; i < 8; i++) den += er.template select<16, 1>(i * 16);
+    }
+    simd<uint32_t, 16> off = (mhv * uint32_t(nbs) + uint32_t(b)) * 4u;
+    const es::simd_mask<16> ok = limv >= 0;
+    es::scatter<float, 16>(pm, off, mx, ok);
+    es::scatter<float, 16>(pd, off, den, ok);
+    // P^T as VNNI B operands: key chunk kc = rows (2p, 2p+1) of S^T tiles 2kc and 2kc+1, interleaved per row lane
+    simd<sycl::half, 256> Bp[4];
+#pragma unroll
+    for (int kc = 0; kc < 4; kc++)
+#pragma unroll
+      for (int p = 0; p < 8; p++) {
+        const int tile = 2 * kc + p / 4, r0 = 2 * (p % 4);
+        Bp[kc].template select<16, 2>(p * 32 + 0) = P[tile].template select<16, 1>(r0 * 16);
+        Bp[kc].template select<16, 2>(p * 32 + 1) = P[tile].template select<16, 1>((r0 + 1) * 16);
+      }
+    float *pvb = pvx + ((kh * G + g) * nb + b) * 4096;
+    const uint16_t *vbase = V + (b * AKH + kh) * 4 * 32 * 128;
+    for (int pass = 0; pass < 4; pass++) {
+      simd<float, 128> acc[8];
+#pragma unroll
+      for (int tt = 0; tt < 8; tt++) acc[tt] = 0.0f;
+#pragma unroll
+      for (int kc = 0; kc < 4; kc++) {
+        simd<int32_t, 128> bw = Bp[kc].template bit_cast_view<int32_t>();
+#pragma unroll
+        for (int tt = 0; tt < 8; tt++) {
+          simd<int32_t, 64> a;
+          a.copy_from(reinterpret_cast<const int32_t *>(vbase + (kc * 32 + pass * 8 + tt) * 128));
+          acc[tt] = xmx::dpas<8, 8, float, float, int32_t, int32_t, XT::fp16, XT::fp16>(acc[tt], bw, a);
+        }
+      }
+#pragma unroll
+      for (int tt = 0; tt < 8; tt++) acc[tt].copy_to(pvb + (pass * 8 + tt) * 128);
+    }
+  });
+}
+
+void k_attn_comb_x(Q &q, const float *pm, const float *pd, const float *pvx, const float *yq, size_t qs, float *ao, float *pmax, int m,
+                   int pos0, size_t nbs) {
+  const int G = (6 * m + 15) / 16;
+  const size_t nball = size_t(pos0 + m - 1) / 64 + 1;
+  q.parallel_for(sycl::range<1>(size_t(m) * AH), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const size_t mh = id[0], mi = mh / AH, h = mh % AH, kh = h / 6;
+    const int r = int(mi) * 6 + int(h % 6);
+    const size_t g = r / 16, n = r % 16;
+    const size_t nb = size_t(pos0 + mi) / 64 + 1;
+    float mx = -1e30f;
+    for (size_t b = 0; b < nb; b++) {
+      const float v = loadf(pm + mh * nbs + b);
+      if (v > mx) mx = v;
+    }
+    simd<float, 64> acc[4];
+#pragma unroll
+    for (int i = 0; i < 4; i++) acc[i] = 0.0f;
+    float den = 0.0f;
+    for (size_t b = 0; b < nb; b++) {
+      const float e = sexp(loadf(pm + mh * nbs + b) - mx);
+      den += e * loadf(pd + mh * nbs + b);
+      const float *base = pvx + ((kh * G + g) * nball + b) * 4096 + n;
+#pragma unroll
+      for (int i = 0; i < 4; i++) {
+        simd<uint32_t, 64> d(i * 64, 1);
+        simd<float, 64> v = es::gather<float, 64>(base, d * 64u);
+        acc[i] += v * e;
+      }
+    }
+    const float inv = 1.0f / den;
+#pragma unroll
+    for (int i = 0; i < 4; i++) {
+      simd<float, 64> gate;
+      gate.copy_from(yq + mi * qs + h * 2 * AD + AD + i * 64);
+      simd<float, 64> o = acc[i] * inv * sigmoid<64>(gate);
+      o.copy_to(ao + mi * VD + h * AD + i * 64);
+      storef(pmax + mi * PS + h * 4 + i, hmax<64>(es::abs(o)));
+    }
+  });
+}
+
+
+constexpr int XSEG = 16; // blocks per combine segment
+// Stage 1: per (kv head, row group, segment of XSEG blocks) merge the block partials with contiguous reads of the [dim][16 rows] tiles.
+void k_attn_comb1(Q &q, const float *pm, const float *pd, const float *pvx, float *pseg, float *psm, float *psd, int m, int pos0, size_t nbs) {
+  const int G = (6 * m + 15) / 16;
+  const size_t nball = size_t(pos0 + m - 1) / 64 + 1, NS = (nball + XSEG - 1) / XSEG;
+  q.parallel_for(sycl::range<1>(AKH * size_t(G) * NS), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const size_t seg = id[0] % NS, g = id[0] / NS % G, kh = id[0] / NS / G;
+    simd<uint32_t, 16> mhv(0);
+    simd<int, 16> nbt(0);
+#pragma unroll
+    for (int n = 0; n < 16; n++) {
+      const int r = int(g) * 16 + n;
+      if (r < 6 * m) {
+        mhv[n] = uint32_t((r / 6) * AH + kh * 6 + r % 6);
+        nbt[n] = (pos0 + r / 6) / 64 + 1;
+      }
+    }
+    const size_t b0 = seg * XSEG, b1 = std::min(nball, b0 + XSEG);
+    simd<float, 16> pmb[XSEG], e[XSEG];
+    simd<float, 16> mx(-1e30f);
+#pragma unroll
+    for (int bi = 0; bi < XSEG; bi++) {
+      pmb[bi] = -1e30f;
+      if (b0 + bi < b1) {
+        pmb[bi] = es::gather<float, 16>(pm, (mhv * uint32_t(nbs) + uint32_t(b0 + bi)) * 4u);
+        pmb[bi].merge(simd<float, 16>(-1e30f), nbt <= simd<int, 16>(int(b0) + bi));
+        mx = es::max(mx, pmb[bi]);
+      }
+    }
+    simd<float, 16> den(0.0f);
+#pragma unroll
+    for (int bi = 0; bi < XSEG; bi++) {
+      e[bi] = 0.0f;
+      if (b0 + bi < b1) {
+        e[bi] = es::exp(pmb[bi] - mx);
+        e[bi].merge(simd<float, 16>(0.0f), nbt <= simd<int, 16>(int(b0) + bi));
+        den += e[bi] * es::gather<float, 16>(pd, (mhv * uint32_t(nbs) + uint32_t(b0 + bi)) * 4u);
+      }
+    }
+    const size_t sidx = (kh * G + g) * NS + seg;
+    mx.copy_to(psm + sidx * 16);
+    den.copy_to(psd + sidx * 16);
+    for (int pass = 0; pass < 4; pass++) {
+      simd<float, 16> acc[64];
+#pragma unroll
+      for (int d = 0; d < 64; d++) acc[d] = 0.0f;
+      for (size_t bi = 0; bi < XSEG && b0 + bi < b1; bi++) {
+        const float *tile = pvx + ((kh * G + g) * nball + b0 + bi) * 4096 + pass * 1024;
+        simd<float, 16> ev = e[0];
+#pragma unroll
+        for (int k = 1; k < XSEG; k++)
+          if (int(bi) == k) ev = e[k];
+#pragma unroll
+        for (int d = 0; d < 64; d++) {
+          simd<float, 16> v;
+          v.copy_from(tile + d * 16);
+          acc[d] += v * ev;
+        }
+      }
+#pragma unroll
+      for (int d = 0; d < 64; d++) acc[d].copy_to(pseg + sidx * 4096 + pass * 1024 + d * 16);
+    }
+  });
+}
+
+// Stage 2: per (token, head) merge the segments, gate and write the attention output.
+void k_attn_comb2(Q &q, const float *psm, const float *psd, const float *pseg, const float *yq, size_t qs, float *ao, float *pmax, int m,
+                  int pos0, int xb = XSEG) {
+  const int G = (6 * m + 15) / 16;
+  const size_t nball = size_t(pos0 + m - 1) / 64 + 1, NS = (nball + xb - 1) / xb;
+  q.parallel_for(sycl::range<1>(size_t(m) * AH), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const size_t mh = id[0], mi = mh / AH, h = mh % AH, kh = h / 6;
+    const int r = int(mi) * 6 + int(h % 6);
+    const size_t g = r / 16, n = r % 16;
+    const size_t sbase = (kh * G + g) * NS;
+    float mx = -1e30f;
+    for (size_t s = 0; s < NS; s++) mx = std::max(mx, loadf(psm + (sbase + s) * 16 + n));
+    simd<float, 64> acc[4];
+#pragma unroll
+    for (int i = 0; i < 4; i++) acc[i] = 0.0f;
+    float den = 0.0f;
+    for (size_t s = 0; s < NS; s++) {
+      const float w = sexp(loadf(psm + (sbase + s) * 16 + n) - mx);
+      den += w * loadf(psd + (sbase + s) * 16 + n);
+      const float *base = pseg + (sbase + s) * 4096 + n;
+#pragma unroll
+      for (int i = 0; i < 4; i++) {
+        simd<uint32_t, 64> d(i * 64, 1);
+        simd<float, 64> v = es::gather<float, 64>(base, d * 64u);
+        acc[i] += v * w;
+      }
+    }
+    const float inv = 1.0f / den;
+#pragma unroll
+    for (int i = 0; i < 4; i++) {
+      simd<float, 64> gate;
+      gate.copy_from(yq + mi * qs + h * 2 * AD + AD + i * 64);
+      simd<float, 64> o = acc[i] * inv * sigmoid<64>(gate);
+      o.copy_to(ao + mi * VD + h * AD + i * 64);
+      storef(pmax + mi * PS + h * 4 + i, hmax<64>(es::abs(o)));
+    }
+  });
+}
+
+
+// Fused XMX attention: one thread = (kv head, row group of 16 (token, head) rows, segment of XB blocks, part of the 256 V dims).
+// Sub-blocks of 32 keys are processed in order with an online softmax kept in registers (running max, denominator and the O^T accumulators of
+// the thread's 256/DQ dims), so only one partial per segment is written. The QK^T DPAS work is repeated by the DQ threads of a segment
+// (they sit next to each other, sharing the K tiles in cache). Partial layout = comb2's: pseg[(kv head, group, segment)][dim][16 rows].
+// skip (timing studies only): 8 = no QK dpas, 16 = no PV dpas.
+template <int XB, int DQ>
+void k_attn_xmx2(Q &q, const uint16_t *Q16, const uint16_t *K, const uint16_t *V, float *pseg, float *psm, float *psd, int m, int pos0, int skip) {
+  constexpr int NT = 32 / DQ; // 8-dim tiles per thread
+  const int G = (6 * m + 15) / 16;
+  const size_t nb = size_t(pos0 + m - 1) / 64 + 1, NS = (nb + XB - 1) / XB;
+  q.parallel_for(sycl::range<1>(AKH * size_t(G) * NS * DQ), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const size_t dq = id[0] % DQ, g = id[0] / DQ % G, seg = id[0] / DQ / G % NS, kh = id[0] / DQ / G / NS;
+    simd<int, 16> limv(-1);
+#pragma unroll
+    for (int n = 0; n < 16; n++) {
+      const int r = int(g) * 16 + n;
+      if (r < 6 * m) limv[n] = pos0 + r / 6; // position of the row's token
+    }
+    const simd<int, 128> limr = limv.template replicate<8>();
+    simd<int, 128> kidx;
+#pragma unroll
+    for (int i = 0; i < 8; i++) kidx.template select<16, 1>(i * 16) = i;
+    const uint16_t *qt = Q16 + (kh * G + g) * 16 * 256;
+    simd<float, 16> mrun(-1e30f), den(0.0f);
+    simd<float, 128> acc[NT];
+#pragma unroll
+    for (int tt = 0; tt < NT; tt++) acc[tt] = 0.0f;
+    const size_t sb0 = seg * XB * 2, sb1 = std::min(nb * 2, (seg + 1) * XB * 2);
+    for (size_t sbi = sb0; sbi < sb1; sbi++) {
+      const int key0 = int(sbi) * 32;
+      if (key0 > pos0 + m - 1) break;
+      const size_t b = sbi >> 1, h2 = sbi & 1;
+      const uint16_t *kbase = K + ((b * AKH + kh) * 8 + h2 * 4) * 16 * 128;
+      simd<float, 128> S[4];
+#pragma unroll
+      for (int jt = 0; jt < 4; jt++) S[jt] = 0.0f;
+      if (!(skip & 8))
+        for (int c = 0; c < 16; c++) {
+          simd<int32_t, 128> w;
+          w.copy_from(reinterpret_cast<const int32_t *>(qt + c * 256));
+#pragma unroll
+          for (int jt = 0; jt < 4; jt++) {
+            simd<int32_t, 64> a;
+            a.copy_from(reinterpret_cast<const int32_t *>(kbase + (jt * 16 + c) * 128));
+            S[jt] = xmx::dpas<8, 8, float, float, int32_t, int32_t, XT::fp16, XT::fp16>(S[jt], w, a);
+          }
+        }
+      simd<float, 16> mxb(-1e30f);
+#pragma unroll
+      for (int jt = 0; jt < 4; jt++) {
+        S[jt].merge(simd<float, 128>(-1e30f), (kidx + (key0 + jt * 8)) > limr);
+#pragma unroll
+        for (int i = 0; i < 8; i++) mxb = es::max(mxb, simd<float, 16>(S[jt].template select<16, 1>(i * 16)));
+      }
+      const simd<float, 16> mnew = es::max(mrun, mxb);
+      const simd<float, 16> sc = es::exp(mrun - mnew);
+      const simd<float, 128> mnr = mnew.template replicate<8>();
+      simd<sycl::half, 128> P[4];
+      simd<float, 16> denb(0.0f);
+#pragma unroll
+      for (int jt = 0; jt < 4; jt++) {
+        simd<float, 128> e = es::exp(S[jt] - mnr);
+        P[jt] = es::convert<sycl::half>(e);
+        simd<float, 128> er = es::convert<float>(P[jt]);
+#pragma unroll
+        for (int i = 0; i < 8; i++) denb += er.template select<16, 1>(i * 16);
+      }
+      den = den * sc + denb;
+      mrun = mnew;
+      const simd<float, 128> scr = sc.template replicate<8>();
+#pragma unroll
+      for (int tt = 0; tt < NT; tt++) acc[tt] *= scr;
+      simd<sycl::half, 256> Bp[2];
+#pragma unroll
+      for (int kc = 0; kc < 2; kc++)
+#pragma unroll
+        for (int p = 0; p < 8; p++) {
+          const int tile = 2 * kc + p / 4, r0 = 2 * (p % 4);
+          Bp[kc].template select<16, 2>(p * 32 + 0) = P[tile].template select<16, 1>(r0 * 16);
+          Bp[kc].template select<16, 2>(p * 32 + 1) = P[tile].template select<16, 1>((r0 + 1) * 16);
+        }
+      if (!(skip & 16)) {
+        const uint16_t *vbase = V + ((b * AKH + kh) * 4 + h2 * 2) * 32 * 128 + dq * NT * 128;
+#pragma unroll
+        for (int kc = 0; kc < 2; kc++) {
+          simd<int32_t, 128> bw = Bp[kc].template bit_cast_view<int32_t>();
+#pragma unroll
+          for (int tt = 0; tt < NT; tt++) {
+            simd<int32_t, 64> a;
+            a.copy_from(reinterpret_cast<const int32_t *>(vbase + (kc * 32 + tt) * 128));
+            acc[tt] = xmx::dpas<8, 8, float, float, int32_t, int32_t, XT::fp16, XT::fp16>(acc[tt], bw, a);
+          }
+        }
+      }
+    }
+    const size_t sidx = (kh * G + g) * NS + seg;
+    if (dq == 0) {
+      mrun.copy_to(psm + sidx * 16);
+      den.copy_to(psd + sidx * 16);
+    }
+#pragma unroll
+    for (int tt = 0; tt < NT; tt++) acc[tt].copy_to(pseg + sidx * 4096 + (dq * NT + tt) * 128);
+  });
+}
+
+
+// Fused XMX attention with a shared QK^T (DQ = 8 threads per work-group, no register spill unlike DQ = 4): per 32-key sub-block the 4 key tiles are split
+// over the 8 threads (thread t: tile t/2, dim chunks 8*(t%2)..+8 = 8 DPAS), the partial S^T tiles go through SLM (double-buffered, one barrier per
+// sub-block, the two halves are added in a fixed order so results do not depend on the pass), then every thread does the softmax update and the PV DPAS
+// of its own 32 V dims. QK DPAS per thread: 8 per sub-block instead of 64. SLM = 2 x 8 x 512 B = 8 KiB. skip: 8 = no QK dpas, 16 = no PV dpas.
+template <int XB>
+void k_attn_xmx3(Q &q, const uint16_t *Q16, const uint16_t *K, const uint16_t *V, float *pseg, float *psm, float *psd, int m, int pos0, int skip) {
+  constexpr int DQ = 8, NT = 4;
+  const int G = (6 * m + 15) / 16;
+  const size_t nb = size_t(pos0 + m - 1) / 64 + 1, NS = (nb + XB - 1) / XB;
+  q.parallel_for(sycl::nd_range<1>(AKH * size_t(G) * NS * DQ, DQ), [=](sycl::nd_item<1> it) SYCL_ESIMD_KERNEL {
+    es::slm_init<8192>();
+    const size_t wg = it.get_group(0);
+    const int dq = int(it.get_local_id(0));
+    const size_t g = wg % G, seg = wg / G % NS, kh = wg / G / NS;
+    simd<int, 16> limv(-1);
+#pragma unroll
+    for (int n = 0; n < 16; n++) {
+      const int r = int(g) * 16 + n;
+      if (r < 6 * m) limv[n] = pos0 + r / 6;
+    }
+    const simd<int, 128> limr = limv.template replicate<8>();
+    simd<int, 128> kidx;
+#pragma unroll
+    for (int i = 0; i < 8; i++) kidx.template select<16, 1>(i * 16) = i;
+    const uint16_t *qt = Q16 + (kh * G + g) * 16 * 256;
+    simd<float, 16> mrun(-1e30f), den(0.0f);
+    simd<float, 128> acc[NT];
+#pragma unroll
+    for (int tt = 0; tt < NT; tt++) acc[tt] = 0.0f;
+    const size_t sb0 = seg * XB * 2, sb1 = std::min(nb * 2, (seg + 1) * XB * 2);
+    int buf = 0;
+    for (size_t sbi = sb0; sbi < sb1; sbi++) {
+      const int key0 = int(sbi) * 32;
+      if (key0 > pos0 + m - 1) break; // uniform over the work-group
+      const size_t b = sbi >> 1, h2 = sbi & 1;
+      simd<float, 128> st(0.0f);
+      if (!(skip & 8)) {
+        const int jt = dq >> 1, c0 = (dq & 1) * 8;
+        const uint16_t *kt = K + ((b * AKH + kh) * 8 + h2 * 4 + jt) * 16 * 128;
+        for (int c = c0; c < c0 + 8; c++) {
+          simd<int32_t, 128> w;
+          w.copy_from(reinterpret_cast<const int32_t *>(qt + c * 256));
+          simd<int32_t, 64> a;
+          a.copy_from(reinterpret_cast<const int32_t *>(kt + c * 128));
+          st = xmx::dpas<8, 8, float, float, int32_t, int32_t, XT::fp16, XT::fp16>(st, w, a);
+        }
+      }
+      es::slm_block_store<float, 128>(uint32_t((buf * DQ + dq) * 512), st);
+      es::barrier();
+      simd<float, 128> S[4];
+#pragma unroll
+      for (int jt = 0; jt < 4; jt++) {
+        S[jt] = es::slm_block_load<float, 128>(uint32_t((buf * DQ + 2 * jt) * 512));
+        S[jt] += es::slm_block_load<float, 128>(uint32_t((buf * DQ + 2 * jt + 1) * 512));
+      }
+      buf ^= 1;
+      simd<float, 16> mxb(-1e30f);
+#pragma unroll
+      for (int jt = 0; jt < 4; jt++) {
+        S[jt].merge(simd<float, 128>(-1e30f), (kidx + (key0 + jt * 8)) > limr);
+#pragma unroll
+        for (int i = 0; i < 8; i++) mxb = es::max(mxb, simd<float, 16>(S[jt].template select<16, 1>(i * 16)));
+      }
+      const simd<float, 16> mnew = es::max(mrun, mxb);
+      const simd<float, 16> sc = es::exp(mrun - mnew);
+      const simd<float, 128> mnr = mnew.template replicate<8>();
+      simd<sycl::half, 128> P[4];
+      simd<float, 16> denb(0.0f);
+#pragma unroll
+      for (int jt = 0; jt < 4; jt++) {
+        simd<float, 128> e = es::exp(S[jt] - mnr);
+        P[jt] = es::convert<sycl::half>(e);
+        simd<float, 128> er = es::convert<float>(P[jt]);
+#pragma unroll
+        for (int i = 0; i < 8; i++) denb += er.template select<16, 1>(i * 16);
+      }
+      den = den * sc + denb;
+      mrun = mnew;
+      const simd<float, 128> scr = sc.template replicate<8>();
+#pragma unroll
+      for (int tt = 0; tt < NT; tt++) acc[tt] *= scr;
+      simd<sycl::half, 256> Bp[2];
+#pragma unroll
+      for (int kc = 0; kc < 2; kc++)
+#pragma unroll
+        for (int p = 0; p < 8; p++) {
+          const int tile = 2 * kc + p / 4, r0 = 2 * (p % 4);
+          Bp[kc].template select<16, 2>(p * 32 + 0) = P[tile].template select<16, 1>(r0 * 16);
+          Bp[kc].template select<16, 2>(p * 32 + 1) = P[tile].template select<16, 1>((r0 + 1) * 16);
+        }
+      if (!(skip & 16)) {
+        const uint16_t *vbase = V + ((b * AKH + kh) * 4 + h2 * 2) * 32 * 128 + size_t(dq) * NT * 128;
+#pragma unroll
+        for (int kc = 0; kc < 2; kc++) {
+          simd<int32_t, 128> bw = Bp[kc].template bit_cast_view<int32_t>();
+#pragma unroll
+          for (int tt = 0; tt < NT; tt++) {
+            simd<int32_t, 64> a;
+            a.copy_from(reinterpret_cast<const int32_t *>(vbase + (kc * 32 + tt) * 128));
+            acc[tt] = xmx::dpas<8, 8, float, float, int32_t, int32_t, XT::fp16, XT::fp16>(acc[tt], bw, a);
+          }
+        }
+      }
+    }
+    const size_t sidx = (kh * G + g) * NS + seg;
+    if (dq == 0) {
+      mrun.copy_to(psm + sidx * 16);
+      den.copy_to(psd + sidx * 16);
+    }
+#pragma unroll
+    for (int tt = 0; tt < NT; tt++) acc[tt].copy_to(pseg + sidx * 4096 + (dq * NT + tt) * 128);
+  });
+}
+
 // Combine block partials, apply the sigmoid output gate.
 void k_attn_comb(Q &q, const float *pm, const float *pd, const float *pv, const float *yq, size_t qs, float *ao, float *pmax,
                  int m, int pos0, size_t nbs) {
@@ -1277,6 +1806,57 @@ struct Pass {
     k_attn_q(q, ws.yq, qs, L.aux[0], md->rope_cos, md->rope_sin, ws.qr, m, pos0);
     static const bool kt = !(std::getenv("XF_ATTN_KT") && std::getenv("XF_ATTN_KT")[0] == '0') && md->ctx % 64 == 0; // default on; XF_ATTN_KT=0 = legacy
     const int kvm = kv_mode();
+    if (kvm == 3) {
+      const size_t nbx = size_t(pos0 + m - 1) / 64 + 1;
+      (void)nbx;
+      // XF_XMX_SKIP (timing studies only, outputs are wrong): bit 0 = no q16/kv-store, 1 = no main kernel, 2 = no combine
+      static const int skip = std::getenv("XF_XMX_SKIP") ? std::atoi(std::getenv("XF_XMX_SKIP")) : 0;
+      static const bool old_xmx = std::getenv("XF_XMX_OLD") != nullptr;
+      if (!old_xmx) {
+        // fused kernel (default for XF_KV=xmx): XF_XMX_XB = blocks per thread (4|8), XF_XMX_DQ = V dim parts (4|8)
+        const int xb = std::getenv("XF_XMX_XB") ? std::atoi(std::getenv("XF_XMX_XB")) : 8;
+        const int dqn = std::getenv("XF_XMX_DQ") ? std::atoi(std::getenv("XF_XMX_DQ")) : 4;
+        k_attn_q16(q, ws.qr, ws.q16, m);
+        k_attn_kv_x(q, yk, yv, ks, L.aux[1], md->rope_cos, md->rope_sin, static_cast<uint16_t *>(s.K), static_cast<uint16_t *>(s.V), m, pos0);
+        const uint16_t *Kc = static_cast<const uint16_t *>(s.K), *Vc = static_cast<const uint16_t *>(s.V);
+        static const bool share = !(std::getenv("XF_XMX_SHARE") && std::getenv("XF_XMX_SHARE")[0] == '0'); // default on; XF_XMX_SHARE=0 = unshared kernel // QK shared through SLM (DQ = 8 threads per work-group)
+        if (share) {
+          if (xb == 4) k_attn_xmx3<4>(q, ws.q16, Kc, Vc, ws.pseg, ws.psm, ws.psd, m, pos0, skip);
+          else k_attn_xmx3<8>(q, ws.q16, Kc, Vc, ws.pseg, ws.psm, ws.psd, m, pos0, skip);
+        } else if (xb == 4) {
+          if (dqn == 8) k_attn_xmx2<4, 8>(q, ws.q16, Kc, Vc, ws.pseg, ws.psm, ws.psd, m, pos0, skip);
+          else k_attn_xmx2<4, 4>(q, ws.q16, Kc, Vc, ws.pseg, ws.psm, ws.psd, m, pos0, skip);
+        } else {
+          if (dqn == 8) k_attn_xmx2<8, 8>(q, ws.q16, Kc, Vc, ws.pseg, ws.psm, ws.psd, m, pos0, skip);
+          else k_attn_xmx2<8, 4>(q, ws.q16, Kc, Vc, ws.pseg, ws.psm, ws.psd, m, pos0, skip);
+        }
+        k_attn_comb2(q, ws.psm, ws.psd, ws.pseg, ws.yq, qs, ws.go, ws.pmax, m, pos0, xb == 4 ? 4 : 8);
+        tm.tick(P_ATTN);
+        if (int st = gemm(L.m[3], ws.go, ws.y)) return st;
+        pending = true;
+        return mlp(L, 4);
+      }
+      if (!(skip & 1)) {
+        k_attn_q16(q, ws.qr, ws.q16, m);
+        k_attn_kv_x(q, yk, yv, ks, L.aux[1], md->rope_cos, md->rope_sin, static_cast<uint16_t *>(s.K), static_cast<uint16_t *>(s.V), m, pos0);
+      }
+      if (!(skip & 2)) k_attn_xmx(q, ws.q16, static_cast<const uint16_t *>(s.K), static_cast<const uint16_t *>(s.V), ws.pm, ws.pd, ws.pv, m, pos0, nbs);
+      if (!(skip & 4)) {
+        // one-stage combine (gathers the [dim][row] tiles) is cheaper for short contexts, the two-stage one for long ones
+        const bool two = std::getenv("XF_XMX_COMB") ? std::atoi(std::getenv("XF_XMX_COMB")) == 2
+                                                    : (size_t(pos0 + m - 1) / 64 + 1 >= (m == 1 ? 192u : 96u));
+        if (!two) {
+          k_attn_comb_x(q, ws.pm, ws.pd, ws.pv, ws.yq, qs, ws.go, ws.pmax, m, pos0, nbs); // one-stage combine (gather), for comparison
+        } else {
+          k_attn_comb1(q, ws.pm, ws.pd, ws.pv, ws.pseg, ws.psm, ws.psd, m, pos0, nbs);
+          k_attn_comb2(q, ws.psm, ws.psd, ws.pseg, ws.yq, qs, ws.go, ws.pmax, m, pos0);
+        }
+      }
+      tm.tick(P_ATTN);
+      if (int st = gemm(L.m[3], ws.go, ws.y)) return st;
+      pending = true;
+      return mlp(L, 4);
+    }
     if (kvm && !kt) { xf_set_error("XF_KV needs the K^T layout (ctx multiple of 64, XF_ATTN_KT != 0)"); return XF_ERR_INVALID; }
     k_attn_kv(q, yk, yv, ks, L.aux[1], md->rope_cos, md->rope_sin, s.K, s.V, m, pos0, kt, kvm);
     if (kt) {

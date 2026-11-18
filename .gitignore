@@ -4,3 +4,6 @@
 *.so
 __pycache__/
 benchmarks/prompts/long*.json
+
+# regenerable code-context prompts
+benchmarks/prompts/codectx*.json

@@ -1,0 +1,7 @@
+[
+  {"prompt":"explain","drafter":"bd2:adapt-cost","block":8,"tok_per_s":78.185,"tokens_per_pass":4.5263,"cycle_ms":57.892,"main_ms":50.276,"draft_ms":5.785,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"code","drafter":"bd2:adapt-cost","block":8,"tok_per_s":102.093,"tokens_per_pass":6.5500,"cycle_ms":64.157,"main_ms":55.919,"draft_ms":6.231,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"story","drafter":"bd2:adapt-cost","block":8,"tok_per_s":43.366,"tokens_per_pass":2.4854,"cycle_ms":57.313,"main_ms":49.974,"draft_ms":5.723,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"proof","drafter":"bd2:adapt-cost","block":8,"tok_per_s":104.876,"tokens_per_pass":6.4146,"cycle_ms":61.164,"main_ms":53.152,"draft_ms":6.003,"taps_ms":0.000,"same_tokens":true,"same_state":true},
+  {"prompt":"japanese","drafter":"bd2:adapt-cost","block":8,"tok_per_s":34.621,"tokens_per_pass":1.9848,"cycle_ms":57.331,"main_ms":50.051,"draft_ms":5.740,"taps_ms":0.000,"same_tokens":true,"same_state":true}
+]

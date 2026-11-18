@@ -102,3 +102,16 @@ At 30K, 8 rows, 29 ms for 94 GFLOP (16 layers x 24 heads x 8 tokens x 30K keys x
 Both the 8- and 16-row runs land at the same ~3.3 TFLOP/s, i.e. the kernel is now bounded by vector FMA / SLM-load issue, not by DRAM traffic.
 (Inference from FLOP counts; no hardware counters were available.) Reaching the memory floor would need XMX (DPAS) for QK and PV, which needs 16-bit Q/K/V
 operands: that is the BF16/XMX attention step, not done here.
+
+## 7. XMX (DPAS) attention, `XF_KV=xmx`
+Operands are FP16 (K, V, Q), accumulation FP32; `dpas.8x8` with A = 8 rows x 16 k (row-major), B = 16 k x 16 n in VNNI order (k pairs interleaved per lane), C = 8 x 16 (verified on the device with a stand-alone probe: max error 0).
+- K layout `[block of 64 keys][kv head][key tile of 8][dim chunk of 16][8 keys][16 dims]` (A operand of S^T = K . Q^T; a token's 16 chunks are written with 16 contiguous 32-byte stores).
+- V layout `[block][kv head][key chunk of 16][dim tile of 8][8 dims][16 keys]` (A operand of O^T = V^T . P^T; written with a 2-byte scatter per token).
+- Q^T tiles `[kv head][row group][dim chunk]` as VNNI B operands, scaled by 1/16 (exact), built by `k_attn_q16`; rows = (token, head) pairs of one kv head, 16 per group (6m rows: m=8 -> 3 groups, m=16 -> 6, m=1 -> 1 group with 6 live lanes).
+- P^T for the PV product is built from rows 2p, 2p+1 of the S^T tiles by register regioning (stride-2 selects): no transpose, no memory traffic. Softmax down the key axis is a vertical reduction over registers.
+- Online softmax across the 32-key sub-blocks of a segment (running max, denominator, O^T accumulators rescaled by exp(m_old - m_new)); the denominator sums the FP16-rounded weights that PV actually uses.
+- `k_attn_xmx3<XB>`: 8 threads per work-group, SLM 2 x 8 x 512 B, one barrier per sub-block, GRF 128, no spill (ocloc/ze_info + disassembly of the compiled kernels; `dpas` present).
+  `k_attn_xmx2<XB,DQ>` (no QK sharing; DQ=4 spills, DQ=8 does not) and the earlier block-partial kernel (`XF_XMX_OLD=1`) remain selectable for comparison.
+- Skip-flag timing at 30K (XB8/DQ4, ms for 8 rows): full 24.7; without QK dpas 8.2; without PV dpas 20.5; neither 4.4 -> QK^T (including the K loads) was 16.5 ms, PV 4.2 ms: the redundant QK of DQ threads was the cost the shared kernel removes.
+- Pass independence: every row of the output depends only on its own query and the keys up to its position, in an order that does not depend on the other rows or on where the pass starts (segments follow absolute block numbers),
+  so pass sizes 1 / 8 / 16 give bit-identical logits (checked on 1,600 tokens). A one-stage combine chosen by context length per pass broke this (same tokens, different committed state at 8K) and was dropped.
