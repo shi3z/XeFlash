@@ -361,10 +361,11 @@ template <bool A16> sycl::event combine_int(sycl::queue &q, const xf_gemm_desc &
 //   A read the weight tiles only         B read + s4 -> s8 expansion (no DPAS)          C weights resident in registers + DPAS, activations from memory
 //   D read + DPAS (= the real kernel)    E = D with next-tile loads issued before the DPAS   F = D without activation loads
 //   G = D without DPAS (reads W and X)   H = DPAS only, weights and activations in registers
-template <int MODE> sycl::event submit_exp(sycl::queue &q, const xf_gemm_desc &d) {
-  constexpr int R = 8, U = 2, WDW = 64, XDW = 64;
+template <int WF, int MODE> sycl::event submit_exp(sycl::queue &q, const xf_gemm_desc &d) {
+  using F = Fmt<WF>;
+  constexpr int R = 8, U = 2, WDW = F::stored_dw, ODW = F::opnd_dw, XDW = 64;
   const int32_t *W = static_cast<const int32_t *>(d.w), *X = static_cast<const int32_t *>(d.x), *XL = static_cast<const int32_t *>(d.xlo);
-  const size_t rows = d.rows, rowblks = rows / 16, tiles = size_t(d.cols) / 32, segs = d.segs, tps = tiles / segs;
+  const size_t rows = d.rows, rowblks = rows / 16, tiles = size_t(d.cols) / F::tile_cols, segs = d.segs, tps = tiles / segs;
   const size_t mpad = (size_t(d.m) + 7) / 8 * 8, tgroups = mpad / 8;
   int32_t *YI = d.segs > 1 ? static_cast<int32_t *>(d.ypart) : reinterpret_cast<int32_t *>(d.y);
   const bool multi = d.segs > 1;
@@ -383,9 +384,9 @@ template <int MODE> sycl::event submit_exp(sycl::queue &q, const xf_gemm_desc &d
       xreg.copy_from(X + xoff);
       xlreg.copy_from(XL + xoff);
     }
-    auto keep = [&](simd<int32_t, WDW> v) SYCL_ESIMD_FUNCTION {
+    auto keep = [&](auto v) SYCL_ESIMD_FUNCTION {
 #pragma unroll
-      for (int i = 0; i < WDW; i += 16) fold ^= v.template select<16, 1>(i);
+      for (int i = 0; i < int(decltype(v)::length); i += 16) fold ^= v.template select<16, 1>(i);
     };
     if constexpr (MODE == 4) {
       simd<int32_t, WDW> wa[U], wb[U];
@@ -405,8 +406,9 @@ template <int MODE> sycl::event submit_exp(sycl::queue &q, const xf_gemm_desc &d
         }
 #pragma unroll
         for (int u = 0; u < U; u++) {
-          acc[u] = mac<XF_W_S4, R>(acc[u], wa[u], xa[u].template select<8 * R, 1>(0), false);
-          accl[u] = mac<XF_W_S4, R>(accl[u], wa[u], xla[u].template select<8 * R, 1>(0), true);
+          simd<int32_t, ODW> wo = operand<WF>(wa[u]);
+          acc[u] = mac<WF, R>(acc[u], wo, xa[u].template select<8 * R, 1>(0), false);
+          accl[u] = mac<WF, R>(accl[u], wo, xla[u].template select<8 * R, 1>(0), true);
         }
         if (t + 2 * U < tps) {
 #pragma unroll
@@ -418,8 +420,9 @@ template <int MODE> sycl::event submit_exp(sycl::queue &q, const xf_gemm_desc &d
         }
 #pragma unroll
         for (int u = 0; u < U; u++) {
-          acc[u] = mac<XF_W_S4, R>(acc[u], wb[u], xb[u].template select<8 * R, 1>(0), false);
-          accl[u] = mac<XF_W_S4, R>(accl[u], wb[u], xlb[u].template select<8 * R, 1>(0), true);
+          simd<int32_t, ODW> wo = operand<WF>(wb[u]);
+          acc[u] = mac<WF, R>(acc[u], wo, xb[u].template select<8 * R, 1>(0), false);
+          accl[u] = mac<WF, R>(accl[u], wo, xlb[u].template select<8 * R, 1>(0), true);
         }
       }
     } else {
@@ -431,9 +434,9 @@ template <int MODE> sycl::event submit_exp(sycl::queue &q, const xf_gemm_desc &d
           if constexpr (MODE == 0) {
             keep(ws);
           } else if constexpr (MODE == 1) {
-            simd<int32_t, 128> w8 = expand_s4_to_s8(ws);
+            simd<int32_t, ODW> w8 = operand<WF>(ws);
 #pragma unroll
-            for (int i = 0; i < 128; i += 16) fold ^= w8.template select<16, 1>(i);
+            for (int i = 0; i < ODW; i += 16) fold ^= w8.template select<16, 1>(i);
           } else {
             simd<int32_t, XDW> xv = xreg, xl = xlreg;
             if constexpr (MODE == 2 || MODE == 3 || MODE == 6) {
@@ -445,8 +448,9 @@ template <int MODE> sycl::event submit_exp(sycl::queue &q, const xf_gemm_desc &d
               keep(xv);
               keep(xl);
             } else {
-              acc[u] = mac<XF_W_S4, R>(acc[u], ws, xv.template select<8 * R, 1>(0), false);
-              accl[u] = mac<XF_W_S4, R>(accl[u], ws, xl.template select<8 * R, 1>(0), true);
+              simd<int32_t, ODW> wo = operand<WF>(ws);
+              acc[u] = mac<WF, R>(acc[u], wo, xv.template select<8 * R, 1>(0), false);
+              accl[u] = mac<WF, R>(accl[u], wo, xl.template select<8 * R, 1>(0), true);
             }
           }
         }
@@ -524,17 +528,19 @@ extern "C" int xf_gemm(xf_ctx *ctx, const xf_gemm_desc *dp) {
     xf_set_error("xf_gemm: cols must be a multiple of tile_cols * unroll * segs");
     return XF_ERR_INVALID;
   }
-  if (const char *ex = std::getenv("XF_GEMM_EXP"); ex && d.wfmt == XF_W_S4 && d.a16 && d.tokens_per_thread == 8) {
+  if (const char *ex = std::getenv("XF_GEMM_EXP"); ex && d.a16 && d.tokens_per_thread == 8 && (d.wfmt == XF_W_S4 || d.wfmt == XF_W_S3 || d.wfmt == XF_W_S4_EXP8)) {
+#define XF_EXP(M) { if (d.wfmt == XF_W_S3) submit_exp<XF_W_S3, M>(ctx->q, d); else if (d.wfmt == XF_W_S4_EXP8) submit_exp<XF_W_S4_EXP8, M>(ctx->q, d); else submit_exp<XF_W_S4, M>(ctx->q, d); return XF_OK; }
     switch (ex[0]) {
-    case 'A': submit_exp<0>(ctx->q, d); return XF_OK;
-    case 'B': submit_exp<1>(ctx->q, d); return XF_OK;
-    case 'C': submit_exp<2>(ctx->q, d); return XF_OK;
-    case 'D': submit_exp<3>(ctx->q, d); return XF_OK;
-    case 'E': submit_exp<4>(ctx->q, d); return XF_OK;
-    case 'F': submit_exp<5>(ctx->q, d); return XF_OK;
-    case 'G': submit_exp<6>(ctx->q, d); return XF_OK;
-    case 'H': submit_exp<7>(ctx->q, d); return XF_OK;
+    case 'A': XF_EXP(0)
+    case 'B': XF_EXP(1)
+    case 'C': XF_EXP(2)
+    case 'D': XF_EXP(3)
+    case 'E': XF_EXP(4)
+    case 'F': XF_EXP(5)
+    case 'G': XF_EXP(6)
+    case 'H': XF_EXP(7)
     }
+#undef XF_EXP
   }
   return xf_guard("xf_gemm", [&]() -> int {
     int st = XF_ERR_INVALID;

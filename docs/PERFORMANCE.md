@@ -1278,3 +1278,101 @@ Same experiment on gate+up (34816 x 5120, segs 1): A 237, B 263, C 72, D 245, E 
 - Segment counts: rows < 8192 and m > 1: 1 segment for 5120 x 6144 and 2 for 5120 x 17408 (the combine kernel disappears for the out projections).
 - Pass time at 1K context, XMX, no per-kernel synchronisation: 8 rows 48.65 -> 46.72 ms, 16 rows 56.15 -> 53.88 ms, 1 row 42.31 -> 42.09 ms (from the start of Part I: 49.92 -> 46.72 and 58.25 -> 53.88, i.e. -6.4% and -7.5%).
 - Not adopted: tile-major weight order, cache hints, prefetch, larger unroll.
+
+
+## Part L. Does the 4-bit GEMM use the XMX efficiently? (before any 3-bit work)
+
+Method: `xf-bench --cold` (weights rotated through copies > L2) for the production kernels, `XF_GEMM_EXP=A..H` for the controlled experiments (same thread layout, tile loop and epilogue in every mode; only the tile-loop body changes),
+`kernels/probe/dpas_peak.cpp` for the XMX peak, ocloc compile + disassembly of the dumped SPIR-V for the ISA figures. Shapes: the out projection 5120 x 6144 and gate+up 34816 x 5120. Raw data: `benchmarks/results/m12/xmx_*`.
+
+### L1. XMX peak with register operands (`dpas_peak.txt`, 1,280 threads, 8 independent accumulators per thread)
+bf16 / fp16 x same -> f32: **98 TFLOPS**; s8 x s8 -> s32, **s4 x s8 -> s32**, u4 x s8 (3-bit): **196.5 TOPS** (s4 and u4 run at the s8 rate: one dpas covers 32 columns whatever the weight width).
+
+### L2. m = 1, 8, 16 on the same shape (production kernels, cold; F = 2MNK is the logical work, the physical work counts the padding to 1 / 8 / 16 rows and the two byte planes of 16-bit activations)
+### Production kernels, cold weights, 1 segment: time, bandwidth of the stored weights, F = 2MNK (logical), and the XMX work actually issued
+
+| shape | weights | m | time us | stored MB | GB/s | F = 2MNK TFLOPS | DPAS ops issued (G) | XMX TOPS (physical) | share of the format's XMX peak | dpas per thread (dynamic) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| out_proj 5120x6144 | s4 + 16-bit act (2 planes) | 1 | 61.1 | 15.7 | 257 | 1.03 | 0.13 | 2.1 | 1% | 384 |
+| out_proj 5120x6144 | s4 + 16-bit act (2 planes) | 8 | 65.9 | 15.7 | 239 | 7.64 | 1.01 | 15.3 | 8% | 384 |
+| out_proj 5120x6144 | s4 + 16-bit act (2 planes) | 16 | 77.5 | 15.7 | 203 | 12.99 | 2.01 | 26.0 | 13% | 768 |
+| out_proj 5120x6144 | s4>s8 + 8-bit act | 1 | 81.2 | 15.7 | 194 | 0.77 | 0.06 | 0.8 | 0% | 192 |
+| out_proj 5120x6144 | s4>s8 + 8-bit act | 8 | 83.1 | 15.7 | 189 | 6.06 | 0.50 | 6.1 | 3% | 192 |
+| out_proj 5120x6144 | s4>s8 + 8-bit act | 16 | 96.6 | 15.7 | 163 | 10.42 | 1.01 | 10.4 | 5% | 384 |
+| out_proj 5120x6144 | s3 + 16-bit act (2 planes) | 1 | 70.2 | 11.8 | 168 | 0.90 | 0.13 | 1.8 | 1% | 384 |
+| out_proj 5120x6144 | s3 + 16-bit act (2 planes) | 8 | 74.8 | 11.8 | 158 | 6.73 | 1.01 | 13.5 | 7% | 384 |
+| out_proj 5120x6144 | s3 + 16-bit act (2 planes) | 16 | 73.8 | 11.8 | 160 | 13.64 | 2.01 | 27.3 | 14% | 768 |
+| out_proj 5120x6144 | bf16 + bf16 act | 1 | 167.3 | 62.9 | 376 | 0.38 | 0.06 | 0.4 | 0% | 384 |
+| out_proj 5120x6144 | bf16 + bf16 act | 8 | 170.5 | 62.9 | 369 | 2.95 | 0.50 | 3.0 | 3% | 384 |
+| out_proj 5120x6144 | bf16 + bf16 act | 16 | 196.5 | 62.9 | 320 | 5.12 | 1.01 | 5.1 | 5% | 768 |
+| merged.gate_up 34816x5120 | s4 + 16-bit act (2 planes) | 1 | 230.1 | 89.1 | 387 | 1.55 | 0.71 | 3.1 | 2% | 320 |
+| merged.gate_up 34816x5120 | s4 + 16-bit act (2 planes) | 8 | 242.5 | 89.1 | 368 | 11.76 | 5.70 | 23.5 | 12% | 320 |
+| merged.gate_up 34816x5120 | s4 + 16-bit act (2 planes) | 16 | 253.6 | 89.1 | 351 | 22.49 | 11.41 | 45.0 | 23% | 640 |
+| merged.gate_up 34816x5120 | s4>s8 + 8-bit act | 1 | 256.8 | 89.1 | 347 | 1.39 | 0.36 | 1.4 | 1% | 160 |
+| merged.gate_up 34816x5120 | s4>s8 + 8-bit act | 8 | 263.0 | 89.1 | 339 | 10.84 | 2.85 | 10.8 | 6% | 160 |
+| merged.gate_up 34816x5120 | s4>s8 + 8-bit act | 16 | 270.7 | 89.1 | 329 | 21.07 | 5.70 | 21.1 | 11% | 320 |
+| merged.gate_up 34816x5120 | s3 + 16-bit act (2 planes) | 1 | 194.3 | 66.8 | 344 | 1.83 | 0.71 | 3.7 | 2% | 320 |
+| merged.gate_up 34816x5120 | s3 + 16-bit act (2 planes) | 8 | 221.8 | 66.8 | 301 | 12.86 | 5.70 | 25.7 | 13% | 320 |
+| merged.gate_up 34816x5120 | s3 + 16-bit act (2 planes) | 16 | 242.1 | 66.8 | 276 | 23.56 | 11.41 | 47.1 | 24% | 640 |
+| merged.gate_up 34816x5120 | bf16 + bf16 act | 1 | 837.9 | 356.5 | 425 | 0.43 | 0.36 | 0.4 | 0% | 320 |
+| merged.gate_up 34816x5120 | bf16 + bf16 act | 8 | 854.9 | 356.5 | 417 | 3.34 | 2.85 | 3.3 | 3% | 320 |
+| merged.gate_up 34816x5120 | bf16 + bf16 act | 16 | 873.8 | 356.5 | 408 | 6.53 | 5.70 | 6.5 | 7% | 640 |
+
+### A-H (same thread layout, tile loop and epilogue), 8 tokens, 1 segment, cold; us and overlap
+
+
+out_proj 5120x6144, s4: A 66.1 | B 66.0 | C 40.8 | D 98.7 | E 65.9 | F 67.4 | G 74.4 | H 24.3
+  load time (A) 66.1 us, XMX time (H) 24.3 us (25% of D); D - A = 32.6 us; overlap factor of D = (A+H-D)/min(A,H) = -0.34, of E = 1.01
+
+out_proj 5120x6144, s3: A 62.9 | B 68.5 | C 41.5 | D 80.3 | E 71.9 | F 73.7 | G 65.7 | H 24.4
+  load time (A) 62.9 us, XMX time (H) 24.4 us (30% of D); D - A = 17.4 us; overlap factor of D = (A+H-D)/min(A,H) = 0.29, of E = 0.63
+
+merged.gate_up 34816x5120, s4: A 237.1 | B 237.1 | C 72.0 | D 245.1 | E 241.9 | F 237.4 | G 239.9 | H 62.3
+  load time (A) 237.1 us, XMX time (H) 62.3 us (25% of D); D - A = 8.0 us; overlap factor of D = (A+H-D)/min(A,H) = 0.87, of E = 0.92
+
+merged.gate_up 34816x5120, s3: A 193.7 | B 199.7 | C 74.5 | D 254.3 | E 223.9 | F 206.5 | G 204.1 | H 61.9
+  load time (A) 193.7 us, XMX time (H) 61.9 us (24% of D); D - A = 60.6 us; overlap factor of D = (A+H-D)/min(A,H) = 0.02, of E = 0.51
+
+out_proj 5120x6144, s4exp8: A 66.1 | B 114.7 | C 41.4 | D 123.0 | E 89.2 | F 123.0 | G 74.5 | H 24.5
+  load time (A) 66.1 us, XMX time (H) 24.5 us (20% of D); D - A = 56.9 us; overlap factor of D = (A+H-D)/min(A,H) = -1.32, of E = 0.06
+
+merged.gate_up 34816x5120, s4exp8: A 237.2 | B 262.8 | C 75.0 | D 273.5 | E 265.4 | F 268.7 | G 239.9 | H 64.2
+  load time (A) 237.2 us, XMX time (H) 64.2 us (23% of D); D - A = 36.3 us; overlap factor of D = (A+H-D)/min(A,H) = 0.43, of E = 0.56
+
+
+### L3. ISA of the kernels (ocloc, device bmg; static instruction counts of the compiled kernel, one loop body plus prologue / epilogue)
+```
+run        kernel                                                GRF  SLM spill dpas(static)  send asm lines
+exp_A      submit_exp<0, 0>                                      128    0    no            0    29       532
+exp_A      submit<0, 8, 1, 2, false, true>                       128    0    no            6    32       593
+exp_D      submit_exp<0, 3>                                      128    0    no            8    38       632
+exp_D      submit<0, 8, 1, 2, false, true>                       128    0    no            6    32       593
+exp_E      submit<0, 8, 1, 2, false, true>                       128    0    no            6    32       593
+exp_E      submit_exp<0, 4>                                      128    0    no           20    50       713
+exp_H      submit_exp<0, 7>                                      128    0    no            6    29       602
+exp_H      submit<0, 8, 1, 2, false, true>                       128    0    no            6    32       593
+prod_bf16  submit<3, 8, 2, 1, false, false>                      128    0    no            2    25       463
+prod_bf16  submit<3, 8, 1, 2, false, false>                      128    0    no            2    19       376
+prod_bf16  submit<3, 1, 1, 4, false, false>                      128    0    no            8    30       349
+prod_s4    submit<0, 1, 1, 2, true, true>                        128    0    no           20    35       469
+prod_s4    submit<0, 8, 2, 1, true, true>                        128    0    no           16    81      1134
+prod_s4    submit<0, 8, 1, 2, true, true>                        128    0    no           20    56       805
+prod_s4    submit<0, 8, 2, 1, false, true>                       128    0    no            8    52       837
+prod_s4    submit<0, 8, 1, 2, false, true>                       128    0    no            6    32       593
+prod_s4    submit<0, 1, 1, 2, false, true>                       128    0    no            6    18       353
+```
+Key: `submit<WF, R, G, U, A16, PIPE>` with WF 0 = s4, 3 = bf16; `submit_exp<WF, MODE>` the experiment kernel. All kernels use 128 GRF, no SLM, no spill, no barrier: independent threads (ESIMD), one thread per
+(16 weight rows, 8 or 16 tokens, column segment): out projection 320 threads, gate+up 2,176 threads for 1 segment. The 8-token s4 loop body holds 20 `dpas` (2 stages x U = 2 tiles x 2 byte planes, plus the tail); dynamic count per thread = tiles x planes (x 2 groups for 16 tokens), e.g. 384 for the out projection at 8 tokens.
+
+### L4. Findings
+1. **The XMX is not the limit.** With every operand in registers the 8-token kernel needs 24 us (out projection) / 62 us (gate+up) = 25% of the production time; the physical rate is 15 to 24 TOPS in production against 196 TOPS peak (8 to 12%), and 91 TOPS (47% of peak) when only the DPAS runs (4 independent accumulators per thread are fewer than the 8 of the peak probe).
+   The compute time would equal the load time only at about 30 tokens (prefill), not at the 1 to 16 rows of decoding. At m = 1 the dpas has repeat count 1 (1/8 of the work per instruction) and the XMX share is 1 to 2%, still memory-bound.
+2. **Load time and XMX time overlap** when the next tiles are requested before the DPAS (E): gate+up D 245 -> E 242 us (load only: A 237, overlap factor of D 0.87); out projection D 98.7 -> E 65.9 us = A 66.1 (D was serialised: load + 32.6 us).
+   Memory wait against compute wait of D: gate+up is 97% load stream (D - A = 8 us); the narrow matrix was 33% compute wait before the double buffer and is now at the load floor.
+3. **Expanded BF16 weights** (4x the bytes): out projection 167 / 171 / 197 us and gate+up 838 / 855 / 874 us at m = 1 / 8 / 16 against s4 61 / 66 / 78 and 230 / 243 / 254 us (3.5x): they read at 408 to 425 GB/s (the probe's ceiling) and use 3 to 7% of the bf16 XMX peak.
+   Memory-bound as well; there is nothing to gain from expanded weights in VRAM (and they would not fit: 54 GB for the model).
+4. **Expansion in registers costs** (s4 -> s8 then s8 DPAS, `s4>s8` + 8-bit activations): out projection 83 us against 66, gate+up 263 against 243 at 8 rows (+9 to +26%); the expansion alone (B - A) costs 49 us on the narrow matrix and 26 us on gate+up. The native s4 DPAS (no expansion) is the right design.
+5. **3-bit (`XF_W_S3`, 192-byte tiles, expansion to u4, same XMX rate)**: expansion is cheap (B - A = 6 us on gate+up), so XMX is not what limits it either; but the stored bytes are read at only 301 to 345 GB/s against 368 to 387 for s4 (the 192 B tile is not a multiple of the 256 B block load and of a cache line pair):
+   gate+up 221.8 us against 242.5 at 8 rows (-8.5% for -25% bytes; ideal at the s4 read rate: about 178 us, -27%), -16% at 1 row, -4.5% at 16 rows, no gain on the down projection at 8 rows.
+   So **fewer bytes is the lever, but the 3-bit tile layout has to be repacked to 256-byte units (4 tiles = 768 B) before it pays**; the accuracy of 3-bit weights is a separate question that was not tested here.
+6. For the s4 kernel itself: stream rate 368 GB/s on gate+up (89% of the 415 GB/s probe ceiling and below the 417 GB/s of the bf16 kernel, which moves 512 B per tile step per thread): the remaining inefficiency of the 4-bit kernel is in the 256-byte step, not in the XMX.

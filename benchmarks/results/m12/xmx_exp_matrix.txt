@@ -1,0 +1,48 @@
+out_proj s4 A 66.10
+out_proj s4 B 66.00
+out_proj s4 C 40.80
+out_proj s4 D 98.70
+out_proj s4 E 65.90
+out_proj s4 F 67.40
+out_proj s4 G 74.40
+out_proj s4 H 24.30
+out_proj s4exp8 A 
+out_proj s4exp8 B 
+out_proj s4exp8 C 
+out_proj s4exp8 D 
+out_proj s4exp8 E 
+out_proj s4exp8 F 
+out_proj s4exp8 G 
+out_proj s4exp8 H 
+out_proj s3 A 62.90
+out_proj s3 B 68.50
+out_proj s3 C 41.50
+out_proj s3 D 80.30
+out_proj s3 E 71.90
+out_proj s3 F 73.70
+out_proj s3 G 65.70
+out_proj s3 H 24.40
+merged.gate_up s4 A 237.10
+merged.gate_up s4 B 237.10
+merged.gate_up s4 C 72.00
+merged.gate_up s4 D 245.10
+merged.gate_up s4 E 241.90
+merged.gate_up s4 F 237.40
+merged.gate_up s4 G 239.90
+merged.gate_up s4 H 62.30
+merged.gate_up s4exp8 A 
+merged.gate_up s4exp8 B 
+merged.gate_up s4exp8 C 
+merged.gate_up s4exp8 D 
+merged.gate_up s4exp8 E 
+merged.gate_up s4exp8 F 
+merged.gate_up s4exp8 G 
+merged.gate_up s4exp8 H 
+merged.gate_up s3 A 193.70
+merged.gate_up s3 B 199.70
+merged.gate_up s3 C 74.50
+merged.gate_up s3 D 254.30
+merged.gate_up s3 E 223.90
+merged.gate_up s3 F 206.50
+merged.gate_up s3 G 204.10
+merged.gate_up s3 H 61.90

@@ -1,0 +1,6 @@
+out_proj s4exp8(8-bit act) m=1 81.20 exact
+out_proj s4exp8(8-bit act) m=8 83.10 exact
+out_proj s4exp8(8-bit act) m=16 96.60 exact
+merged.gate_up s4exp8(8-bit act) m=1 256.80 exact
+merged.gate_up s4exp8(8-bit act) m=8 263.00 exact
+merged.gate_up s4exp8(8-bit act) m=16 270.70 exact

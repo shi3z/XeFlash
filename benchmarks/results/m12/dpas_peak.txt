@@ -1,0 +1,22 @@
+device Intel(R) Arc(TM) Pro B60 Graphics; dpas.8x8 with register operands, 8 independent accumulators per thread, 20000 x 8 dpas per thread
+operands (B x A)       threads       TOPS     ops/dpas
+fp16 x fp16 -> f32         640       60.0         4096
+bf16 x bf16 -> f32         640       98.2         4096
+s8 x s8 -> s32             640      196.5         8192
+s4 x s8 -> s32 (GEMM)      640      196.5         8192
+u4 x s8 -> s32 (s3)        640      196.5         8192
+fp16 x fp16 -> f32        1280       98.2         4096
+bf16 x bf16 -> f32        1280       98.2         4096
+s8 x s8 -> s32            1280      196.5         8192
+s4 x s8 -> s32 (GEMM)     1280      196.5         8192
+u4 x s8 -> s32 (s3)       1280      196.5         8192
+fp16 x fp16 -> f32        2560       91.8         4096
+bf16 x bf16 -> f32        2560       91.8         4096
+s8 x s8 -> s32            2560      183.6         8192
+s4 x s8 -> s32 (GEMM)     2560      183.6         8192
+u4 x s8 -> s32 (s3)       2560      183.6         8192
+fp16 x fp16 -> f32        5120       94.9         4096
+bf16 x bf16 -> f32        5120       94.9         4096
+s8 x s8 -> s32            5120      189.8         8192
+s4 x s8 -> s32 (GEMM)     5120      189.8         8192
+u4 x s8 -> s32 (s3)       5120      189.8         8192

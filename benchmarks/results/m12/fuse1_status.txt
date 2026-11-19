@@ -1,0 +1,8 @@
+f_off8 0
+f_on8 0
+f_on16 0
+f_on1 0
+prof_off_1 0
+prof_off_2 0
+prof_on_1 0
+prof_on_2 0

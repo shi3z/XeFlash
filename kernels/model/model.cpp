@@ -1901,6 +1901,12 @@ struct Timer {
 };
 enum { P_NORM = 0, P_QUANT, P_GEMM, P_GDN, P_ATTN, P_MLP, P_HEAD, P_COUNT };
 
+// XF_SKIP (timing ablation only, the outputs are meaningless): bit 0 activation quantisation, 1 RMSNorm kernels, 2 GDN conv / qk-norm / gate / post, 3 GDN gemv a/b,
+// 4 GDN core, 5 MLP activation, 6 attention kernels (all of them), 7 the GEMMs of the layers
+int skip_mask() {
+  static const int v = std::getenv("XF_SKIP") ? std::atoi(std::getenv("XF_SKIP")) : 0;
+  return v;
+}
 struct Pass {
   xf_ctx *ctx;
   const xf_model *md;
@@ -1922,6 +1928,7 @@ struct Pass {
     const float *pmax = pm ? pm : ws.pmax;
     if (quantised == &mat && v == ws.xn) {
       quantised = nullptr; // the norm kernel already produced the byte planes of this matrix
+    } else if (skip_mask() & 1) {
     } else {
       k_quant(q, v, vs ? vs : size_t(mat.cols), mat.cols, mat.cs, mat.cmax, pmax, m, mpad, ws.xhi, ws.xlo, ws.ts, ws.toff);
       tm.tick(P_QUANT, "act-quant");
@@ -1953,7 +1960,7 @@ struct Pass {
     d.toff = plain ? nullptr : ws.toff;
     static const bool no_bias = std::getenv("XF_NO_BIAS") != nullptr; // diagnostic
     d.bias = no_bias ? nullptr : mat.bias;
-    const int st = xf_gemm(ctx, &d);
+    const int st = (skip_mask() & 128) ? XF_OK : xf_gemm(ctx, &d);
     if (tm.detail) {
       const int bits = mat.fmt == XF_W_S2 ? 2 : mat.fmt == XF_W_S3 ? 3 : 4;
       char tag[64];
@@ -1968,6 +1975,10 @@ struct Pass {
   // RMSNorm of the residual stream; folds in the pending residual add.
   void norm(const float *gain, const xf_mat *next = nullptr) {
     static const bool fuse = !(std::getenv("XF_FUSE") && std::getenv("XF_FUSE")[0] == '0'); // XF_FUSE=0: separate norm and quantisation kernels
+    if (skip_mask() & 2) {
+      pending = false;
+      return;
+    }
     if (fuse && next && next->rows > 0 && next->cols == D) {
       k_addnorm_quant(ctx->q, ws.h, pending ? ws.y : nullptr, gain, ws.xn, next->cs, next->cmax, ws.xhi, ws.xlo, ws.ts, ws.toff, m, mpad);
       pending = false;
@@ -2002,7 +2013,7 @@ struct Pass {
     const float *gptr = merged ? ws.g : ws.u;
     const float *uptr = merged ? ws.g + FF : ws.u + size_t(MAXM) * FF;
     const size_t stride = merged ? gs : size_t(FF);
-    k_mlp_act(q, const_cast<float *>(gptr), uptr, stride, ws.pmax, m);
+    if (!(skip_mask() & 32)) k_mlp_act(q, const_cast<float *>(gptr), uptr, stride, ws.pmax, m);
     tm.tick(P_MLP, "mlp-act");
     if (int st = gemm(L.m[gi + 2], gptr, ws.y, stride)) return st;
     pending = true;
@@ -2020,17 +2031,18 @@ struct Pass {
     if (int st = gemm(L.m[0], ws.xn, s.raw)) return st;
     if (!merged)
       if (int st = gemm(L.m[1], ws.xn, ws.yz)) return st;
-    k_gemv_f32(q, L.aux[0], ws.xn, ws.yab, 96, m);
+    const int sk = skip_mask();
+    if (!(sk & 8)) k_gemv_f32(q, L.aux[0], ws.xn, ws.yab, 96, m);
     tm.dtick(P_GDN, "gdn:gemv-ab");
-    k_conv(q, s.raw, rs, s.hist, L.aux[1], ws.act, m);
+    if (!(sk & 4)) k_conv(q, s.raw, rs, s.hist, L.aux[1], ws.act, m);
     tm.dtick(P_GDN, "gdn:conv");
-    k_gdn_qk(q, ws.act, ws.qn, s.kn, m);
+    if (!(sk & 4)) k_gdn_qk(q, ws.act, ws.qn, s.kn, m);
     tm.dtick(P_GDN, "gdn:qk-norm");
-    k_gdn_gate(q, ws.yab, L.aux[2], L.aux[3], s.beta, s.decay, m);
+    if (!(sk & 4)) k_gdn_gate(q, ws.yab, L.aux[2], L.aux[3], s.beta, s.decay, m);
     tm.dtick(P_GDN, "gdn:gate");
-    k_gdn_core(q, s.S, ws.act, ws.qn, s.kn, s.beta, s.decay, s.dsave, ws.gout, m);
+    if (!(sk & 16)) k_gdn_core(q, s.S, ws.act, ws.qn, s.kn, s.beta, s.decay, s.dsave, ws.gout, m);
     tm.dtick(P_GDN, "gdn:core");
-    k_gdn_post(q, ws.gout, z, zs, L.aux[4], ws.go, ws.pmax, m);
+    if (!(sk & 4)) k_gdn_post(q, ws.gout, z, zs, L.aux[4], ws.go, ws.pmax, m);
     tm.tick(P_GDN, "gdn:post");
     if (int st = gemm(L.m[2], ws.go, ws.y)) return st;
     pending = true;
@@ -2058,6 +2070,12 @@ struct Pass {
       ks = KVD;
       yk = ws.yk;
       yv = ws.yv;
+    }
+    if (skip_mask() & 64) { // ablation: no attention kernels
+      tm.tick(P_ATTN);
+      if (int st = gemm(L.m[3], ws.go, ws.y)) return st;
+      pending = true;
+      return mlp(L, 4);
     }
     k_attn_q(q, ws.yq, qs, L.aux[0], md->rope_cos, md->rope_sin, ws.qr, m, pos0);
     tm.dtick(P_ATTN, "attn:q-prep");
