@@ -1680,3 +1680,67 @@ Not an assembly finding but visible in the table: the head is 53 us above its re
 - No hardware counters (O6). Dynamic instruction counts are the static loop size times trips times threads; prologue / epilogue instructions (about 130 / 380 to 900 static, once per thread) and cache effects are not included.
 - Load and DPAS isolation was done with cold, random weights and activations (data-independent timing is assumed for the DPAS; fixed patterns would be faster).
 - YASAKANI / 5060 Ti comparison of tokens per second per cycle (the request that preceded this one) is still to be done; its data collection is not part of this part.
+
+
+## Part P. VTune GPU hardware counters for the production 4-bit GEMM (B60, Arc Pro B60 / Battlemage G21)
+
+### P1. Setup (and what was needed)
+Intel VTune Profiler 2026.6.0 was installed from the oneAPI apt repository (`intel-oneapi-vtune`, with the user's agreement). Its self-check fails for the CPU-side analyses (`CPU name: Unknown`, the i7-8700 host is not recognised, no sampling driver),
+but **`gpu-hotspots` works with GPU metrics**: `vtune -collect gpu-hotspots -knob characterization-mode=overview | compute-extended | instruction-count -- scripts/b60run ... xf-bench --cold --format s4 --shape S --tokens M --segs N`.
+Needed for it: `kernel.yama.ptrace_scope=0`, `kernel.perf_event_paranoid=0`, `kernel.kptr_restrict=0` (set with sudo for the measurement and **restored afterwards to 1 / 4 / 1**). `collect-memory-bandwidth` needs the CPU sampling driver and is not available; the "GPU Memory Bandwidth" columns of the GPU metric sets are.
+This replaces the statement of Parts L / O6 that no hardware counters exist: they exist through VTune; Level Zero metrics from our own code were never needed.
+Raw data: `benchmarks/results/m15/*.csv` (one file per kernel / shape / loop), the tables below are generated from them (`vtune_overview.md`, `vtune_instr.md`). Each number is the average over 7,000 to 10,000 kernel instances of the benchmark (cold weights, ~210 us per call for gate+up).
+Overhead of the collection: the average kernel times in the VTune runs (216 / 107 / 103 / 95 / 56 us for gate+up / down / GDN in-proj / attention qkv / out projection, 8 rows) equal the unprofiled ones, so the counters describe the normal runs.
+
+### P2. Counters per shape, rows 1 / 8 / 16, new loop (and old loop for 8 rows) — `GPU Time` basis, XVE = the 160 execution units
+Stall columns are the share of XVE stalled time attributed to each reason (several reasons can hold at the same time, so they do not add up). SBID = waiting for the result of an earlier load (`send`), Send = the load could not be issued because the send / memory queue was full, Dist/Acc = dependency on a previous ALU / accumulator result.
+
+| shape | m | loop | avg us | XVE active % | stalled % | idle % | thread occupancy % | XMX pipe active % | stall SBID % | stall Send % | stall Dist/Acc % | stall Pipe % | L3 miss % | DRAM read GB/s |
+|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| gate+up | 1 | new | 207.0 | 3.8 | 76.2 | 20.0 | 76.5 | 1.6 | 75.1 | 71.4 | 4.1 | 0.0 | 99.1 | 404 |
+| down | 1 | new | 105.0 | 3.3 | 40.2 | 56.5 | 21.6 | 1.5 | 40.1 | 10.5 | 2.3 | 0.0 | 99.2 | 379 |
+| GDN in-proj | 1 | new | 102.0 | 3.4 | 65.8 | 30.8 | 58.4 | 1.5 | 65.0 | 52.3 | 3.1 | 0.0 | 99.0 | 362 |
+| attn qkv | 1 | new | 92.0 | 3.3 | 62.1 | 34.7 | 48.3 | 1.4 | 61.5 | 41.7 | 2.8 | 0.0 | 99.0 | 347 |
+| out proj | 1 | new | 50.0 | 2.3 | 34.9 | 62.8 | 18.1 | 1.0 | 34.7 | 10.9 | 1.8 | 0.0 | 98.7 | 243 |
+| gate+up | 8 | new | 216.0 | 8.7 | 71.4 | 19.9 | 77.2 | 12.6 | 71.5 | 67.8 | 4.0 | 0.1 | 95.7 | 391 |
+| gate+up | 8 | old | 242.0 | 19.1 | 63.1 | 17.8 | 78.0 | 11.3 | 62.2 | 54.3 | 8.3 | 1.9 | 96.2 | 349 |
+| down | 8 | new | 107.0 | 14.1 | 66.1 | 19.8 | 44.2 | 9.8 | 65.3 | 34.6 | 3.6 | 0.1 | 96.6 | 304 |
+| down | 8 | old | 118.0 | 19.4 | 61.7 | 18.9 | 44.3 | 9.1 | 59.0 | 1.0 | 9.7 | 1.4 | 96.6 | 284 |
+| GDN in-proj | 8 | new | 103.0 | 8.1 | 66.0 | 25.9 | 62.2 | 11.7 | 66.1 | 55.5 | 3.4 | 0.1 | 96.2 | 352 |
+| GDN in-proj | 8 | old | 115.0 | 18.0 | 56.5 | 25.5 | 62.8 | 10.6 | 55.1 | 36.3 | 8.5 | 1.8 | 96.0 | 325 |
+| attn qkv | 8 | new | 95.0 | 7.6 | 62.2 | 30.1 | 51.5 | 11.0 | 62.3 | 46.4 | 3.1 | 0.1 | 96.4 | 341 |
+| attn qkv | 8 | old | 107.0 | 16.9 | 53.8 | 29.4 | 52.2 | 10.0 | 51.7 | 23.7 | 8.7 | 1.7 | 96.0 | 306 |
+| out proj | 8 | new | 56.0 | 5.1 | 33.1 | 61.8 | 18.7 | 7.4 | 33.1 | 15.3 | 2.0 | 0.0 | 93.3 | 228 |
+| out proj | 8 | old | 66.0 | 10.2 | 29.5 | 60.3 | 19.5 | 6.5 | 27.2 | 0.6 | 6.8 | 1.0 | 93.3 | 204 |
+| gate+up | 16 | new | 227.0 | 15.3 | 70.1 | 14.6 | 77.2 | 24.1 | 67.7 | 57.7 | 1.2 | 0.1 | 95.2 | 373 |
+| down | 16 | new | 124.0 | 22.7 | 61.5 | 15.9 | 48.9 | 16.6 | 59.7 | 31.6 | 2.2 | 0.1 | 94.2 | 255 |
+| GDN in-proj | 16 | new | 106.0 | 14.5 | 66.4 | 19.1 | 66.1 | 22.9 | 64.6 | 48.6 | 0.8 | 0.1 | 93.8 | 356 |
+| attn qkv | 16 | new | 96.0 | 13.9 | 64.1 | 22.0 | 56.0 | 21.9 | 62.6 | 39.6 | 0.7 | 0.1 | 94.6 | 339 |
+| out proj | 16 | new | 66.0 | 8.2 | 31.9 | 59.9 | 19.1 | 12.9 | 31.5 | 2.0 | 0.7 | 0.0 | 89.0 | 196 |
+
+### P3. Instructions per call measured by the counters (cold gate+up and out projection, 8 rows)
+| kernel | loop | calls measured | send / call (M) | DPAS / call (M) (XMX instr / 8) | ALU1 / call (M) | ALU0 / call (M) | INT64 / call (M) | INT16 / call (M) | control / call (M) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| gate+up m=8 | old | 7372 | 1.04 | 0.66 | 13.17 | 0.62 | 3.65 | 1.47 | 0.50 |
+| gate+up m=8 | new | 8152 | 1.03 | 0.66 | 1.55 | 0.14 | 1.06 | 0.02 | 0.09 |
+| out proj m=8 | old | 10002 | 0.16 | 0.10 | 1.85 | 0.08 | 0.51 | 0.20 | 0.07 |
+| out proj m=8 | new | 10002 | 0.16 | 0.10 | 0.22 | 0.02 | 0.16 | 0.00 | 0.01 |
+
+(XMX instructions are counted 8 per `dpas`, hence the division; ALU1 is the integer / FP pipe that executes the address arithmetic.) Measured send count 1.03 M and DPAS 0.66 M per gate+up call agree with the static estimate of Part O (1.04 M / 0.70 M); **the old loop executes 8.5x the ALU1 instructions of the new one (13.2 M against 1.55 M)**,
+more than the 2.3x of the static instruction count, because the 32 x 32 and 64-bit multiplies are issued as several 16-bit passes (INT16: 1.47 M -> 0.02 M per call, INT64 3.65 M -> 1.06 M). The loads and DPAS are the same.
+
+### P4. What the counters say
+1. **The XMX is idle about 88% of the time at 8 rows** (pipe active 11 to 13% for the four wide shapes, 7% for the out projection); 22 to 24% at 16 rows; 1.5% at 1 row. The XVE array is stalled 62 to 76% of the time (wide shapes), and **the dominant stall reason is SBID (62 to 72%): threads waiting for load results**,
+   together with Send stalls (40 to 68%: the memory pipe does not accept more requests). ALU, instruction-fetch, control and pipe stalls are 0 to 4%. This is the signature of a memory-system-limited kernel, now measured, not inferred.
+2. **Old against new loop (gate+up, 8 rows)**: XVE active 19.1% -> 8.7%, ALU1 pipe active 14.1% -> 1.9%, Dist/Acc stall 8.3% -> 4.0%, Send stall 54% -> 68% (the loads now arrive faster than the memory system takes them), DRAM read 349 -> 391 GB/s, time 242 -> 216 us.
+   The same for the other shapes (down 118 -> 107, GDN in-proj 115 -> 103, attention qkv 107 -> 95, out projection 66 -> 56 us): ALU pipe load falls by 6 to 12 points and the DRAM read rate rises 8 to 12%.
+3. **Wide shapes** (gate+up, GDN in-proj, attention qkv): thread occupancy 48 to 77% (the tail wave), L3 miss ratio 94 to 99% (the weights stream through), DRAM read 341 to 404 GB/s as measured by the counters (gate+up 404 at 1 row, 391 at 8, 373 at 16).
+   VTune's GB/s is an average over its sampling windows, so it is lower than bytes / time (gate+up 8 rows: 412 GB/s by time, 391 by counters; out projection 280 / 228; down 417 / 304 because the second kernel and the gaps lie in the same windows): use it for comparing loops, not as the bandwidth.
+4. **Narrow shapes** (out projection 320 threads, down 640): thread occupancy 18.7% and 44% (`Work Size Limit` 25% / 50%: the launch has too few threads), XVE idle 62% (out projection) and 20% (down); stalled 33% and 66%. The out projection is **idle, not stalled**: the machine does not hold enough loads in flight.
+   This agrees with Part O5 (activation loads slow the narrow kernel by 12 to 18% while the wide ones are unaffected) and with the segment-count effect of Part I4.
+5. **Not obtained**: per-instruction / basic-block stall attribution (the `source-analysis` mode collected data, but the JIT-compiled ESIMD kernels have no code-location mapping in the report: addresses are `[Unknown]`); the cache hit rate of the activation loads in L1 (only L3 metrics exist: L3 miss ratio 89 to 99% of the traffic that reaches L3).
+
+### P5. Consequences for the candidates of Part O8
+- The counters confirm that no instruction-level work is left in the three wide shapes: ALU stalls 4% or less, instruction mix = loads + DPAS, XMX pipe waiting for SBID.
+- The measurable inefficiency is concentrated in the narrow shapes, where the cause is **occupancy / too little memory parallelism** (O 18.7% occupancy, idle 62%): candidates remain (1) more loads in flight per thread (a deeper software pipeline, 3 stages) or more threads per matrix for the 5,120-row shapes, (2) one segment instead of two for down, (3) shared activation loads (RB = 2) for the 14 to 16 thousand-row matrices.
+  Each of them is a kernel change; none was made here. The expected gains are those of Part O8 (estimates; the counters do not give a number for them).

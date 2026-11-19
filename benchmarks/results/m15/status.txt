@@ -1,0 +1,21 @@
+ov_merged.gate_up_m1_new 0
+ov_mlp.down_m1_new 0
+ov_out_proj_m1_new 0
+ov_merged.attn_qkv_m1_new 0
+ov_merged.qkvz_m1_new 0
+ov_merged.gate_up_m8_new 0
+ov_mlp.down_m8_new 0
+ov_out_proj_m8_new 0
+ov_merged.attn_qkv_m8_new 0
+ov_merged.qkvz_m8_new 0
+ov_merged.gate_up_m16_new 0
+ov_mlp.down_m16_new 0
+ov_out_proj_m16_new 0
+ov_merged.attn_qkv_m16_new 0
+ov_merged.qkvz_m16_new 0
+ov_merged.gate_up_m8_old 0
+ov_mlp.down_m8_old 0
+ov_out_proj_m8_old 0
+ov_merged.attn_qkv_m8_old 0
+ov_merged.qkvz_m8_old 0
+ovdone
