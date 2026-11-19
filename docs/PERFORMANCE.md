@@ -1744,3 +1744,128 @@ more than the 2.3x of the static instruction count, because the 32 x 32 and 64-b
 - The counters confirm that no instruction-level work is left in the three wide shapes: ALU stalls 4% or less, instruction mix = loads + DPAS, XMX pipe waiting for SBID.
 - The measurable inefficiency is concentrated in the narrow shapes, where the cause is **occupancy / too little memory parallelism** (O 18.7% occupancy, idle 62%): candidates remain (1) more loads in flight per thread (a deeper software pipeline, 3 stages) or more threads per matrix for the 5,120-row shapes, (2) one segment instead of two for down, (3) shared activation loads (RB = 2) for the 14 to 16 thousand-row matrices.
   Each of them is a kernel change; none was made here. The expected gains are those of Part O8 (estimates; the counters do not give a number for them).
+
+
+## Part Q. Work-group launch of the 4-bit GEMM for 8 / 16 rows, and down with one segment (adopted)
+
+### Q1. The finding and the change
+In the variant sweep of Part N the best configurations for the 5,120-row matrices always carried `local=4`. A plain `parallel_for(range)` lets the runtime choose a work-group of **32 threads** (VTune shows `Work Size:Local = 32`); a work-group cannot span Xe cores, so the 320 threads of a 5,120-row matrix
+(and the 640 of down with two segments) are packed into groups of 32 that the dispatcher places on a few cores. `kernels/gemm/gemm.cpp`: the pointer-bumped loop (`PIPE == 2`) is now launched with `nd_range<1>(threads, XF_GEMM_WG)` (default **4**) **when tokens_per_thread is 8 or 16**; if the thread count is not divisible by the work-group size, or for 1 row per thread, the plain launch is used.
+`kernels/model/model.cpp`: with the small work-group, down (5,120 x 17,408) uses **one segment** (no combine kernel, no division in the prologue) instead of two.
+Switch back: `XF_GEMM_WG=0` (or 1) restores both the plain launch and the two segments of down. The thread body is the same code (`run` lambda), results unchanged. The 1-row kernel keeps the plain launch (Q4); `XF_GEMM_WG_M1=n` is an experiment-only switch for it (default 0).
+
+### Q2. Unit benchmark, before (`XF_GEMM_WG=0`: plain launch, down 2 segments) and after (default), cold weights, us
+| shape | m | before (XF_GEMM_WG=0) us | after (default) us | change | exact vs CPU (before/after) |
+|---|---:|---:|---:|---:|---|
+| out_proj | 1 | 50.7 (segs 1) | 50.4 (segs 1) | -0.6% | exact/exact |
+| out_proj | 8 | 55.8 (segs 1) | 50.9 (segs 1) | -8.8% | exact/exact |
+| out_proj | 16 | 63.5 (segs 1) | 57.1 (segs 1) | -10.1% | exact/exact |
+| mlp.down | 1 | 105.4 (segs 1) | 105.4 (segs 1) | +0.0% | exact/exact |
+| mlp.down | 8 | 120.8 (segs 2) | 111.3 (segs 1) | -7.9% | exact/exact |
+| mlp.down | 16 | 142.9 (segs 2) | 132.0 (segs 1) | -7.6% | exact/exact |
+| merged.gate_up | 1 | 207.4 (segs 1) | 207.5 (segs 1) | +0.0% | exact/exact |
+| merged.gate_up | 8 | 216.4 (segs 1) | 216.6 (segs 1) | +0.1% | exact/exact |
+| merged.gate_up | 16 | 228.1 (segs 1) | 227.7 (segs 1) | -0.2% | exact/exact |
+| merged.qkvz | 1 | 102.4 (segs 1) | 102.4 (segs 1) | +0.0% | exact/exact |
+| merged.qkvz | 8 | 103.3 (segs 1) | 101.9 (segs 1) | -1.4% | exact/exact |
+| merged.qkvz | 16 | 106.5 (segs 1) | 104.5 (segs 1) | -1.9% | exact/exact |
+| merged.attn_qkv | 1 | 92.5 (segs 1) | 92.5 (segs 1) | +0.0% | exact/exact |
+| merged.attn_qkv | 8 | 94.8 (segs 1) | 91.6 (segs 1) | -3.4% | exact/exact |
+| merged.attn_qkv | 16 | 96.9 (segs 1) | 91.9 (segs 1) | -5.2% | exact/exact |
+| lm_head | 1 | 1442.7 (segs 1) | 1442.6 (segs 1) | -0.0% | exact/exact |
+| lm_head | 8 | 1508.5 (segs 1) | 1500.5 (segs 1) | -0.5% | exact/exact |
+| lm_head | 16 | 1567.9 (segs 1) | 1560.7 (segs 1) | -0.5% | exact/exact |
+
+Work-group size and segment count separated (same data, every segment count of each launch, `benchmarks/results/m16/gemm_wg.txt`; before = plain launch, after = work-group 4):
+| shape | m | before: best (segs) us | after: best (segs) us | change | segs 1 / 2 / 4 before | segs 1 / 2 / 4 after | exact (before/after) |
+|---|---:|---|---|---:|---|---|---|
+| out projection 5120x6144 | 1 | 50.4 (1) | 56.0 (1) | +11.1% | 50.4 / nan / nan | 56.0 / nan / nan | exact / exact |
+| out projection 5120x6144 | 8 | 55.8 (1) | 51.4 (1) | -7.9% | 55.8 / 73.9 / 95.5 | 51.4 / 73.8 / 95.4 | exact / exact |
+| out projection 5120x6144 | 16 | 63.8 (1) | 57.1 (1) | -10.5% | 63.8 / 88.5 / 114.4 | 57.1 / 93.5 / 120.8 | exact / exact |
+| down 5120x17408 | 1 | 105.4 (1) | 115.5 (1) | +9.6% | 105.4 / nan / nan | 115.5 / nan / nan | exact / exact |
+| down 5120x17408 | 8 | 120.8 (2) | 111.3 (1) | -7.9% | 128.5 / 120.8 / 125.6 | 111.3 / 120.9 / 125.6 | exact / exact |
+| down 5120x17408 | 16 | 142.8 (2) | 132.1 (1) | -7.5% | 156.7 / 142.8 / 149.0 | 132.1 / 143.7 / 149.2 | exact / exact |
+| gate+up 34816x5120 | 1 | 207.4 (1) | 206.5 (1) | -0.4% | 207.4 / nan / nan | 206.5 / nan / nan | exact / exact |
+| gate+up 34816x5120 | 8 | 216.4 (1) | 216.6 (1) | +0.1% | 216.4 / nan / nan | 216.6 / nan / nan | exact / exact |
+| gate+up 34816x5120 | 16 | 228.0 (1) | 227.6 (1) | -0.2% | 228.0 / nan / nan | 227.6 / nan / nan | exact / exact |
+| GDN in-proj 16384x5120 | 1 | 102.4 (1) | 103.3 (1) | +0.9% | 102.4 / nan / nan | 103.3 / nan / nan | exact / exact |
+| GDN in-proj 16384x5120 | 8 | 103.3 (1) | 101.9 (1) | -1.4% | 103.3 / nan / nan | 101.9 / nan / nan | exact / exact |
+| GDN in-proj 16384x5120 | 16 | 106.5 (1) | 104.5 (1) | -1.9% | 106.5 / nan / nan | 104.5 / nan / nan | exact / exact |
+| attention qkv 14336x5120 | 1 | 92.4 (1) | 92.7 (1) | +0.3% | 92.4 / nan / nan | 92.7 / nan / nan | exact / exact |
+| attention qkv 14336x5120 | 8 | 94.8 (1) | 91.8 (1) | -3.2% | 94.8 / nan / nan | 91.8 / nan / nan | exact / exact |
+| attention qkv 14336x5120 | 16 | 96.8 (1) | 91.9 (1) | -5.1% | 96.8 / nan / nan | 91.9 / nan / nan | exact / exact |
+| lm_head 248320x5120 | 1 | 1442.5 (1) | 1438.5 (1) | -0.3% | 1442.5 / nan / nan | 1438.5 / nan / nan | exact / exact |
+| lm_head 248320x5120 | 8 | 1508.5 (1) | 1500.8 (1) | -0.5% | 1508.5 / nan / nan | 1500.8 / nan / nan | exact / exact |
+| lm_head 248320x5120 | 16 | 1568.1 (1) | 1560.8 (1) | -0.5% | 1568.1 / nan / nan | 1560.8 / nan / nan | exact / exact |
+
+- For down the work-group size is what helps: at 1 segment 128.5 -> 111.3 us (8 rows) and 156.7 -> 132.1 us (16 rows), at 2 or 4 segments the work-group changes nothing (120.8 / 120.9, 125.6 / 125.6; there the thread count already spreads). The segment count then matters only through the combine kernel: one segment with the work-group (111.3) beats the best of the old launch (120.8 with 2 segments) by 8%.
+- Local sizes in the production build (us, 1 segment, `wg_sweep.txt`):
+
+| shape | m | WG 0 | WG 1 | WG 2 | WG 4 | WG 8 | WG 16 | WG 20 | WG 32 | WG 40 | WG 64 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| mlp.down | 8 | 128.8 | 128.6 | 111.2 | 111.3 | 111.3 | 112.8 | 112.0 | 128.5 | - | - |
+| mlp.down | 16 | 156.7 | 156.6 | 131.9 | 132.1 | 132.1 | 132.3 | 135.3 | 156.7 | - | - |
+| out_proj | 8 | 55.7 | 55.8 | 50.5 | 51.0 | 51.0 | 50.7 | 48.0 | 55.8 | - | - |
+| out_proj | 16 | 63.9 | 63.9 | 57.0 | 57.0 | 56.9 | 57.6 | 57.4 | 63.5 | - | - |
+| merged.attn_qkv | 8 | 94.9 | 94.7 | 91.7 | 91.7 | 91.7 | 91.7 | 94.8 | 94.8 | - | - |
+| merged.attn_qkv | 16 | 96.9 | 96.9 | 94.2 | 91.9 | 91.9 | 91.3 | 96.9 | 96.9 | - | - |
+| merged.qkvz | 8 | 103.3 | 103.3 | 102.0 | 101.9 | 102.4 | 107.8 | 103.3 | 103.4 | - | - |
+| merged.qkvz | 16 | 106.5 | 106.4 | 106.5 | 104.5 | 104.6 | 108.7 | 106.5 | 106.4 | - | - |
+| merged.gate_up | 8 | 216.4 | 216.4 | 216.3 | 216.6 | 216.8 | 218.2 | 216.3 | 216.4 | - | - |
+| merged.gate_up | 16 | 228.1 | 228.0 | 227.7 | 227.7 | 227.9 | 227.4 | 228.0 | 228.1 | - | - |
+| mlp.down | 1 | 105.4 | - | 115.5 | 115.3 | 115.6 | 115.0 | 105.0 | 105.4 | 114.0 | 165.8 |
+| out_proj | 1 | 50.6 | - | 55.7 | 55.8 | 55.9 | 55.8 | 47.7 | 50.3 | 59.7 | 84.3 |
+| merged.attn_qkv | 1 | 92.5 | - | 92.9 | 92.8 | 92.8 | 90.3 | 92.6 | 92.5 | 92.5 | 86.0 |
+| merged.qkvz | 1 | 102.4 | - | 103.9 | 103.5 | 104.2 | 105.9 | 102.5 | 102.4 | 102.4 | 98.9 |
+| merged.gate_up | 1 | 207.5 | - | 206.6 | 206.6 | 206.8 | 208.4 | 207.4 | 207.4 | 207.4 | 205.2 |
+
+  For 8 / 16 rows every group size from 2 to 16 is the same within noise (down 111.2 to 112.8, out projection 50.5 to 51.0); **local = 2 is as good as 4** and 1 is the plain launch. Sizes where the thread count is not divisible (20 for 896 / 1,024 threads) or equal to 32 fall back to the plain behaviour.
+  20 threads gives the out projection 48.0 us at 8 rows but not at 16 rows (57.4), a size-specific effect that was not adopted.
+
+### Q3. ISA, GRF, spill, bit identity
+- IGC dump of `submit<0,8,1,2,true,2>` (8 rows) and `submit<0,8,2,1,true,2>` (16 rows) with and without the work-group launch: **GRF 128, no scratch / spill, loop 40 / 35 instructions, 8 DPAS, 12 / 10 loads** in all four; the launch form does not change the loop.
+- Logits of 1,600 teacher-forced tokens: **bit-identical** between `XF_GEMM_WG=0` and the default at pass sizes 1, 8 and 16, and between pass sizes (`benchmarks/results/m16`, comparison done on the raw logits). Unit benchmark outputs are exact against the CPU reference in every row above.
+
+### Q4. Why only for 8 / 16 rows? Work-group size sweep for 1 row (`XF_GEMM_WG_M1`, us), and the counters
+For 1 row per thread the plain launch is best or equal (down 105.4, out projection 50.6); work-groups of 2 to 16 are 10% slower (115.5, 55.8), 20 is equal / better (105.0, 47.7), 32 equal to plain, 64 much slower for the narrow matrices (165.8, 84.3) but 7% faster for attention qkv (86.0) and 3% for GDN in-proj (98.9).
+VTune GPU counters (`benchmarks/results/m17/`; overview, 5 repetitions of 7,000+ calls):
+
+| shape | m | work-group | avg us | XVE active % | stalled % | idle % | thread occupancy % | work-size occupancy limit % | stall SBID % | stall Send % | L3 miss % | DRAM read GB/s |
+|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| mlp.down | 1 | plain (32) | 105.0 | 3.3 | 40.1 | 56.6 | 21.6 | 25 | 40.0 | 10.4 | 99.2 | 378 |
+| mlp.down | 1 | 4 | 116.0 | 3.1 | 74.5 | 22.5 | 19.2 | 25 | 73.9 | 0.0 | 98.5 | 348 |
+| mlp.down | 1 | 20 | 105.0 | 3.3 | 62.2 | 34.4 | 20.6 | 25 | 61.9 | 1.5 | 98.6 | 381 |
+| mlp.down | 8 | plain (32) | 128.0 | 6.8 | 38.0 | 55.2 | 22.4 | 25 | 38.5 | 21.3 | 99.5 | 316 |
+| mlp.down | 8 | 4 | 111.0 | 7.9 | 81.3 | 10.8 | 22.3 | 25 | 81.9 | 1.1 | 99.3 | 365 |
+| out_proj | 1 | plain (32) | 51.0 | 2.3 | 35.4 | 62.3 | 18.3 | 25 | 35.1 | 11.0 | 98.7 | 253 |
+| out_proj | 1 | 4 | 56.0 | 2.1 | 58.7 | 39.2 | 14.4 | 25 | 57.7 | 0.0 | 97.7 | 233 |
+| out_proj | 1 | 20 | 48.0 | 2.4 | 51.0 | 46.6 | 16.3 | 25 | 50.4 | 1.1 | 98.2 | 259 |
+| out_proj | 8 | plain (32) | 56.0 | 5.2 | 32.9 | 61.9 | 18.7 | 25 | 33.1 | 15.4 | 93.3 | 229 |
+| out_proj | 8 | 4 | 51.0 | 5.7 | 64.5 | 29.8 | 16.8 | 25 | 64.1 | 0.2 | 88.6 | 257 |
+
+- **Plain launch: the XVE array is idle 55 to 62% of the time** (threads occupancy of the whole GPU is 18 to 22%, which is exactly the work-size limit of 25%, but the idle share shows the threads sit on part of the cores); with work-groups of 4 the idle share drops to 11 to 30% for 8 rows, and the DRAM read rises 316 -> 365 GB/s (down) and 229 -> 257 GB/s (out projection). That is the effect measured in time (-13% / -9% in the counter runs).
+- **The hypothesis "small work-groups cost scheduling overhead at 1 row" is not supported by the counters**: at 1 row with work-groups of 4 the idle share also falls (56.6% -> 22.5%) but stalls rise to 74.5% (SBID, i.e. waiting for loads) and the DRAM read falls 378 -> 348 GB/s; the Send-queue stalls disappear (10.4% -> 0%). So spreading the threads removes idle time but the 1-row kernel then gets less memory bandwidth.
+  The 1-row load stream is mostly 32-byte activation loads (8 of 12 sends per trip) plus the 256-byte weight loads; a plausible but **untested** explanation is that threads that share a core also share the activation lines and the weight-row pages better when packed (the 20-thread groups, which land between the two, are the best for the out projection). The mechanism was not isolated; the rule (work-group only for 8 / 16 rows) rests on the measurements.
+
+### Q5. Main pass and generation speed (1K context pass profile; 8K / 30K / code with bdraft2, tokens and committed state identical to the old launch in every run)
+Real pass time without per-kernel synchronisation (1 / 8 / 16 rows): 37.72 / 42.03 / 48.09 ms before, **37.72 / 41.27 / 46.24 ms after** (-0 / -0.76 / -1.85 ms).
+GEMM sums of the synchronised profile (1 / 8 / 16 rows): 33.48 / 36.18 / 39.26 -> 33.51 / 35.06 / 37.02 ms; per shape (8 rows) down 8.68 -> 8.08 ms (-0.60), out projections 4.09 -> 4.01 ms (-0.08; 16 rows 4.56 -> 4.22).
+The out projections gain less in the model (80 us per call there against 56 us in the unit benchmark) than in isolation: the unit gain of 5 us per call (0.3 ms per pass) is only 0.08 ms in the engine; this difference was not investigated.
+
+| context | config | WG=0 (before) tok/s | default (after) tok/s | gain | Main pass ms before→after | tok/cycle | same tokens & state |
+|---|---|---:|---:|---:|---|---:|---|
+| code | fixed8 | 123.7 | 125.4 | +1.4% | 42.1→41.4 | 6.17 | True |
+| code | fixed16 | 142.4 | 147.2 | +3.4% | 48.1→46.2 | 8.08 | True |
+| code | adapt-cost | 139.9 | 145.7 | +4.2% | 47.5→46.0 | 7.95 | True |
+| 8k | fixed8 | 67.1 | 68.2 | +1.5% | 44.7→43.9 | 3.53 | True |
+| 8k | fixed16 | 59.5 | 61.4 | +3.1% | 51.8→50.0 | 3.62 | True |
+| 8k | adapt-cost | 65.6 | 65.8 | +0.3% | 45.7→45.4 | 3.53 | True |
+| 30k | fixed8 | 55.3 | 56.1 | +1.3% | 51.9→51.0 | 3.31 | True |
+| 30k | fixed16 | 50.0 | 51.3 | +2.6% | 62.0→60.2 | 3.55 | True |
+| 30k | adapt-cost | 55.1 | 55.7 | +1.1% | 52.1→51.4 | 3.31 | True |
+
+The generation speed gain is about 1 to 4% (fixed 16 rows: +2.6 to +3.4%, fixed 8 rows: +1.3 to +1.5%): the Main pass is shorter by 0.8 ms (8 rows) and 1.8 to 1.9 ms (16 rows) of a 44 to 62 ms cycle; the unit gain of 8 to 10% on two of the six matrices is 1.8% of the 8-row GEMM time.
+
+### Q6. Decision
+Adopted: the Main pass is shorter in every configuration, the tokens and the committed state are identical, logits are bit-identical, GRF / spill unchanged, the previous launch stays available (`XF_GEMM_WG=0`). Not adopted: work-groups for 1 row (no gain; one shape-dependent size, 20, gives -6% on the out projection at 1 row = 0.2 ms per 1-row pass, not understood), RB = 2 (postponed).
+Next candidates for the narrow shapes: more loads in flight per thread (the idle share with the work-group is still 11 to 30% and the stalls are SBID), checked with the VTune counters of Part P.

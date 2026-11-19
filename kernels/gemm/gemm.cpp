@@ -129,6 +129,16 @@ ESIMD_INLINE simd<float, 16> finish(simd<int32_t, 16> si, simd<int32_t, 16> li, 
 
 // PIPE: software-pipelined integer loop: the weight / activation tiles of the next U tiles are requested before the DPAS of the current U tiles
 // (two register sets A / B), so that memory requests stay in flight during the arithmetic. Needs cols / tile_cols / segs to be a multiple of 2 * U.
+// Work-group size (threads) of the pointer-bumped loop launch: XF_GEMM_WG=0 or 1 gives the previous plain-range launch (runtime-chosen work-group of 32).
+inline size_t wg_size() {
+  static const size_t w = std::getenv("XF_GEMM_WG") ? size_t(std::atoi(std::getenv("XF_GEMM_WG"))) : size_t(4);
+  return w;
+}
+// Experiment only: work-group size for the 1-row-per-thread kernel (XF_GEMM_WG_M1, default 0 = plain launch, which is the fastest for 1 row).
+inline size_t wg1_size() {
+  static const size_t w = std::getenv("XF_GEMM_WG_M1") ? size_t(std::atoi(std::getenv("XF_GEMM_WG_M1"))) : size_t(0);
+  return w;
+}
 // PIPE: 0 = plain loop, 1 = software-pipelined loop with every tile address recomputed from the 64-bit tile index (the previous production loop),
 //       2 = software-pipelined loop with pointer-bumped addresses: all addresses are formed once before the loop and every tile load adds a constant
 //           (weights) or the activation stride to a running pointer; 32-bit loop counters and thread index (no 64-bit multiply, division or modulo in the loop).
@@ -158,21 +168,23 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0> sycl::event submi
   float *Y = segs == 1 ? d.y : YF;
   constexpr size_t PLANES = A16 ? 2 : 1;
 
-  return q.parallel_for(sycl::range<1>(rowblks * tgroups * segs), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+  // The thread body is shared by the two launch forms below. A plain range lets the runtime pick a work-group of 32 threads; a work-group cannot span Xe cores, so a launch of 320
+  // threads (the 5,120-row matrices) filled only about half of the 20 cores. PIPE == 2 launches small work-groups (XF_GEMM_WG threads, default 4) which the dispatcher spreads over all cores.
+  const auto run = [=](const size_t gid) SYCL_ESIMD_FUNCTION {
     size_t rb, tg, seg;
     if constexpr (PIPE == 2) {
       if (segs == 1 && tgroups == 1) { // every engine shape at 1 / 8 / 16 tokens: the thread index is the row block
-        rb = uint32_t(id[0]);
+        rb = uint32_t(gid);
         tg = 0;
         seg = 0;
       } else { // 32-bit index arithmetic (the thread count is below 2^31, checked by addr32_ok)
-        const uint32_t i32 = uint32_t(id[0]), rq = uint32_t(rowblks), tq = uint32_t(tgroups);
+        const uint32_t i32 = uint32_t(gid), rq = uint32_t(rowblks), tq = uint32_t(tgroups);
         rb = i32 % rq;
         tg = (i32 / rq) % tq;
         seg = i32 / (rq * tq);
       }
     } else {
-      const size_t idx = id[0];
+      const size_t idx = gid;
       rb = idx % rowblks;
       tg = (idx / rowblks) % tgroups;
       seg = idx / (rowblks * tgroups);
@@ -359,7 +371,12 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0> sycl::event submi
         }
       }
     }
-  });
+  };
+  const size_t nthreads = rowblks * tgroups * segs;
+  const size_t wg = PIPE == 2 ? (TPT > 1 ? wg_size() : wg1_size()) : 0; // 1 row per thread: the plain launch is fastest (50 against 56 us for the out projection)
+  if (wg > 1 && nthreads % wg == 0)
+    return q.parallel_for(sycl::nd_range<1>(nthreads, wg), [=](sycl::nd_item<1> it) SYCL_ESIMD_KERNEL { run(it.get_global_id(0)); });
+  return q.parallel_for(sycl::range<1>(nthreads), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL { run(id[0]); });
 }
 
 // Float formats: sum the per-segment partial outputs into y.

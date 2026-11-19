@@ -1946,7 +1946,10 @@ struct Pass {
     static const bool seg_old = std::getenv("XF_GEMM_SEGS_OLD") != nullptr;
     d.segs = (mat.rows < 8192 && m > 1) ? 4 : 1;
     if (mat.rows < 8192 && m > 1) {
-      if (pipe_on && !seg_old) d.segs = mat.cols <= 8192 ? 1 : 2;
+      // With the small work-group launch of the pipelined GEMM (XF_GEMM_WG, default on for 8 / 16 rows per thread) the 320 threads of a 5,120-row matrix spread over all
+      // Xe cores and one segment is fastest for down as well (no combine kernel); XF_GEMM_WG=0 restores the plain launch and the 2 segments.
+      static const bool wg_on = !(std::getenv("XF_GEMM_WG") && std::atoi(std::getenv("XF_GEMM_WG")) <= 1);
+      if (pipe_on && !seg_old) d.segs = (mat.cols <= 8192 || wg_on) ? 1 : 2;
       else if (!seg_old && mat.cols <= 8192) d.segs = m <= 8 ? 2 : 1;
     }
     d.a16 = 1;

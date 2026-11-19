@@ -1,0 +1,11 @@
+mlp.down_m1_wg0
+mlp.down_m1_wg4
+mlp.down_m1_wg20
+mlp.down_m8_wg0
+mlp.down_m8_wg4
+out_proj_m1_wg0
+out_proj_m1_wg4
+out_proj_m1_wg20
+out_proj_m8_wg0
+out_proj_m8_wg4
+done

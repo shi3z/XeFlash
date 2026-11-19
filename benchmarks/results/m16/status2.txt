@@ -1,0 +1,15 @@
+gemm
+w_old8 0
+w_new8 0
+w_old16 0
+w_new16 0
+w_old1 0
+w_new1 0
+pass
+e2e_8k_0 0
+e2e_8k_4 0
+e2e_30k_0 0
+e2e_30k_4 0
+e2e_code_0 0
+e2e_code_4 0
+done
