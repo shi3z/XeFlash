@@ -1,0 +1,25 @@
+loaded /data/B60special/models/xfm/qwen38-27b-s4-cal.xfm in 6.6s, context capacity 30720 tokens
+device allocations      count          GiB
+  DeltaNet state           48       0.2168
+  KV cache                 16       1.8750
+  MTP                       5       0.3687
+  MTP KV cache              1       0.1172
+  RoPE table                2       0.0073
+  body matrices           256      11.3428
+  embedding (bf16)          1       2.3682
+  head sketch               4       0.1291
+  lm_head                   1       0.5920
+  matrix scales           779       0.0393
+  small tensors           408       0.0978
+  workspace                 1       0.0773
+  TOTAL requested        1522      17.2315
+driver free VRAM: 22.4843 GiB before, 5.2168 GiB after, difference 17.2675 GiB
+bdraft2 backend loaded: +2.808 GiB device memory (driver)
+long30000 none        21.78 tok/s | 1.00 tok/pass | main  45.91 ms/pass
+          taps device-to-device
+long30000 bd2:fixed8   55.35 tok/s | 3.31 tok/pass | cycle  59.76 ms | main  51.86, draft   6.16 (of which taps 0.00) ms/pass | accept% [82 73 55 73 58 73 62] | same tokens, same state
+          taps device-to-device
+long30000 bd2:fixed16   49.97 tok/s | 3.55 tok/pass | cycle  71.13 ms | main  62.02, draft   7.36 (of which taps 0.00) ms/pass | accept% [85 71 58 69 56 80 88 57 100 50 50 100 0 0 0] | same tokens, same state
+          cost probe at position 30024: 8 rows 51.4 ms, 16 rows 61.4 ms -> c16 = 1.173
+          adaptive block: 2 of 78 passes used 16 rows; taps device-to-device
+long30000 bd2:adapt-cost   55.11 tok/s | 3.31 tok/pass | cycle  60.02 ms | main  52.13, draft   6.17 (of which taps 0.00) ms/pass | accept% [82 72 57 77 55 73 62 0 0 0 0 0 0 0 0] | same tokens, same state

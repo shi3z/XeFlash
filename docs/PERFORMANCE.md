@@ -1524,3 +1524,159 @@ The production epilogue (loading scales, offsets) accounts for the remaining ~8 
 - The 17 us left unexplained in Part M are the 64-bit division / modulo (+7 us), the 64-bit loop counters and compares and the 64-bit multiplications of the address arithmetic (together +17 us to ADDR=0 / 1), plus ~8 us in the production prologue / epilogue: all integer overhead around identical loads and DPAS.
 - With 32-bit arithmetic and plain pointer increments the same loop reaches the probe's time (216.6 against 216.0 us), which is 1.7% above the read-only kernel of the same layout (213.8 us): **gate+up is then within 2% of the read floor; the narrow matrices (out projection 52.7 us, floor 46 us from the fit) within 15%.**
 - Not done: the production kernel was not modified; the variants were checked on random weights and activations against `xf_gemm`, not on the model's weights; the saving is an estimate from isolated calls.
+
+
+## Part O. Pointer-bumped 32-bit addressing in the production 4-bit GEMM, and an assembly-level analysis of what limits it (XeFlash, B60)
+
+### O1. What was changed in production (commit 3983e34)
+`submit<..., PIPE=2>` in `kernels/gemm/gemm.cpp`: the pipelined integer loop forms the weight / activation addresses once before the loop, adds the constant tile size (weights) or the activation stride to running 64-bit pointers after every tile load, and uses a 32-bit trip counter and thread index
+(`segs == 1 && tgroups == 1`, which is every engine shape at 1 / 8 / 16 rows with one segment, skips the division and modulo). The previous loop (`PIPE=1`) is compiled as well: `XF_GEMM_ADDR=old` selects it at run time, and `addr32_ok()` falls back to it automatically
+when the thread count, the tile counters or `tiles * mpad * 8` would not fit 32 bits. Pointers stay 64-bit, so tensor sizes never enter a 32-bit computation; the largest shape (head, 248,320 x 5,120) has 15,520 threads, 160 tiles, 160 x 16 x 8 dwords of activation.
+Float formats and s8 with 16-bit activations keep their old loops.
+
+Checks: all six shapes at m = 1 / 8 / 16 are exact against the CPU reference with both loops; the logits of 1,600 teacher-forced tokens are bit-identical between old and new loop at pass sizes 1, 8 and 16, and between pass sizes (`benchmarks/results/m13/`).
+
+### O2. Measured effect (1K context unless noted; `XF_GEMM_ADDR=old` against the default)
+Unit benchmark, cold weights, best segment count of each loop (us):
+
+| shape | weights | m | old loop, best segs (us) | new loop, best segs (us) | change | exact vs CPU reference (old / new) |
+|---|---|---:|---:|---:|---:|---|
+| out projection 5120x6144 | s4+16-bit act | 1 | 61.1 (segs 1) | 50.5 (segs 1) | -17.3% | exact / exact |
+| out projection 5120x6144 | s4+16-bit act | 8 | 65.9 (segs 1) | 55.6 (segs 1) | -15.6% | exact / exact |
+| out projection 5120x6144 | s4+16-bit act | 16 | 77.5 (segs 1) | 65.8 (segs 1) | -15.1% | exact / exact |
+| down 5120x17408 | s4+16-bit act | 1 | 116.2 (segs 1) | 105.4 (segs 1) | -9.3% | exact / exact |
+| down 5120x17408 | s4+16-bit act | 8 | 131.4 (segs 2) | 120.8 (segs 2) | -8.1% | exact / exact |
+| down 5120x17408 | s4+16-bit act | 16 | 160.0 (segs 2) | 147.7 (segs 4) | -7.7% | exact / exact |
+| gate+up 34816x5120 | s4+16-bit act | 1 | 230.2 (segs 1) | 207.5 (segs 1) | -9.9% | exact / exact |
+| gate+up 34816x5120 | s4+16-bit act | 8 | 242.5 (segs 1) | 216.5 (segs 1) | -10.7% | exact / exact |
+| gate+up 34816x5120 | s4+16-bit act | 16 | 253.6 (segs 1) | 226.8 (segs 1) | -10.6% | exact / exact |
+| GDN in-proj 16384x5120 | s4+16-bit act | 1 | 111.3 (segs 1) | 102.3 (segs 1) | -8.1% | exact / exact |
+| GDN in-proj 16384x5120 | s4+16-bit act | 8 | 115.3 (segs 1) | 103.2 (segs 1) | -10.5% | exact / exact |
+| GDN in-proj 16384x5120 | s4+16-bit act | 16 | 118.7 (segs 1) | 105.9 (segs 1) | -10.8% | exact / exact |
+| attention qkv 14336x5120 | s4+16-bit act | 1 | 103.4 (segs 1) | 92.3 (segs 1) | -10.7% | exact / exact |
+| attention qkv 14336x5120 | s4+16-bit act | 8 | 106.7 (segs 1) | 94.7 (segs 1) | -11.2% | exact / exact |
+| attention qkv 14336x5120 | s4+16-bit act | 16 | 109.0 (segs 1) | 96.6 (segs 1) | -11.4% | exact / exact |
+| lm_head 248320x5120 | s4+16-bit act | 1 | 1472.7 (segs 1) | 1442.8 (segs 1) | -2.0% | exact / exact |
+| lm_head 248320x5120 | s4+16-bit act | 8 | 1571.0 (segs 1) | 1508.7 (segs 1) | -4.0% | exact / exact |
+| lm_head 248320x5120 | s4+16-bit act | 16 | 1770.8 (segs 1) | 1567.2 (segs 1) | -11.5% | exact / exact |
+| out projection 5120x6144 | s3+16-bit act | 1 | 70.3 (segs 1) | 54.4 (segs 1) | -22.6% | exact / exact |
+| out projection 5120x6144 | s3+16-bit act | 8 | 59.9 (segs 4) | 46.0 (segs 4) | -23.2% | exact / exact |
+| out projection 5120x6144 | s3+16-bit act | 16 | 73.6 (segs 2) | 56.1 (segs 1) | -23.8% | exact / exact |
+| down 5120x17408 | s3+16-bit act | 1 | 144.3 (segs 1) | 115.3 (segs 1) | -20.1% | exact / exact |
+| down 5120x17408 | s3+16-bit act | 8 | 117.7 (segs 4) | 100.8 (segs 4) | -14.4% | exact / exact |
+| down 5120x17408 | s3+16-bit act | 16 | 139.8 (segs 4) | 140.5 (segs 4) | +0.5% | exact / exact |
+| gate+up 34816x5120 | s3+16-bit act | 1 | 194.4 (segs 1) | 176.5 (segs 1) | -9.2% | exact / exact |
+| gate+up 34816x5120 | s3+16-bit act | 8 | 221.8 (segs 1) | 183.0 (segs 1) | -17.5% | exact / exact |
+| gate+up 34816x5120 | s3+16-bit act | 16 | 242.1 (segs 1) | 239.3 (segs 1) | -1.2% | exact / exact |
+| GDN in-proj 16384x5120 | s3+16-bit act | 1 | 96.8 (segs 1) | 81.8 (segs 1) | -15.5% | exact / exact |
+| GDN in-proj 16384x5120 | s3+16-bit act | 8 | 106.3 (segs 1) | 87.9 (segs 1) | -17.3% | exact / exact |
+| GDN in-proj 16384x5120 | s3+16-bit act | 16 | 118.7 (segs 1) | 112.0 (segs 1) | -5.6% | exact / exact |
+| attention qkv 14336x5120 | s3+16-bit act | 1 | 83.8 (segs 1) | 73.3 (segs 1) | -12.5% | exact / exact |
+| attention qkv 14336x5120 | s3+16-bit act | 8 | 97.8 (segs 1) | 79.0 (segs 1) | -19.2% | exact / exact |
+| attention qkv 14336x5120 | s3+16-bit act | 16 | 106.4 (segs 1) | 98.9 (segs 1) | -7.0% | exact / exact |
+
+Real pass, no per-kernel synchronisation (m = 1 / 8 / 16 rows): **37.7 / 42.0 / 48.1 ms new against 41.2 / 45.8 / 52.1 ms old** (-3.5 / -3.8 / -4.0 ms); GEMM sum of the synchronised profile (8 rows) 40.05 -> 36.31 ms. (An earlier message of this session quoted the 1-row column as the 8-row pass; the 8-row figures are these.)
+The sum of the unit benchmarks for one 8-row pass (64 gate+up, 64 down, 48 GDN in-proj, 16 attention qkv, 64 out projections, 1 head) is 36.96 -> 33.12 ms against a read-floor fit (10.8 us + MB / 440 GB/s per call) of 31.86 ms: **16% above the floor before, 4% after**
+(gate+up +2%, attention qkv +1%, GDN in-proj -3%, down +8%, out projection +20%, head +4%).
+
+End to end, bdraft2, same prompts and token counts, tokens and committed state identical to the old loop in every run (`benchmarks/results/m13/e2e_*.json`):
+
+| context | config | old tok/s | new tok/s | gain | main pass old→new (ms) | tok/cycle | tokens & state identical |
+|---|---|---:|---:|---:|---|---:|---|
+| code | fixed8 | 115.0 | 123.7 | +7.5% | 45.9→42.1 | 6.17 | True |
+| code | fixed16 | 132.9 | 142.3 | +7.1% | 52.1→48.1 | 8.08 | True |
+| code | adapt-cost | 130.6 | 139.9 | +7.1% | 51.4→47.5 | 7.83 | True |
+| 8k | fixed8 | 62.7 | 67.1 | +7.2% | 48.4→44.6 | 3.53 | True |
+| 8k | fixed16 | 55.8 | 59.6 | +6.7% | 55.8→51.8 | 3.62 | True |
+| 8k | adapt-cost | 61.2 | 65.6 | +7.3% | 49.6→45.7 | 3.53 | True |
+| 30k | fixed8 | 52.0 | 55.3 | +6.3% | 55.6→51.9 | 3.31 | True |
+| 30k | fixed16 | 47.3 | 50.0 | +5.7% | 66.0→62.0 | 3.55 | True |
+| 30k | adapt-cost | 51.9 | 55.1 | +6.3% | 55.9→52.1 | 3.31 | True |
+| 48k | fixed8 | 46.2 | 48.8 | +5.7% | 61.7→57.9 | 3.21 | True |
+| 60k | fixed8 | 42.7 | 44.9 | +5.3% | 65.3→61.5 | 3.12 | True |
+
+The Main pass shortens by 3.7 to 4.0 ms at every context; the tok/s gain is smaller than the GEMM gain (about 6 to 7% of the cycle) because a cycle also holds the drafter (6.1 ms) and 1.7 ms of host / read-back time, which did not change.
+
+### O3. Hot-loop instructions, old against new (gate+up, 8 rows, one trip = 4 tiles; `tools/profile/isa_analyze.py`, IGC dump -> ocloc disasm for `bmg`)
+| per trip | old loop (PIPE=1) | new loop (PIPE=2) | removed |
+|---|---:|---:|---:|
+| instructions | 91 | 40 | 51 |
+| `send.ugm` loads (12 x 256 B: 4 weight, 8 activation) | 12 | 12 | 0 |
+| `dpas.8x8` (s4 x s8 / u8, `:s4` weights fed straight to the DPAS, **no unpack instructions exist in the loop**) | 8 | 8 | 0 |
+| integer ALU | 27 | 13 | 14 |
+| 32-bit `mul` + 64-bit `macl` / `mach` multiplies | 12 + 12 | 0 | 24 |
+| `mov` | 10 | 0 | 10 |
+| `cmp` | 3 | 1 | 2 |
+| `sync` (scoreboard waits) | 5 | 4 | 1 |
+| branches (back edge + early-exit of the 2-stage pipeline) | 2 | 2 | 0 |
+| issue spread of the 12 loads (instructions between first and last) | 42 | 16 | 26 |
+| loads issued before the first scoreboard wait | 5 | 6 | +1 |
+Other tokens: m = 1: 98 -> 48 instructions (12 loads of 256 B / 32 B, 8 DPAS), m = 16 (2 tiles per trip): 58 -> 36 (10 loads, 8 DPAS).
+- **The DPAS and load streams are identical; the removed instructions are the 64-bit address multiplications (`mul`/`macl`/`mach`/`add3` chains rebuilt per tile from the run-time strides), their `mov`s and the 64-bit loop compare.** Every `send` of the old loop waited on an integer dependency (`I@n`) of that chain, so the loads left the thread over 42 instructions instead of 16.
+- Dynamic count for gate+up, 8 rows: 2,176 threads x 40 trips = 87,040 trips; 51 instructions per trip fewer = **4.44 M thread-instructions removed per call** (old 7.92 M, new 3.48 M). Spread over 160 EUs and issued at 1 per clock that is 27.7 K instructions per EU = 11.6 us at 2.4 GHz;
+  the measured gain is 27 us (243.5 -> 216.5). So the gain is more than the issue slots: it is the earlier load issue (estimate; the instruction-level timing cannot be measured, hardware counters are not available, see O6).
+- The 64-bit division / modulo emulation (`call` into IGC's helper routines, 3 call sites in the prologue) exists in both kernels; in the new one it runs only when `segs > 1` or `tgroups > 1` (down projection, 2 segments): about 3 calls per thread, once.
+- GRF 128 for every variant (8 threads per EU, 1,280 resident), no scratch / spill send, no SLM, no barrier, no predicate save / restore (`mov` to a flag register in the loop: 0), no `cvt`-type conversions in the loop.
+- The DPAS group: 4 independent accumulators (two s8 / u8 planes x two unrolled tiles), two updates each per trip, at least 1 other DPAS between dependent updates (m = 8 new) and 3 for the old order; 6 of the 8 `dpas` are `{Atomic}`-chained in groups of 4. The XMX is not waiting on its own dependencies (see O5: DPAS alone takes 9 to 37% of the call).
+- Load messages: `load.ugm.d32x64t.a64` for the weights (256 B, contiguous 256 B per tile, the tiles of a thread are consecutive: stride 256 B, other threads are `tiles x 256` B = 40 KB away), the same message for the activation planes (identical address in every thread: served from L1 / L2),
+  no cache-control suffix (default policy), 64-bit addresses (`.a64`), immediate offsets `flat[A+0x100..0x300]` used for four tiles; all in one `send` each, no SLM.
+
+### O4. Static and dynamic counts per shape (new loop, 1 / 8 / 16 rows; engine segment counts; "load-pipe MB" = bytes delivered by the load messages, i.e. weights **plus the activation planes re-read by every thread**)
+
+| shape | m | prod. time us | eff. read GB/s | threads (thr/EU, waves of 1280) | trips x dpas/trip = DPAS per thread | DPAS per call (dynamic) | loads per call (dyn.), load-pipe MB | int ALU+mul+mov+cmp per call (M) | sync waits / trip | weights-only us | DPAS-only us (XMX busy %) | full / weights-only | dominant bottleneck |
+|---|---:|---:|---:|---|---|---:|---|---:|---:|---:|---|---:|---|
+| gate+up | 1 | 207.8 | 429 | 2176 (8.0, 1.70) | 40 x 8 | 0.70 M | 1.04 M, 134 | 1.2 | 12 | 210.2 | 18.9 (9%) | 0.99 | weight stream (DRAM); XMX waits for data |
+| gate+up | 8 | 217.0 | 411 | 2176 (8.0, 1.70) | 40 x 8 | 0.70 M | 1.04 M, 267 | 1.2 | 4 | 218.1 | 40.2 (19%) | 1.00 | weight stream (DRAM); XMX waits for data |
+| gate+up | 16 | 226.9 | 393 | 2176 (8.0, 1.70) | 80 x 8 | 1.39 M | 1.74 M, 446 | 1.9 | 4 | 227.0 | 75.8 (33%) | 1.01 | weight stream (DRAM); XMX waits for data |
+| down | 1 | 105.6 | 422 | 320 (2.0, 0.25) | 136 x 8 | 0.35 M | 0.52 M, 67 | 0.6 | 12 | 103.1 | 15.7 (15%) | 1.02 | weight stream (DRAM); XMX waits for data |
+| down | 8 | 121.2 | 368 | 640 (4.0, 0.50) | 68 x 8 | 0.35 M | 0.52 M, 134 | 0.6 | 4 | 116.2 | 18.0 (17%) | 0.92 | weight stream; segmented K-split (extra loads in flight help) + combine kernel / 2-way split |
+| down | 16 | 148.9 | 299 | 640 (4.0, 0.50) | 136 x 8 | 0.70 M | 0.87 M, 223 | 1.0 | 4 | 115.4 | 32.9 (27%) | 1.06 | weight stream + activation-load traffic (X/XL loads add 6% over weights alone; 640 threads) + combine kernel / 2-way split |
+| out proj | 1 | 50.4 | 312 | 320 (2.0, 0.25) | 48 x 8 | 0.12 M | 0.18 M, 24 | 0.2 | 12 | 49.9 | 6.5 (13%) | 1.01 | weight stream (DRAM); XMX waits for data |
+| out proj | 8 | 55.8 | 282 | 320 (2.0, 0.25) | 48 x 8 | 0.12 M | 0.18 M, 47 | 0.2 | 4 | 50.5 | 12.6 (22%) | 1.12 | weight stream + activation-load traffic (X/XL loads add 12% over weights alone; 320 threads) |
+| out proj | 16 | 65.2 | 241 | 320 (2.0, 0.25) | 96 x 8 | 0.25 M | 0.31 M, 79 | 0.3 | 4 | 55.4 | 23.7 (36%) | 1.18 | weight stream + activation-load traffic (X/XL loads add 18% over weights alone; 320 threads) |
+| attn qkv | 1 | 92.7 | 396 | 896 (5.6, 0.70) | 40 x 8 | 0.29 M | 0.43 M, 55 | 0.5 | 12 | 89.6 | 9.7 (10%) | 1.03 | weight stream (DRAM); XMX waits for data |
+| attn qkv | 8 | 95.1 | 386 | 896 (5.6, 0.70) | 40 x 8 | 0.29 M | 0.43 M, 110 | 0.5 | 4 | 92.8 | 18.7 (20%) | 1.02 | weight stream (DRAM); XMX waits for data |
+| attn qkv | 16 | 97.0 | 378 | 896 (5.6, 0.70) | 80 x 8 | 0.57 M | 0.72 M, 184 | 0.8 | 4 | 94.9 | 36.1 (37%) | 1.02 | weight stream (DRAM); XMX waits for data |
+| GDN in-proj | 1 | 101.2 | 414 | 1024 (6.4, 0.80) | 40 x 8 | 0.33 M | 0.49 M, 63 | 0.6 | 12 | 99.1 | 9.7 (10%) | 1.02 | weight stream (DRAM); XMX waits for data |
+| GDN in-proj | 8 | 103.7 | 404 | 1024 (6.4, 0.80) | 40 x 8 | 0.33 M | 0.49 M, 126 | 0.6 | 4 | 103.3 | 18.7 (18%) | 1.00 | weight stream (DRAM); XMX waits for data |
+| GDN in-proj | 16 | 105.9 | 396 | 1024 (6.4, 0.80) | 80 x 8 | 0.66 M | 0.82 M, 210 | 0.9 | 4 | 107.0 | 36.1 (34%) | 0.99 | weight stream (DRAM); XMX waits for data |
+
+Reading the table: the load pipe carries 3.0x (8 rows), 5.0x (16 rows) and 1.5x (1 row) the weight bytes, because every thread re-reads the activation tiles of its token group (from cache, not DRAM).
+The threads per EU are an upper bound from the GRF count (8 at 128 GRF); the actual number resident at one time was not observed.
+
+### O5. Isolating load, DPAS and their combination on the production layout and shapes (`kernels/probe/gemm_modes.cpp`, new loop, main kernel only, no combine kernel; us)
+Raw output: `benchmarks/results/m14/modes_all.txt`. Same thread layout, tile loop and epilogue as xf_gemm; modes 1 to 4 compute nothing useful. Times are **not added**: the question is whether they overlap.
+- **Mode 0 (full) is equal to mode 1 (weights read only) within 0 to 3% for gate+up, GDN in-proj, attention qkv and down at 1 row; the DPAS adds nothing**. Example gate+up, 8 rows: full 217.1, weights only 218.1, all loads without DPAS 218.6, weights + DPAS with resident activations 217.9, **DPAS only 40.2**.
+  (Loads and DPAS overlap completely: 218.1 + 40.2 would be 258 if they were serial.)
+- The XMX is therefore **idle 64 to 91% of the call waiting for data** (XMX busy: 9% at 1 row, 17 to 22% at 8 rows, 27 to 37% at 16 rows); it would not matter if it were infinitely fast. The effective rate is 13.1 TFLOPS (F = 2MNK) at 8 rows (25.0 at 16 rows),
+  26 TOPS of executed int8 DPAS work (two planes) = 13% of the 196.5 TOPS peak; DPAS alone reaches 71 TFLOPS-equivalent (36% of that peak, 40.2 us at 2,176 threads).
+- Exceptions where the activation loads show up: out projection (320 threads, 2 per EU): full 56.4 against weights only 50.5 at 8 rows (+12%), 65.2 against 55.4 at 16 rows (+18%); in mode 2 the all-loads kernel already costs the same as the full kernel (57.1 / 64.4). With only 320 threads a thread has too few weight loads in flight when the activation loads share its scoreboard.
+  Down with 2 segments (640 threads): the weights-only kernel is slower (116.2) than the full kernel (107.1) at 8 rows, i.e. extra loads in flight help; at 16 rows it is the other way (+6%).
+- 4-bit unpacking is not part of the production loop (the DPAS takes `s4` weights directly), so there is no "unpack only" run for production. The earlier expansion experiment (s4 -> s8, Part M) costs +9 to +26% and is not used.
+
+### O6. Hardware counters
+XMX utilisation, EU stall, cache hit rates and memory bandwidth counters are not available on this system (Level Zero metrics / `zet` tracing fails for the card, no `nsys` / `ncu` equivalent installed; measured in Part L and not re-attempted here). **Everything above on stalls is inferred from the ISA, the scoreboard structure and the isolation kernels, not measured with counters.**
+Estimates marked as such: (a) the in-flight bytes needed for 440 GB/s at an assumed 0.8 us load latency (latency not measured) are about 350 KB; the narrow shapes (320 threads x ~1.5 KB of outstanding weight loads) sit near that, the wide ones (2,176 threads) far above it.
+
+### O7. Where the time goes now, per shape (8 rows, new loop)
+| shape | time us | weights-only us | read floor fit us | gap to floor | dominant bottleneck (from the table and O5) |
+|---|---:|---:|---:|---:|---|
+| gate+up | 216.5 | 218.1 | 213.3 | +1.5% | weight stream; nothing left to remove |
+| GDN in-proj | 103.2 | 103.3 | 106.0 | -3% | weight stream |
+| attention qkv | 94.7 | 92.8 | 94.2 | +0.5% | weight stream |
+| down (2 segments) | 120.8 | 116.2 | 112.2 | +8% | weight stream split in two, + combine kernel + per-thread division in the prologue |
+| out projection | 55.6 | 50.5 | 46.5 | +20% | too few threads (320), activation loads cost 5 us on top of the weights |
+| head | 1,508.7 | n/a | 1,455.6 | +4% | weight stream, 12 waves of threads |
+
+### O8. Candidates supported by the assembly and the isolation runs, ordered by expected saving per 8-row pass
+1. **Down projection with one segment (or another split that avoids the combine kernel): about 10 us per call, 64 calls = 0.6 ms per pass.** Basis: `gemm_variants` (Part N) reached 111.4 us with one segment and U = 2 against 120.8 us; the ISA shows the three division `call`s in the 2-segment prologue and the combine is a separate launch (about 13 us above the 107.1 us main kernel).
+   (16 rows: the 4-segment variant gained only 2 us.) Expected: 0.6 ms of 42 ms (1.5%).
+2. **Out projection: remove the 5 us (8 rows) / 10 us (16 rows) that the activation loads add to the weight stream: 5 us x 64 = 0.3 ms per pass (16 rows 0.6 ms).** Basis: mode 0 against mode 1 (O5) and the ISA: 8 of the 12 loads per trip are activation tiles that every thread re-reads. Options not yet tried: keep the two activation planes in registers across several row blocks (RB = 2 gave 52.7 us in Part N), or a larger group of loads in flight for the weight stream.
+3. **Attention qkv and GDN in-proj with two row blocks per thread (activation tiles loaded once for both): 5 us x 16 + 1.6 us x 48 = about 0.16 ms per pass** (Part N variants 89.7 and 101.6 us against 94.7 and 103.2 now).
+Not an assembly finding but visible in the table: the head is 53 us above its read floor (12 waves of threads, the last wave partly empty), estimated 0.05 ms per pass. Gate+up, GDN in-proj and attention qkv (together 29 of the 36 ms of 8-row GEMM time) are within 0 to 2% of the weight-stream time of the same kernel without DPAS: **no instruction-level change can reduce them; only fewer bytes per weight can** (the format work, which stays paused).
+
+### O9. Not done / caveats
+- Production kernels were not changed in the analysis step. The mode kernels are copies of the new loop in `kernels/probe/gemm_modes.cpp` (R, G, U and the epilogue as in production; row and thread mapping identical); the production time is printed in the same run for reference and agrees within 1 us (gate+up 8 rows 217.0 against 217.1).
+- No hardware counters (O6). Dynamic instruction counts are the static loop size times trips times threads; prologue / epilogue instructions (about 130 / 380 to 900 static, once per thread) and cache effects are not included.
+- Load and DPAS isolation was done with cold, random weights and activations (data-independent timing is assumed for the DPAS; fixed patterns would be faster).
+- YASAKANI / 5060 Ti comparison of tokens per second per cycle (the request that preceded this one) is still to be done; its data collection is not part of this part.

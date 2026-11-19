@@ -1,0 +1,12 @@
+a_old8 0
+a_new8 0
+a_new16 0
+a_old16 0
+a_new1 0
+a_old1 0
+pass_old_0 0
+pass_old_127 0
+pass_new_0 0
+pass_new_127 0
+detail_old 0
+detail_new 0

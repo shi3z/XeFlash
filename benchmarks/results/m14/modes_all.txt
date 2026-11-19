@@ -1,0 +1,105 @@
+== rows=34816 cols=5120 m=1 segs=1 (89.1 MB weights, 2176 threads): production xf_gemm 207.8 us
+mode (main kernel only, no combine)        us   GB/s(W) TFLOPS(F)
+0 full (W+X+XL loads, DPAS)            207.8     428.8      1.72
+1 weights read only                    210.2     424.0      1.70
+2 all loads, no DPAS                   210.0     424.5      1.70
+3 DPAS only (registers)                 18.9    4721.4     18.89
+4 weights read + DPAS (X resident)     210.0     424.4      1.70
+== rows=5120 cols=17408 m=1 segs=1 (44.6 MB weights, 320 threads): production xf_gemm 105.6 us
+mode (main kernel only, no combine)        us   GB/s(W) TFLOPS(F)
+0 full (W+X+XL loads, DPAS)            105.6     422.2      1.69
+1 weights read only                    103.1     432.3      1.73
+2 all loads, no DPAS                   103.8     429.4      1.72
+3 DPAS only (registers)                 15.7    2845.5     11.38
+4 weights read + DPAS (X resident)     103.8     429.5      1.72
+== rows=5120 cols=6144 m=1 segs=1 (15.7 MB weights, 320 threads): production xf_gemm 50.4 us
+mode (main kernel only, no combine)        us   GB/s(W) TFLOPS(F)
+0 full (W+X+XL loads, DPAS)             50.4     311.8      1.25
+1 weights read only                     49.9     315.2      1.26
+2 all loads, no DPAS                    50.3     312.7      1.25
+3 DPAS only (registers)                  6.5    2434.0      9.74
+4 weights read + DPAS (X resident)      48.8     322.6      1.29
+== rows=14336 cols=5120 m=1 segs=1 (36.7 MB weights, 896 threads): production xf_gemm 92.7 us
+mode (main kernel only, no combine)        us   GB/s(W) TFLOPS(F)
+0 full (W+X+XL loads, DPAS)             92.5     396.6      1.59
+1 weights read only                     89.6     409.7      1.64
+2 all loads, no DPAS                    90.4     406.1      1.62
+3 DPAS only (registers)                  9.7    3769.6     15.08
+4 weights read + DPAS (X resident)      90.9     403.9      1.62
+== rows=16384 cols=5120 m=1 segs=1 (41.9 MB weights, 1024 threads): production xf_gemm 101.2 us
+mode (main kernel only, no combine)        us   GB/s(W) TFLOPS(F)
+0 full (W+X+XL loads, DPAS)            101.2     414.5      1.66
+1 weights read only                     99.1     423.1      1.69
+2 all loads, no DPAS                    99.5     421.6      1.69
+3 DPAS only (registers)                  9.7    4305.1     17.22
+4 weights read + DPAS (X resident)     100.9     415.6      1.66
+== rows=34816 cols=5120 m=8 segs=1 (89.1 MB weights, 2176 threads): production xf_gemm 217.0 us
+mode (main kernel only, no combine)        us   GB/s(W) TFLOPS(F)
+0 full (W+X+XL loads, DPAS)            217.1     410.5     13.14
+1 weights read only                    218.1     408.7     13.08
+2 all loads, no DPAS                   218.6     407.8     13.05
+3 DPAS only (registers)                 40.2    2219.3     71.02
+4 weights read + DPAS (X resident)     217.9     409.1     13.09
+== rows=5120 cols=17408 m=8 segs=2 (44.6 MB weights, 640 threads): production xf_gemm 121.2 us
+mode (main kernel only, no combine)        us   GB/s(W) TFLOPS(F)
+0 full (W+X+XL loads, DPAS)            107.1     416.2     13.32
+1 weights read only                    116.2     383.5     12.27
+2 all loads, no DPAS                   107.2     415.9     13.31
+3 DPAS only (registers)                 18.0    2480.4     79.37
+4 weights read + DPAS (X resident)     117.1     380.5     12.18
+== rows=5120 cols=6144 m=8 segs=1 (15.7 MB weights, 320 threads): production xf_gemm 55.8 us
+mode (main kernel only, no combine)        us   GB/s(W) TFLOPS(F)
+0 full (W+X+XL loads, DPAS)             56.4     279.1      8.93
+1 weights read only                     50.5     311.4      9.97
+2 all loads, no DPAS                    57.1     275.4      8.81
+3 DPAS only (registers)                 12.6    1253.0     40.10
+4 weights read + DPAS (X resident)      49.2     319.6     10.23
+== rows=14336 cols=5120 m=8 segs=1 (36.7 MB weights, 896 threads): production xf_gemm 95.1 us
+mode (main kernel only, no combine)        us   GB/s(W) TFLOPS(F)
+0 full (W+X+XL loads, DPAS)             95.1     386.0     12.35
+1 weights read only                     92.8     395.3     12.65
+2 all loads, no DPAS                    94.4     388.6     12.43
+3 DPAS only (registers)                 18.7    1961.8     62.78
+4 weights read + DPAS (X resident)      94.3     389.1     12.45
+== rows=16384 cols=5120 m=8 segs=1 (41.9 MB weights, 1024 threads): production xf_gemm 103.7 us
+mode (main kernel only, no combine)        us   GB/s(W) TFLOPS(F)
+0 full (W+X+XL loads, DPAS)            103.8     404.2     12.93
+1 weights read only                    103.3     406.0     12.99
+2 all loads, no DPAS                   103.0     407.3     13.04
+3 DPAS only (registers)                 18.7    2238.7     71.64
+4 weights read + DPAS (X resident)     104.5     401.2     12.84
+== rows=34816 cols=5120 m=16 segs=1 (89.1 MB weights, 2176 threads): production xf_gemm 226.9 us
+mode (main kernel only, no combine)        us   GB/s(W) TFLOPS(F)
+0 full (W+X+XL loads, DPAS)            228.2     390.6     25.00
+1 weights read only                    227.0     392.6     25.12
+2 all loads, no DPAS                   229.1     389.0     24.89
+3 DPAS only (registers)                 75.8    1176.5     75.30
+4 weights read + DPAS (X resident)     227.2     392.4     25.11
+== rows=5120 cols=17408 m=16 segs=2 (44.6 MB weights, 640 threads): production xf_gemm 148.9 us
+mode (main kernel only, no combine)        us   GB/s(W) TFLOPS(F)
+0 full (W+X+XL loads, DPAS)            121.8     365.9     23.42
+1 weights read only                    115.4     386.1     24.71
+2 all loads, no DPAS                   114.7     388.4     24.86
+3 DPAS only (registers)                 32.9    1353.9     86.65
+4 weights read + DPAS (X resident)     116.1     384.0     24.58
+== rows=5120 cols=6144 m=16 segs=1 (15.7 MB weights, 320 threads): production xf_gemm 65.2 us
+mode (main kernel only, no combine)        us   GB/s(W) TFLOPS(F)
+0 full (W+X+XL loads, DPAS)             65.2     241.3     15.44
+1 weights read only                     55.4     283.7     18.16
+2 all loads, no DPAS                    64.4     244.4     15.64
+3 DPAS only (registers)                 23.7     662.3     42.39
+4 weights read + DPAS (X resident)      65.1     241.4     15.45
+== rows=14336 cols=5120 m=16 segs=1 (36.7 MB weights, 896 threads): production xf_gemm 97.0 us
+mode (main kernel only, no combine)        us   GB/s(W) TFLOPS(F)
+0 full (W+X+XL loads, DPAS)             97.2     377.7     24.18
+1 weights read only                     94.9     386.5     24.74
+2 all loads, no DPAS                    97.5     376.5     24.10
+3 DPAS only (registers)                 36.1    1017.1     65.10
+4 weights read + DPAS (X resident)      93.9     390.7     25.00
+== rows=16384 cols=5120 m=16 segs=1 (41.9 MB weights, 1024 threads): production xf_gemm 105.9 us
+mode (main kernel only, no combine)        us   GB/s(W) TFLOPS(F)
+0 full (W+X+XL loads, DPAS)            106.3     394.4     25.24
+1 weights read only                    107.0     392.1     25.10
+2 all loads, no DPAS                   106.7     393.0     25.15
+3 DPAS only (registers)                 36.1    1160.9     74.30
+4 weights read + DPAS (X resident)     106.6     393.4     25.18

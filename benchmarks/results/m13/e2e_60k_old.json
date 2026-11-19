@@ -1,0 +1,3 @@
+[
+  {"prompt":"long60000","drafter":"bd2:fixed8","block":8,"tok_per_s":42.662,"tokens_per_pass":3.1220,"cycle_ms":73.179,"main_ms":65.267,"draft_ms":6.226,"taps_ms":0.000,"same_tokens":true,"same_state":true,"passes":41,"passes16":0,"emitted":128,"new_tokens":128,"accept1":0.7561,"prefill_tok_s":226.6}
+]
