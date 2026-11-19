@@ -17,6 +17,7 @@
 //   verify   (<= 16 tokens) R=8 G=2 U=1
 //   prefill  (many tokens)  R=8 G=4 U=1   XMX bound, weights reused from cache
 #include <cstdlib>
+#include <cstring>
 #include <sycl/ext/intel/esimd.hpp>
 
 #include "../ctx.hpp"
@@ -128,7 +129,11 @@ ESIMD_INLINE simd<float, 16> finish(simd<int32_t, 16> si, simd<int32_t, 16> li, 
 
 // PIPE: software-pipelined integer loop: the weight / activation tiles of the next U tiles are requested before the DPAS of the current U tiles
 // (two register sets A / B), so that memory requests stay in flight during the arithmetic. Needs cols / tile_cols / segs to be a multiple of 2 * U.
-template <int WF, int R, int G, int U, bool A16, bool PIPE = false> sycl::event submit(sycl::queue &q, const xf_gemm_desc &d) {
+// PIPE: 0 = plain loop, 1 = software-pipelined loop with every tile address recomputed from the 64-bit tile index (the previous production loop),
+//       2 = software-pipelined loop with pointer-bumped addresses: all addresses are formed once before the loop and every tile load adds a constant
+//           (weights) or the activation stride to a running pointer; 32-bit loop counters and thread index (no 64-bit multiply, division or modulo in the loop).
+//           The caller guarantees the 32-bit ranges (addr32_ok); the pointers themselves stay 64-bit.
+template <int WF, int R, int G, int U, bool A16, int PIPE = 0> sycl::event submit(sycl::queue &q, const xf_gemm_desc &d) {
   using F = Fmt<WF>;
   constexpr int TPT = R * G;
   constexpr int WDW = F::stored_dw;
@@ -154,10 +159,24 @@ template <int WF, int R, int G, int U, bool A16, bool PIPE = false> sycl::event 
   constexpr size_t PLANES = A16 ? 2 : 1;
 
   return q.parallel_for(sycl::range<1>(rowblks * tgroups * segs), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
-    const size_t idx = id[0];
-    const size_t rb = idx % rowblks;
-    const size_t tg = (idx / rowblks) % tgroups;
-    const size_t seg = idx / (rowblks * tgroups);
+    size_t rb, tg, seg;
+    if constexpr (PIPE == 2) {
+      if (segs == 1 && tgroups == 1) { // every engine shape at 1 / 8 / 16 tokens: the thread index is the row block
+        rb = uint32_t(id[0]);
+        tg = 0;
+        seg = 0;
+      } else { // 32-bit index arithmetic (the thread count is below 2^31, checked by addr32_ok)
+        const uint32_t i32 = uint32_t(id[0]), rq = uint32_t(rowblks), tq = uint32_t(tgroups);
+        rb = i32 % rq;
+        tg = (i32 / rq) % tq;
+        seg = i32 / (rq * tq);
+      }
+    } else {
+      const size_t idx = id[0];
+      rb = idx % rowblks;
+      tg = (idx / rowblks) % tgroups;
+      seg = idx / (rowblks * tgroups);
+    }
 
     const int32_t *wp = W + (rb * tiles + seg * tps) * WDW;
     const size_t xoff = (seg * tps * mpad + tg * TPT) * 8; // dwords
@@ -211,7 +230,46 @@ template <int WF, int R, int G, int U, bool A16, bool PIPE = false> sycl::event 
           accl[u][g] = 0;
         }
 
-      if constexpr (PIPE) {
+      if constexpr (PIPE == 2) {
+        simd<int32_t, WDW> wa[U], wb[U];
+        simd<int32_t, XDW> xa[U], xb[U], xla[U], xlb[U];
+        const int32_t *wq = wp, *xq = X + xoff, *xlq = XL + xoff;
+#define XF_PL3(WV, XV, XLV)                                                           \
+  _Pragma("unroll") for (int u = 0; u < U; u++) {                                    \
+    WV[u].copy_from(wq);                                                              \
+    wq += WDW;                                                                        \
+    XV[u].copy_from(xq);                                                              \
+    xq += xstride;                                                                    \
+    if constexpr (A16) {                                                              \
+      XLV[u].copy_from(xlq);                                                          \
+      xlq += xstride;                                                                 \
+    }                                                                                 \
+  }
+#define XF_PC3(WV, XV, XLV)                                                           \
+  _Pragma("unroll") for (int u = 0; u < U; u++) {                                    \
+    simd<int32_t, F::opnd_dw> w = operand<WF>(WV[u]);                                \
+    _Pragma("unroll") for (int g = 0; g < G; g++) {                                  \
+      simd<int32_t, 8 * R> a = XV[u].template select<8 * R, 1>(g * 8 * R);          \
+      acc[u][g] = mac<WF, R>(acc[u][g], w, a, false);                                \
+    }                                                                                 \
+    if constexpr (A16) {                                                              \
+      _Pragma("unroll") for (int g = 0; g < G; g++) {                                \
+        simd<int32_t, 8 * R> a = XLV[u].template select<8 * R, 1>(g * 8 * R);       \
+        accl[u][g] = mac<WF, R>(accl[u][g], w, a, true);                             \
+      }                                                                               \
+    }                                                                                 \
+  }
+        const uint32_t tps32 = uint32_t(tps);
+        XF_PL3(wa, xa, xla)
+        for (uint32_t t32 = 0; t32 < tps32; t32 += 2 * U) {
+          XF_PL3(wb, xb, xlb)
+          XF_PC3(wa, xa, xla)
+          if (t32 + 2 * U < tps32) XF_PL3(wa, xa, xla)
+          XF_PC3(wb, xb, xlb)
+        }
+#undef XF_PL3
+#undef XF_PC3
+      } else if constexpr (PIPE == 1) {
         simd<int32_t, WDW> wa[U], wb[U];
         simd<int32_t, XDW> xa[U], xb[U], xla[U], xlb[U];
 #define XF_PL(WV, XV, XLV, T)                                         \
@@ -471,8 +529,14 @@ template <int WF, int MODE> sycl::event submit_exp(sycl::queue &q, const xf_gemm
   });
 }
 
+// Which integer loop: 0 plain, 1 pipelined with per-tile 64-bit address arithmetic, 2 pipelined with pointer-bumped addresses (default).
+// XF_GEMM_PIPE=0 -> 0; XF_GEMM_ADDR=old -> 1 (switch back to the previous loop without rebuilding).
 bool pipe_mode() {
   static const bool on = !(std::getenv("XF_GEMM_PIPE") && std::getenv("XF_GEMM_PIPE")[0] == '0'); // default on; XF_GEMM_PIPE=0 = the previous loop
+  return on;
+}
+bool addr_new() {
+  static const bool on = !(std::getenv("XF_GEMM_ADDR") && std::strcmp(std::getenv("XF_GEMM_ADDR"), "old") == 0);
   return on;
 }
 int pipe_u() {
@@ -481,27 +545,54 @@ int pipe_u() {
 }
 constexpr bool F_IS_FLOAT(int wf) { return wf == XF_W_BF16; }
 
+// The 32-bit quantities of the pointer-bumped loop: the thread index (rowblks * tgroups * segs), the tile counters (tiles) and the per-trip tile count.
+// Weight / activation addresses are 64-bit pointers (the base is formed in 64-bit arithmetic once per thread, the loop only adds constants or the stride),
+// so tensor sizes do not enter any 32-bit computation. Largest case in the model: head 248,320 x 5,120: 15,520 threads, 160 tiles; limits below are 2^31.
+bool addr32_ok(const xf_gemm_desc &d, int tpt) {
+  const uint64_t rowblks = uint64_t(d.rows) / 16, segs = uint64_t(d.segs);
+  const uint64_t mpad = (uint64_t(d.m) + tpt - 1) / tpt * tpt, tgroups = mpad / tpt;
+  const uint64_t tiles = uint64_t(d.cols) / (d.wfmt == XF_W_BF16 ? 16 : 32);
+  return rowblks * tgroups * segs < (1ull << 31) && tiles < (1ull << 30) && tiles * mpad * 8 < (1ull << 31) && rowblks < (1ull << 20) && tgroups < (1ull << 10) && segs < (1ull << 10);
+}
+// pipe kind for this call: 2 pointer-bumped (default), 1 per-tile 64-bit addresses, 0 plain; float formats and s8 + 16-bit activations stay plain
+int pipe_kind(const xf_gemm_desc &d, int tpt) {
+  if (!pipe_mode()) return 0;
+  if (!addr_new() || !addr32_ok(d, tpt)) return 1;
+  return 2;
+}
+
 template <int WF, bool A16> int dispatch(sycl::queue &q, const xf_gemm_desc &d) {
   switch (d.tokens_per_thread) {
-  case 1:
+  case 1: {
     // s8 with 16-bit activations and four tiles per trip (32 weight registers
     // plus two activation planes) never finishes on the B60: the kernel spins
     // at full clock. One tile per trip is fine. Observed, not understood; see
     // docs/EXPERIMENTS.md.
+    const int pk = (F_IS_FLOAT(WF) || WF == XF_W_S8) ? 0 : pipe_kind(d, 1);
     if constexpr (WF == XF_W_S8 && A16) submit<WF, 1, 1, 1, A16>(q, d);
-    else if (pipe_mode() && !F_IS_FLOAT(WF) && WF != XF_W_S8) submit<WF, 1, 1, 2, A16, true>(q, d);
+    else if (pk == 2) submit<WF, 1, 1, 2, A16, 2>(q, d);
+    else if (pk == 1) submit<WF, 1, 1, 2, A16, 1>(q, d);
     else submit<WF, 1, 1, 4, A16>(q, d);
     return XF_OK;
-  case 8:
-    if (pipe_mode() && !F_IS_FLOAT(WF)) {
-      if (pipe_u() == 1) submit<WF, 8, 1, 1, A16, true>(q, d);
-      else submit<WF, 8, 1, 2, A16, true>(q, d);
+  }
+  case 8: {
+    const int pk = F_IS_FLOAT(WF) ? 0 : pipe_kind(d, 8);
+    if (pk == 2) {
+      if (pipe_u() == 1) submit<WF, 8, 1, 1, A16, 2>(q, d);
+      else submit<WF, 8, 1, 2, A16, 2>(q, d);
+    } else if (pk == 1) {
+      if (pipe_u() == 1) submit<WF, 8, 1, 1, A16, 1>(q, d);
+      else submit<WF, 8, 1, 2, A16, 1>(q, d);
     } else submit<WF, 8, 1, 2, A16>(q, d);
     return XF_OK;
-  case 16:
-    if (pipe_mode() && !F_IS_FLOAT(WF)) submit<WF, 8, 2, 1, A16, true>(q, d);
+  }
+  case 16: {
+    const int pk = F_IS_FLOAT(WF) ? 0 : pipe_kind(d, 16);
+    if (pk == 2) submit<WF, 8, 2, 1, A16, 2>(q, d);
+    else if (pk == 1) submit<WF, 8, 2, 1, A16, 1>(q, d);
     else submit<WF, 8, 2, 1, A16>(q, d);
     return XF_OK;
+  }
   case 32: submit<WF, 8, 4, 1, A16>(q, d); return XF_OK;
   }
   xf_set_error("xf_gemm: tokens_per_thread must be 1, 8, 16 or 32");
