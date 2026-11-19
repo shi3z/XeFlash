@@ -1,0 +1,300 @@
+== rows=34816 cols=5120 m=16 (89.1 MB, 2176 row blocks): production xf_gemm (segs 1): 253.8 us
+U    RB  seg addr local        us vs prod  output vs xf_gemm
+1    1   1   2    0         228.6     90%  bit-identical
+1    1   1   2    4         228.7     90%  bit-identical
+2    1   1   2    0         348.4    137%  bit-identical
+2    1   1   2    4         354.2    140%  bit-identical
+1    1   1   3    0         228.3     90%  bit-identical
+1    1   1   3    4         228.8     90%  bit-identical
+2    1   1   3    0         403.4    159%  bit-identical
+2    1   1   3    4         405.8    160%  bit-identical
+1    2   1   2    0         252.6    100%  bit-identical
+1    2   1   2    4         254.3    100%  bit-identical
+1    1   1   0    0         244.9     96%  bit-identical
+1    1   1   0    4         245.6     97%  bit-identical
+1    1   1   1    0         246.5     97%  bit-identical
+1    1   1   1    4         247.7     98%  bit-identical
+best bit-identical variant: U=1 RB=1 seg=1 addr=3 local=0: 228.3 us (90% of production 253.8 us)
+== rows=16384 cols=5120 m=8 (41.9 MB, 1024 row blocks): production xf_gemm (segs 1): 115.3 us
+U    RB  seg addr local        us vs prod  output vs xf_gemm
+1    1   1   2    0         103.1     89%  bit-identical
+1    1   1   2    4         101.7     88%  bit-identical
+2    1   1   2    0         103.1     89%  bit-identical
+2    1   1   2    4         102.2     89%  bit-identical
+1    1   1   3    0         103.3     90%  bit-identical
+1    1   1   3    4         102.1     89%  bit-identical
+2    1   1   3    0         103.6     90%  bit-identical
+2    1   1   3    4         102.7     89%  bit-identical
+1    2   1   2    0         101.6     88%  bit-identical
+1    2   1   2    4         103.9     90%  bit-identical
+1    2   1   3    0         101.6     88%  bit-identical
+1    2   1   3    4         105.0     91%  bit-identical
+2    1   1   0    0         111.6     97%  bit-identical
+2    1   1   0    4         111.2     96%  bit-identical
+2    1   1   1    0         111.4     97%  bit-identical
+2    1   1   1    4         110.6     96%  bit-identical
+best bit-identical variant: U=1 RB=2 seg=1 addr=2 local=0: 101.6 us (88% of production 115.3 us)
+== rows=16384 cols=5120 m=16 (41.9 MB, 1024 row blocks): production xf_gemm (segs 1): 118.7 us
+U    RB  seg addr local        us vs prod  output vs xf_gemm
+1    1   1   2    0         106.4     90%  bit-identical
+1    1   1   2    4         106.1     89%  bit-identical
+2    1   1   2    0         166.3    140%  bit-identical
+2    1   1   2    4         175.1    147%  bit-identical
+1    1   1   3    0         106.3     90%  bit-identical
+1    1   1   3    4         106.2     89%  bit-identical
+2    1   1   3    0         188.9    159%  bit-identical
+2    1   1   3    4         196.4    165%  bit-identical
+1    2   1   2    0         108.6     91%  bit-identical
+1    2   1   2    4         107.5     91%  bit-identical
+1    1   1   0    0         115.0     97%  bit-identical
+1    1   1   0    4         114.1     96%  bit-identical
+1    1   1   1    0         115.1     97%  bit-identical
+1    1   1   1    4         114.0     96%  bit-identical
+best bit-identical variant: U=1 RB=1 seg=1 addr=2 local=4: 106.1 us (89% of production 118.7 us)
+== rows=14336 cols=5120 m=8 (36.7 MB, 896 row blocks): production xf_gemm (segs 1): 106.8 us
+U    RB  seg addr local        us vs prod  output vs xf_gemm
+1    1   1   2    0          94.6     89%  bit-identical
+1    1   1   2    4          90.3     85%  bit-identical
+2    1   1   2    0          94.5     89%  bit-identical
+2    1   1   2    4          90.2     85%  bit-identical
+1    1   1   3    0          94.4     88%  bit-identical
+1    1   1   3    4          90.0     84%  bit-identical
+2    1   1   3    0          95.3     89%  bit-identical
+2    1   1   3    4          90.7     85%  bit-identical
+1    2   1   2    0          89.7     84%  bit-identical
+1    2   1   2    4          91.7     86%  bit-identical
+1    2   1   3    0          89.8     84%  bit-identical
+1    2   1   3    4          92.4     87%  bit-identical
+2    1   1   0    0         103.5     97%  bit-identical
+2    1   1   0    4          98.1     92%  bit-identical
+2    1   1   1    0         102.8     96%  bit-identical
+2    1   1   1    4          98.2     92%  bit-identical
+best bit-identical variant: U=1 RB=2 seg=1 addr=2 local=0: 89.7 us (84% of production 106.8 us)
+== rows=14336 cols=5120 m=16 (36.7 MB, 896 row blocks): production xf_gemm (segs 1): 109.9 us
+U    RB  seg addr local        us vs prod  output vs xf_gemm
+1    1   1   2    0          97.3     89%  bit-identical
+1    1   1   2    4          93.7     85%  bit-identical
+2    1   1   2    0         155.3    141%  bit-identical
+2    1   1   2    4         165.2    150%  bit-identical
+1    1   1   3    0          97.3     89%  bit-identical
+1    1   1   3    4          93.5     85%  bit-identical
+2    1   1   3    0         173.4    158%  bit-identical
+2    1   1   3    4         181.2    165%  bit-identical
+1    2   1   2    0          97.1     88%  bit-identical
+1    2   1   2    4          94.4     86%  bit-identical
+1    1   1   0    0         105.8     96%  bit-identical
+1    1   1   0    4         100.9     92%  bit-identical
+1    1   1   1    0         105.8     96%  bit-identical
+1    1   1   1    4         100.8     92%  bit-identical
+best bit-identical variant: U=1 RB=1 seg=1 addr=3 local=4: 93.5 us (85% of production 109.9 us)
+== rows=5120 cols=17408 m=8 (44.6 MB, 320 row blocks): production xf_gemm (segs 2): 131.7 us
+U    RB  seg addr local        us vs prod  output vs xf_gemm
+1    1   1   2    0         129.8     99%  bit-identical
+1    1   1   2    4         116.6     89%  bit-identical
+1    1   2   2    0         123.4     94%  bit-identical
+1    1   2   2    4         123.4     94%  bit-identical
+1    1   4   2    0         126.4     96%  bit-identical
+1    1   4   2    4         126.2     96%  bit-identical
+2    1   1   2    0         124.5     95%  bit-identical
+2    1   1   2    4         111.4     85%  bit-identical
+2    1   2   2    0         121.1     92%  bit-identical
+2    1   2   2    4         121.4     92%  bit-identical
+2    1   4   2    0         126.0     96%  bit-identical
+2    1   4   2    4         125.9     96%  bit-identical
+1    1   1   3    0         130.1     99%  bit-identical
+1    1   1   3    4         117.0     89%  bit-identical
+1    1   2   3    0         123.3     94%  bit-identical
+1    1   2   3    4         123.5     94%  bit-identical
+1    1   4   3    0         126.2     96%  bit-identical
+1    1   4   3    4         125.8     96%  bit-identical
+2    1   1   3    0         125.7     95%  bit-identical
+2    1   1   3    4         111.9     85%  bit-identical
+2    1   2   3    0         121.0     92%  bit-identical
+2    1   2   3    4         121.6     92%  bit-identical
+2    1   4   3    0         126.4     96%  bit-identical
+2    1   4   3    4         126.0     96%  bit-identical
+1    2   1   2    0         186.6    142%  bit-identical
+1    2   1   2    4         118.5     90%  bit-identical
+1    2   2   2    0         129.2     98%  bit-identical
+1    2   2   2    4         122.1     93%  bit-identical
+1    2   4   2    0         127.9     97%  bit-identical
+1    2   4   2    4         126.8     96%  bit-identical
+1    2   1   3    0         182.8    139%  bit-identical
+1    2   1   3    4         116.9     89%  bit-identical
+1    2   2   3    0         131.3    100%  bit-identical
+1    2   2   3    4         123.5     94%  bit-identical
+1    2   4   3    0         129.1     98%  bit-identical
+1    2   4   3    4         126.9     96%  bit-identical
+2    1   1   0    0         133.1    101%  bit-identical
+2    1   1   0    4         120.5     91%  bit-identical
+2    1   2   0    0         128.7     98%  bit-identical
+2    1   2   0    4         128.1     97%  bit-identical
+2    1   4   0    0         135.4    103%  bit-identical
+2    1   4   0    4         135.4    103%  bit-identical
+2    1   1   1    0         132.5    101%  bit-identical
+2    1   1   1    4         119.7     91%  bit-identical
+2    1   2   1    0         128.2     97%  bit-identical
+2    1   2   1    4         128.6     98%  bit-identical
+2    1   4   1    0         135.2    103%  bit-identical
+2    1   4   1    4         135.3    103%  bit-identical
+best bit-identical variant: U=2 RB=1 seg=1 addr=2 local=4: 111.4 us (85% of production 131.7 us)
+== rows=5120 cols=17408 m=16 (44.6 MB, 320 row blocks): production xf_gemm (segs 2): 159.2 us
+U    RB  seg addr local        us vs prod  output vs xf_gemm
+1    1   1   2    0         187.6    118%  bit-identical
+1    1   1   2    4         164.9    104%  bit-identical
+1    1   2   2    0         149.7     94%  bit-identical
+1    1   2   2    4         164.8    104%  bit-identical
+1    1   4   2    0         147.1     92%  bit-identical
+1    1   4   2    4         147.1     92%  bit-identical
+2    1   1   2    0         466.3    293%  bit-identical
+2    1   1   2    4         436.2    274%  bit-identical
+2    1   2   2    0         278.3    175%  bit-identical
+2    1   2   2    4         323.9    204%  bit-identical
+2    1   4   2    0         195.3    123%  bit-identical
+2    1   4   2    4         205.7    129%  bit-identical
+1    1   1   3    0         187.4    118%  bit-identical
+1    1   1   3    4         167.3    105%  bit-identical
+1    1   2   3    0         149.4     94%  bit-identical
+1    1   2   3    4         160.4    101%  bit-identical
+1    1   4   3    0         147.1     92%  bit-identical
+1    1   4   3    4         146.9     92%  bit-identical
+2    1   1   3    0         505.7    318%  bit-identical
+2    1   1   3    4         472.1    297%  bit-identical
+2    1   2   3    0         286.7    180%  bit-identical
+2    1   2   3    4         277.3    174%  bit-identical
+2    1   4   3    0         195.2    123%  bit-identical
+2    1   4   3    4         202.5    127%  bit-identical
+1    2   1   2    0         237.2    149%  bit-identical
+1    2   1   2    4         192.2    121%  bit-identical
+1    2   2   2    0         176.3    111%  bit-identical
+1    2   2   2    4         172.6    108%  bit-identical
+1    2   4   2    0         150.8     95%  bit-identical
+1    2   4   2    4         147.5     93%  bit-identical
+1    1   1   0    0         194.5    122%  bit-identical
+1    1   1   0    4         171.9    108%  bit-identical
+1    1   2   0    0         156.1     98%  bit-identical
+1    1   2   0    4         165.9    104%  bit-identical
+1    1   4   0    0         157.1     99%  bit-identical
+1    1   4   0    4         156.9     99%  bit-identical
+1    1   1   1    0         193.5    122%  bit-identical
+1    1   1   1    4         178.3    112%  bit-identical
+1    1   2   1    0         156.2     98%  bit-identical
+1    1   2   1    4         175.7    110%  bit-identical
+1    1   4   1    0         157.7     99%  bit-identical
+1    1   4   1    4         158.1     99%  bit-identical
+best bit-identical variant: U=1 RB=1 seg=4 addr=3 local=4: 146.9 us (92% of production 159.2 us)
+== rows=5120 cols=6144 m=8 (15.7 MB, 320 row blocks): production xf_gemm (segs 1): 66.3 us
+U    RB  seg addr local        us vs prod  output vs xf_gemm
+1    1   1   2    0          60.0     91%  bit-identical
+1    1   1   2    4          56.2     85%  bit-identical
+1    1   2   2    0          77.2    117%  bit-identical
+1    1   2   2    4          79.4    120%  bit-identical
+1    1   4   2    0          99.3    150%  bit-identical
+1    1   4   2    4         100.5    152%  bit-identical
+2    1   1   2    0          56.6     85%  bit-identical
+2    1   1   2    4          52.7     80%  bit-identical
+2    1   2   2    0          73.1    110%  bit-identical
+2    1   2   2    4          75.9    115%  bit-identical
+2    1   4   2    0          97.9    148%  bit-identical
+2    1   4   2    4          97.3    147%  bit-identical
+1    1   1   3    0          60.6     91%  bit-identical
+1    1   1   3    4          56.5     85%  bit-identical
+1    1   2   3    0          75.7    114%  bit-identical
+1    1   2   3    4          80.2    121%  bit-identical
+1    1   4   3    0          98.6    149%  bit-identical
+1    1   4   3    4         100.4    151%  bit-identical
+2    1   1   3    0          56.4     85%  bit-identical
+2    1   1   3    4          52.8     80%  bit-identical
+2    1   2   3    0          74.6    113%  bit-identical
+2    1   2   3    4          75.0    113%  bit-identical
+2    1   4   3    0          97.0    146%  bit-identical
+2    1   4   3    4          95.2    144%  bit-identical
+1    2   1   2    0          89.9    136%  bit-identical
+1    2   1   2    4          59.7     90%  bit-identical
+1    2   2   2    0          85.9    130%  bit-identical
+1    2   2   2    4          73.3    111%  bit-identical
+1    2   4   2    0          89.9    136%  bit-identical
+1    2   4   2    4          93.3    141%  bit-identical
+1    2   1   3    0          89.1    134%  bit-identical
+1    2   1   3    4          60.6     91%  bit-identical
+1    2   2   3    0          86.9    131%  bit-identical
+1    2   2   3    4          74.8    113%  bit-identical
+1    2   4   3    0          89.8    135%  bit-identical
+1    2   4   3    4          93.9    142%  bit-identical
+2    1   1   0    0          63.1     95%  bit-identical
+2    1   1   0    4          59.4     90%  bit-identical
+2    1   2   0    0          80.9    122%  bit-identical
+2    1   2   0    4          82.1    124%  bit-identical
+2    1   4   0    0         106.6    161%  bit-identical
+2    1   4   0    4         104.1    157%  bit-identical
+2    1   1   1    0          62.9     95%  bit-identical
+2    1   1   1    4          58.7     89%  bit-identical
+2    1   2   1    0          81.6    123%  bit-identical
+2    1   2   1    4          81.9    124%  bit-identical
+2    1   4   1    0         106.3    160%  bit-identical
+2    1   4   1    4         104.9    158%  bit-identical
+best bit-identical variant: U=2 RB=1 seg=1 addr=2 local=4: 52.7 us (80% of production 66.3 us)
+== rows=5120 cols=6144 m=16 (15.7 MB, 320 row blocks): production xf_gemm (segs 1): 77.1 us
+U    RB  seg addr local        us vs prod  output vs xf_gemm
+1    1   1   2    0          65.0     84%  bit-identical
+1    1   1   2    4          58.4     76%  bit-identical
+1    1   2   2    0          89.1    116%  bit-identical
+1    1   2   2    4          94.9    123%  bit-identical
+1    1   4   2    0         117.5    152%  bit-identical
+1    1   4   2    4         126.2    164%  bit-identical
+2    1   1   2    0         133.9    174%  bit-identical
+2    1   1   2    4         129.4    168%  bit-identical
+2    1   2   2    0         130.3    169%  bit-identical
+2    1   2   2    4         135.3    176%  bit-identical
+2    1   4   2    0         144.7    188%  bit-identical
+2    1   4   2    4         147.5    191%  bit-identical
+1    1   1   3    0          65.0     84%  bit-identical
+1    1   1   3    4          57.9     75%  bit-identical
+1    1   2   3    0          89.2    116%  bit-identical
+1    1   2   3    4          95.0    123%  bit-identical
+1    1   4   3    0         117.3    152%  bit-identical
+1    1   4   3    4         126.5    164%  bit-identical
+2    1   1   3    0         148.0    192%  bit-identical
+2    1   1   3    4         140.7    183%  bit-identical
+2    1   2   3    0         134.6    175%  bit-identical
+2    1   2   3    4         136.6    177%  bit-identical
+2    1   4   3    0         144.8    188%  bit-identical
+2    1   4   3    4         148.0    192%  bit-identical
+1    2   1   2    0          96.2    125%  bit-identical
+1    2   1   2    4          73.6     95%  bit-identical
+1    2   2   2    0         103.0    134%  bit-identical
+1    2   2   2    4          88.4    115%  bit-identical
+1    2   4   2    0         106.3    138%  bit-identical
+1    2   4   2    4         115.4    150%  bit-identical
+1    1   1   0    0          72.5     94%  bit-identical
+1    1   1   0    4          65.5     85%  bit-identical
+1    1   2   0    0          95.6    124%  bit-identical
+1    1   2   0    4         100.1    130%  bit-identical
+1    1   4   0    0         129.0    167%  bit-identical
+1    1   4   0    4         136.1    177%  bit-identical
+1    1   1   1    0          73.1     95%  bit-identical
+1    1   1   1    4          66.9     87%  bit-identical
+1    1   2   1    0          95.5    124%  bit-identical
+1    1   2   1    4         101.1    131%  bit-identical
+1    1   4   1    0         128.2    166%  bit-identical
+1    1   4   1    4         135.7    176%  bit-identical
+best bit-identical variant: U=1 RB=1 seg=1 addr=3 local=4: 57.9 us (75% of production 77.1 us)
+== rows=248320 cols=5120 m=8 (635.7 MB, 15520 row blocks): production xf_gemm (segs 1): 1568.5 us
+U    RB  seg addr local        us vs prod  output vs xf_gemm
+1    1   1   2    0        1508.6     96%  bit-identical
+1    1   1   2    4        1502.6     96%  bit-identical
+2    1   1   2    0        1507.1     96%  bit-identical
+2    1   1   2    4        1499.1     96%  bit-identical
+1    1   1   3    0        1508.4     96%  bit-identical
+1    1   1   3    4        1503.1     96%  bit-identical
+2    1   1   3    0        1508.7     96%  bit-identical
+2    1   1   3    4        1500.6     96%  bit-identical
+1    2   1   2    0        1667.5    106%  bit-identical
+1    2   1   2    4        1669.5    106%  bit-identical
+1    2   1   3    0        1677.9    107%  bit-identical
+1    2   1   3    4        1677.6    107%  bit-identical
+2    1   1   0    0        1544.7     98%  bit-identical
+2    1   1   0    4        1545.0     99%  bit-identical
+2    1   1   1    0        1547.1     99%  bit-identical
+2    1   1   1    4        1617.7    103%  bit-identical
+best bit-identical variant: U=2 RB=1 seg=1 addr=2 local=4: 1499.1 us (96% of production 1568.5 us)

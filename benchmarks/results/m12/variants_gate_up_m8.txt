@@ -1,0 +1,19 @@
+== rows=34816 cols=5120 m=8 (89.1 MB, 2176 row blocks): production xf_gemm (segs 1): 243.5 us
+U    RB  seg addr local        us vs prod  output vs xf_gemm
+1    1   1   2    0         220.2     90%  bit-identical
+1    1   1   2    4         220.8     91%  bit-identical
+2    1   1   2    0         216.6     89%  bit-identical
+2    1   1   2    4         216.7     89%  bit-identical
+1    1   1   3    0         220.1     90%  bit-identical
+1    1   1   3    4         221.4     91%  bit-identical
+2    1   1   3    0         216.8     89%  bit-identical
+2    1   1   3    4         217.5     89%  bit-identical
+1    2   1   2    0         230.4     95%  bit-identical
+1    2   1   2    4         231.9     95%  bit-identical
+1    2   1   3    0         231.7     95%  bit-identical
+1    2   1   3    4         233.4     96%  bit-identical
+2    1   1   0    0         233.5     96%  bit-identical
+2    1   1   0    4         232.4     95%  bit-identical
+2    1   1   1    0         235.1     97%  bit-identical
+2    1   1   1    4         234.7     96%  bit-identical
+best bit-identical variant: U=2 RB=1 seg=1 addr=2 local=0: 216.6 us (89% of production 243.5 us)

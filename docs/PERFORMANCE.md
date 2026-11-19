@@ -1477,3 +1477,50 @@ the 1-token kernel uses `dpas.8x1` (a repeat count of 1: one eighth of the work 
 ### M7. Estimates against measurements
 Measured: all times, bytes, dpas counts (static from the ISA, dynamic = tiles x planes x groups), GRF / SLM / spill, thread counts, peak XMX and sustained read rates of the synthetic probes. Estimated (no counters): XMX busy share (= DPAS-only time / call time), stall split between memory and compute (from the read-only and DPAS-only kernels),
 occupancy-based limits (from the chain / thread scaling probe), the fixed launch cost (from the fit), the unexplained 17 us.
+
+
+## Part N. Why the production xf_gemm is 7 to 11% slower than the same loop in a probe: instruction comparison and variant sweep (production kernel not changed)
+
+Tools: `kernels/probe/gemm_variants.cpp` (experimental copies of the 8 / 16-token s4 loop that share libxfk's queue, so their output is compared **bit for bit** with `xf_gemm` on the same buffers and their time is measured in the same harness),
+`call_xfgemm.cpp`, `xmx_probe.cpp`; ISA from ocloc disassembly of the IGC-dumped kernels. Raw data: `benchmarks/results/m12/variants_*.txt`, `loop_compare.txt`.
+
+### N1. Loads, DPAS and dependencies in the main loop (gate+up, 8 tokens; one trip = 4 tiles = 2 stages of U = 2)
+| kernel | instructions per trip | `dpas.8x8` | loads (`send.ugm`, 256 B each) | integer ALU incl. mov | 64-bit multiply (`mul`/`macl`/`mach`) | GRF | spill | us |
+|---|---:|---:|---:|---:|---:|---:|---|---:|
+| production `xf_gemm` | 91 | 8 | 12 | 46 | 24 | 128 | no | 243.5 |
+| variant ADDR=1 (production's address arithmetic) | 91 | 8 | 12 | 64 | 24 | 128 | no | 235.1 |
+| variant ADDR=0 (constant offsets, 64-bit loop counters and division) | 53 | 8 | 12 | 22 | 0 | 128 | no | 233.5 |
+| variant ADDR=2 (32-bit counters, no division, pointers advanced once per trip) | 49 | 8 | 12 | 17 | 0 | 128 | no | 216.6 |
+| **variant ADDR=3 (initial addresses computed outside the loop, pointer += stride after every tile)** | **40** | 8 | 12 | **14** | **0** | 128 | no | **216.8** |
+| probe mode 8 (constant strides) | 39 | 8 | 12 | 13 | 0 | 128 | no | 216.0 |
+- **The loads (12 x 256 B per trip, the same message descriptor) and the DPAS (8 per trip, two groups of 4 issued back to back with `{Atomic}`, 4 independent accumulators) are identical.** The difference is the integer arithmetic in between.
+- Production recomputes each tile's address from the tile index with 64-bit multiplications (`mul` -> `macl` -> `mach` -> `add3`, 24 instructions per trip) and 64-bit compares for the loop condition; **every `send` carries an integer dependency (`{I@n}`) on its address chain**, so the 12 loads are issued spread over about 60 instructions
+  instead of back to back (variant ADDR=3 / probe: 12 loads inside 16 instructions, immediate offsets). Later requests leave the thread later, fewer are in flight at a time.
+- Before the loop the production kernel also divides (64-bit `idx % rowblks`, `idx / rowblks`, `tiles / segs`): +7 us on gate+up (probe mode 10 against mode 9).
+- GRF 128 for every kernel: 8 resident threads per EU, 1,280 in the machine; no spill, no SLM, no barrier. Launched threads: gate+up 2,176 (1.7 waves of resident threads), GDN in-proj 1,024, attention qkv 896, down and out projection 320 (2.0 per EU).
+  Large-GRF mode (256 GRF, 4 threads per EU) was not used or needed (nothing spills).
+
+### N2. Variant sweep: how far the production time goes down (output bit-identical to `xf_gemm` for every row below; 2-stage software pipeline, one thread = RB row blocks x all tiles of a segment)
+Time of one call, cold weights, in-order queue, us.
+| shape | m | production | best variant | % of production | best configuration |
+|---|---:|---:|---:|---:|---|
+| gate+up 34816 x 5120 | 8 | 243.5 | **216.6** | 89% | U=2, 1 segment, ADDR=2 / 3 |
+| gate+up | 16 | 253.8 | 228.3 | 90% | U=1, 1 segment, ADDR=3 |
+| GDN in-proj 16384 x 5120 | 8 | 115.3 | 101.6 | 88% | U=1, RB=2 (activation tiles loaded once for two row blocks) |
+| GDN in-proj | 16 | 118.7 | 106.1 | 89% | U=1 |
+| attention qkv 14336 x 5120 | 8 | 106.8 | 89.7 | 84% | U=1, RB=2 |
+| attention qkv | 16 | 109.9 | 93.5 | 85% | U=1 |
+| down 5120 x 17408 | 8 | 131.7 (2 segments) | 111.4 | 85% | U=2, **1 segment** (no combine kernel) |
+| down | 16 | 159.2 (2 segments) | 146.9 | 92% | U=1, 4 segments |
+| out projection 5120 x 6144 | 8 | 66.3 | 52.7 | **80%** | U=2, 1 segment |
+| out projection | 16 | 77.1 | 57.9 | **75%** | U=1, 1 segment |
+| lm_head 248320 x 5120 | 8 | 1568.5 | 1499.1 | 96% | U=2 |
+Effect of each knob (gate+up, 8 tokens; the others behave alike): address arithmetic is the dominant one (ADDR=1 235 us -> ADDR=3 217 us); **work-group size does not matter** (plain range, 1, 4, 16 threads per work-group: within 1 to 2 us); U = 4 tiles per stage is 30% slower (register pressure) and
+RB = 2 helps only the two 14 to 16 thousand row matrices (the activation traffic is halved) and hurts gate+up (+8% to +20%); more column segments help only down at 16 tokens (4) and cost a combine kernel everywhere else.
+Estimate (isolated calls, not an engine run): replacing the production GEMM loop by these variants would save per 8-row pass 64 x 26.9 (gate+up) + 64 x 20.3 (down) + 48 x 13.7 (GDN in-proj) + 16 x 17.1 (attention qkv) + 64 x 13.6 (out projection) + 0.07 ms (head) = **4.9 ms** (about 10% of the 46 ms pass; the 16-row pass 4.5 ms).
+The production epilogue (loading scales, offsets) accounts for the remaining ~8 us between ADDR=1 (235) and production (243) on gate+up.
+
+### N3. What this settles
+- The 17 us left unexplained in Part M are the 64-bit division / modulo (+7 us), the 64-bit loop counters and compares and the 64-bit multiplications of the address arithmetic (together +17 us to ADDR=0 / 1), plus ~8 us in the production prologue / epilogue: all integer overhead around identical loads and DPAS.
+- With 32-bit arithmetic and plain pointer increments the same loop reaches the probe's time (216.6 against 216.0 us), which is 1.7% above the read-only kernel of the same layout (213.8 us): **gate+up is then within 2% of the read floor; the narrow matrices (out projection 52.7 us, floor 46 us from the fit) within 15%.**
+- Not done: the production kernel was not modified; the variants were checked on random weights and activations against `xf_gemm`, not on the model's weights; the saving is an estimate from isolated calls.

@@ -1,0 +1,13 @@
+== production xf_gemm submit<0,8,1,2,true,true>: GRF 128, spill no, asm lines 806
+   main loop: 93 lines, 91 instructions, dpas 8, send 12, sync 5, mov 10, add/mul/mad/shl/and/or (ALU) 46, jumps 2
+   top classes: add 13, mul 12, send 12, mov 10, macl 8, dpas 8, shl 5, sync 5, mach 4, add3 4, or 3, cmp 3
+== probe mode 0: GRF 128, spill no, asm lines 80
+== probe mode 8: GRF 128, spill no, asm lines 166
+   main loop: 41 lines, 39 instructions, dpas 8, send 12, sync 3, mov 1, add/mul/mad/shl/and/or (ALU) 13, jumps 2
+   top classes: send 12, dpas 8, add 6, sync 3, cmp 3, sel 2, jmpi 2, shl 1, mov 1, or 1
+== probe mode 9: GRF 128, spill no, asm lines 238
+   main loop: 41 lines, 39 instructions, dpas 8, send 12, sync 3, mov 1, add/mul/mad/shl/and/or (ALU) 13, jumps 2
+   top classes: send 12, dpas 8, add 6, sync 3, cmp 3, sel 2, jmpi 2, shl 1, mov 1, or 1
+== probe mode 11: GRF 128, spill no, asm lines 421
+   main loop: 132 lines, 130 instructions, dpas 8, send 12, sync 4, mov 18, add/mul/mad/shl/and/or (ALU) 70, jumps 2
+   top classes: mul 24, mov 18, macl 16, add 13, send 12, shl 8, mach 8, add3 8, dpas 8, or 4, sync 4, cmp 3

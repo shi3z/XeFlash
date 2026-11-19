@@ -243,7 +243,7 @@ static void run_cfg(queue &q, const char *label, size_t N, size_t K, int m) {
     const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / reps;
     printf("  %-42s %9.1f %9.0f %9.1f %11.1f%%\n", names[mode], us, bytes / us / 1e3, ops / us / 1e6, 100 * ops / us / 1e6 / 196.5);
   };
-#define MODE_RUN(M) timeit([&](int r) { launch<R, G, U, M>(q, bufs[r % nbuf], X, XL, out, rowblks, tiles, size_t(XDW_RT) + size_t(std::getenv("PROBE_NEVER") ? 1 : 0), size_t(64)); }, M);
+#define MODE_RUN(M) if (!std::getenv("PROBE_MODE") || std::atoi(std::getenv("PROBE_MODE")) == M) timeit([&](int r) { launch<R, G, U, M>(q, bufs[r % nbuf], X, XL, out, rowblks, tiles, size_t(XDW_RT) + size_t(std::getenv("PROBE_NEVER") ? 1 : 0), size_t(64)); }, M);
   MODE_RUN(0) MODE_RUN(1) MODE_RUN(2) MODE_RUN(3) MODE_RUN(4) MODE_RUN(5) MODE_RUN(6) MODE_RUN(7) MODE_RUN(8) MODE_RUN(9) MODE_RUN(10) MODE_RUN(11)
 #undef MODE_RUN
   for (auto p : bufs) free(p, q);
