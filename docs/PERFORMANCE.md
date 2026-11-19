@@ -1900,3 +1900,19 @@ Setup as in Part P (`gpu-hotspots`, `ptrace_scope` / `perf_event_paranoid` lower
 - The two programs contain the host-device copies of the benchmark scaffolding (`zeCommandListAppendMemoryCopy`, 5 to 6 s in total) and warm-up passes, so their totals are not a per-pass breakdown; the per-kernel averages (e.g. the 1-row GEMM 78 to 209 us, `k_gdn_core` 37 to 55 us, `k_mlp_act` 25 us, `k_addnorm_quant` 5 us) are usable, the cycle split between Main and drafter was not extracted from them.
 - GEMM kernels dominate GPU task time; XMX pipe active 13.6 to 14.6% for the 16-row GEMMs in the engine, 9 to 9.4% for the 8-row ones, about 1% for the 1-row ones (the same numbers as in the micro benchmark). The DRAM read figures of the engine profile (216 to 224 GB/s for the GEMMs) are time averages that include launch gaps and are not comparable with the micro benchmark.
 - Not done: a per-pass timeline (kernel gaps inside one verify pass, kernel launch count per pass for the comparison with the 5060 Ti's ~850), and instruction-level attribution (`source-analysis` collects but the JIT-compiled ESIMD kernels have no code mapping).
+
+## Part S. Work-group size 2 / 4 / 8 for down and out projection (m=8/16, B60)
+Same conditions for all three: interleaved unit bench, 5 rounds (`benchmarks/results/m19/wg248_unit.txt`), engine pass time, 3 repeats per size (`wg248_pass.txt`, `unprofiled:` values of the first three profile lines; mapping of the columns to row counts is inferred, not verified).
+
+| shape | wg=2 us | wg=4 us | wg=8 us |
+|---|---:|---:|---:|
+| mlp.down m=8 | 111.16 | 111.24 | 111.34 |
+| mlp.down m=16 | 132.00 | 132.08 | 132.16 |
+| out_proj m=8 | 50.56 | 50.86 | 50.90 |
+| out_proj m=16 | 57.32 | 57.08 | 56.76 |
+
+Engine pass (ms): wg=2 37.71 / 41.26 / 46.20; wg=4 37.72 / 41.27 / 46.21; wg=8 37.72 / 41.32 / 46.25.
+
+- Differences are at most 0.6% in the unit bench, within round-to-round noise, with no consistent direction (out_proj m=8 favours 2, m=16 favours 8).
+- Pass time: 2 and 4 are identical; 8 is 0.04 to 0.06 ms slower in all 3 repeats.
+- Conclusion: the default of 4 stays; there is nothing to gain from the work-group size any more. Remaining headroom for the out projection is load parallelism per thread (not started).
