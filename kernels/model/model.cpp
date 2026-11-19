@@ -319,6 +319,81 @@ void k_addnorm(Q &q, float *h, const float *y, const float *gain, float *xn, flo
   });
 }
 
+
+// RMSNorm + activation quantisation of the next GEMM in one kernel: the work-group of a token already holds the normalised row, so after the
+// norm it finds the row maximum (SLM), quantises its own 128 columns with the next matrix's column scales and writes the two byte planes and
+// the token constants exactly as k_quant would (same expressions, same order: bit-identical). xn is still written (the f32 gate gemv reads it).
+void k_addnorm_quant(Q &q, float *h, const float *y, const float *gain, float *xn, const float *cs, float cmax, int8_t *xhi, uint8_t *xlo, float *ts,
+                     float *toff, int m, int mpad) {
+  constexpr int LT = D / 128; // 40 threads
+  q.parallel_for(sycl::nd_range<1>(size_t(m) * LT, LT), [=](sycl::nd_item<1> it) SYCL_ESIMD_KERNEL {
+    es::slm_init<1024>();
+    const size_t mi = it.get_group(0), t = it.get_local_id(0);
+    const simd<int32_t, 64> iota(0, 1);
+    simd<float, 64> a[2];
+#pragma unroll
+    for (int i = 0; i < 2; i++) {
+      a[i].copy_from(h + mi * D + t * 128 + i * 64);
+      if (y) {
+        simd<float, 64> b;
+        b.copy_from(y + mi * D + t * 128 + i * 64);
+        a[i] += b;
+        a[i].copy_to(h + mi * D + t * 128 + i * 64);
+      }
+    }
+    es::slm_scalar_store<float>(uint32_t(t * 4), hsum<64>(a[0] * a[0] + a[1] * a[1]));
+    es::barrier();
+    simd<float, 64> part = es::slm_block_load<float, 64>(0);
+    part.merge(simd<float, 64>(0.0f), iota >= LT);
+    const float inv = srsqrt(hsum<64>(part) * (1.0f / D) + EPS);
+    simd<float, 64> v[2];
+    float lmax = 0.0f;
+#pragma unroll
+    for (int i = 0; i < 2; i++) {
+      simd<float, 64> g;
+      g.copy_from(gain + t * 128 + i * 64);
+      v[i] = a[i] * inv * g;
+      v[i].copy_to(xn + mi * D + t * 128 + i * 64);
+      lmax = std::max(lmax, hmax<64>(es::abs(v[i])));
+    }
+    es::slm_scalar_store<float>(uint32_t(256 + t * 4), lmax);
+    es::barrier();
+    simd<float, 64> pm = es::slm_block_load<float, 64>(256);
+    pm.merge(simd<float, 64>(0.0f), iota >= LT);
+    float step = hmax<64>(pm) * cmax * (1.0f / 32767.0f);
+    if (!(step > 0.0f)) step = 1.0f;
+    const float istep = 1.0f / step;
+    simd<float, 64> sum(0.0f);
+#pragma unroll
+    for (int i = 0; i < 2; i++) {
+      const size_t c = t * 2 + i;
+      simd<float, 64> sc;
+      sc.copy_from(cs + c * 64);
+      simd<float, 64> r = es::rnde<float>(v[i] * sc * istep);
+      r = es::max(es::min(r, simd<float, 64>(32767.0f)), simd<float, 64>(-32767.0f));
+      sum += r;
+      simd<int32_t, 64> xi = es::convert<int32_t>(r);
+      simd<int8_t, 64> hb = es::convert<int8_t>(xi >> 8);
+      simd<uint8_t, 64> lb = es::convert<uint8_t>(xi & 0xFF);
+#pragma unroll
+      for (int half = 0; half < 2; half++) {
+        simd<int8_t, 32> aa = hb.template select<32, 1>(32 * half);
+        simd<uint8_t, 32> bb = lb.template select<32, 1>(32 * half);
+        aa.copy_to(xhi + ((2 * c + half) * mpad + mi) * 32);
+        bb.copy_to(xlo + ((2 * c + half) * mpad + mi) * 32);
+      }
+    }
+    es::slm_scalar_store<float>(uint32_t(512 + t * 4), hsum<64>(sum));
+    es::barrier();
+    if (t == 0) {
+      simd<float, 64> ps = es::slm_block_load<float, 64>(512);
+      ps.merge(simd<float, 64>(0.0f), iota >= LT);
+      storef(toff + mi, 0.5f * hsum<64>(ps));
+      storef(ts + mi, step);
+    }
+  });
+}
+
 // Activation quantisation for one GEMM: x' = v * col_scale, 16-bit, two byte
 // planes in DPAS tile order. step = max|v| * max(col_scale) / 32767.
 void k_quant(Q &q, const float *v, size_t vs, int n, const float *cs, float cmax, const float *pmax, int m, int mpad,
@@ -381,11 +456,17 @@ void k_gemv_f32(Q &q, const float *w, const float *x, float *y, int rows, int m)
   q.parallel_for(sycl::range<1>(size_t(m) * rows), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
     const size_t mi = id[0] / rows, r = id[0] % rows;
     simd<float, 64> acc(0.0f);
-    for (int c = 0; c < D / 64; c++) {
-      simd<float, 64> a, b;
-      a.copy_from(w + r * D + c * 64);
-      b.copy_from(x + mi * D + c * 64);
-      acc += a * b;
+    // The 80 chunks are requested 8 at a time before they are used (the loads of a chunk no longer wait for the multiply-add of the previous one);
+    // the multiply-adds keep the original order, so the result is bit-identical.
+    for (int c0 = 0; c0 < D / 64; c0 += 8) {
+      simd<float, 64> a[8], b[8];
+#pragma unroll
+      for (int u = 0; u < 8; u++) {
+        a[u].copy_from(w + r * D + (c0 + u) * 64);
+        b[u].copy_from(x + mi * D + (c0 + u) * 64);
+      }
+#pragma unroll
+      for (int u = 0; u < 8; u++) acc += a[u] * b[u];
     }
     // a: rows 0..47 -> 0..47 ; b: rows 48..95 -> 64..111
     storef(y + mi * 128 + (r < 48 ? r : r + 16), hsum<64>(acc));
@@ -1828,6 +1909,7 @@ struct Pass {
   Timer tm;
   bool pending = false; // ws.y still has to be added to ws.h
   int gemm_cat = P_GEMM; // profile category of the next GEMM (the head has its own)
+  const xf_mat *quantised = nullptr; // matrix whose quantised input the last norm kernel already wrote
 
   // y[m][rows] = mat (v[m][cols]) ; pmax must describe v.
   // `vs` is the row stride of v (0 = mat.cols). The output row stride is mat.rows.
@@ -1838,8 +1920,12 @@ struct Pass {
     Q &q = ctx->q;
     const int m = one ? 1 : this->m, mpad = one ? 1 : this->mpad, tpt = one ? 1 : this->tpt;
     const float *pmax = pm ? pm : ws.pmax;
-    k_quant(q, v, vs ? vs : size_t(mat.cols), mat.cols, mat.cs, mat.cmax, pmax, m, mpad, ws.xhi, ws.xlo, ws.ts, ws.toff);
-    tm.tick(P_QUANT, "act-quant");
+    if (quantised == &mat && v == ws.xn) {
+      quantised = nullptr; // the norm kernel already produced the byte planes of this matrix
+    } else {
+      k_quant(q, v, vs ? vs : size_t(mat.cols), mat.cols, mat.cs, mat.cmax, pmax, m, mpad, ws.xhi, ws.xlo, ws.ts, ws.toff);
+      tm.tick(P_QUANT, "act-quant");
+    }
     xf_gemm_desc d{};
     d.wfmt = mat.fmt;
     d.rows = mat.rows;
@@ -1880,7 +1966,15 @@ struct Pass {
   }
 
   // RMSNorm of the residual stream; folds in the pending residual add.
-  void norm(const float *gain) {
+  void norm(const float *gain, const xf_mat *next = nullptr) {
+    static const bool fuse = !(std::getenv("XF_FUSE") && std::getenv("XF_FUSE")[0] == '0'); // XF_FUSE=0: separate norm and quantisation kernels
+    if (fuse && next && next->rows > 0 && next->cols == D) {
+      k_addnorm_quant(ctx->q, ws.h, pending ? ws.y : nullptr, gain, ws.xn, next->cs, next->cmax, ws.xhi, ws.xlo, ws.ts, ws.toff, m, mpad);
+      pending = false;
+      quantised = next;
+      tm.tick(P_NORM, "addnorm+quant");
+      return;
+    }
     k_addnorm(ctx->q, ws.h, pending ? ws.y : nullptr, gain, ws.xn, ws.pmax, m);
     pending = false;
     tm.tick(P_NORM, "addnorm");
@@ -1896,7 +1990,7 @@ struct Pass {
     Q &q = ctx->q;
     const bool merged = L.m[gi + 1].rows == 0;
     const size_t gs = 2 * FF;
-    norm(L.ln2);
+    norm(L.ln2, &L.m[gi]);
     if (merged) {
       if (int st = gemm(L.m[gi], ws.xn, ws.g)) return st; // rows = 2 * FF: [gate | up] per token
     } else {
@@ -1922,7 +2016,7 @@ struct Pass {
     const size_t rs = merged ? QKVZ : QKV;
     const float *z = merged ? s.raw + QKV : ws.yz;
     const size_t zs = merged ? QKVZ : VD;
-    norm(L.ln1);
+    norm(L.ln1, &L.m[0]);
     if (int st = gemm(L.m[0], ws.xn, s.raw)) return st;
     if (!merged)
       if (int st = gemm(L.m[1], ws.xn, ws.yz)) return st;
@@ -1948,7 +2042,7 @@ struct Pass {
     AttnState s = carve_attn(L.state, md->ctx);
     const size_t nbs = size_t(md->ctx) / 64 + 1;
     const bool merged = L.m[1].rows == 0; // m[0] is q+k+v stacked
-    norm(L.ln1);
+    norm(L.ln1, &L.m[0]);
     const float *yk, *yv;
     size_t qs, ks;
     if (merged) {
