@@ -1,0 +1,5 @@
+[
+  {"prompt":"code","drafter":"bd2:fixed8","block":8,"tok_per_s":109.069,"tokens_per_pass":6.1687,"cycle_ms":56.557,"main_ms":48.790,"draft_ms":5.763,"taps_ms":0.000,"same_tokens":true,"same_state":true,"passes":83,"passes16":0,"emitted":512,"new_tokens":512,"accept1":0.9036,"prefill_tok_s":229.9},
+  {"prompt":"code","drafter":"bd2:fixed16","block":8,"tok_per_s":124.591,"tokens_per_pass":8.0781,"cycle_ms":64.837,"main_ms":56.206,"draft_ms":6.462,"taps_ms":0.000,"same_tokens":true,"same_state":true,"passes":64,"passes16":64,"emitted":517,"new_tokens":512,"accept1":0.9219,"prefill_tok_s":240.6},
+  {"prompt":"code","drafter":"bd2:adapt-cost","block":8,"tok_per_s":122.975,"tokens_per_pass":7.8333,"cycle_ms":63.699,"main_ms":55.191,"draft_ms":6.362,"taps_ms":0.000,"same_tokens":true,"same_state":true,"passes":66,"passes16":57,"emitted":517,"new_tokens":512,"accept1":0.9091,"prefill_tok_s":240.9}
+]

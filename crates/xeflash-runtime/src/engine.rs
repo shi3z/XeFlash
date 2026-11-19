@@ -456,6 +456,33 @@ impl Engine {
         for (l, st) in self.states.iter().take(LAYERS).enumerate() {
             if l % 4 == 3 {
                 let rows = self.pos * 4 * 256;
+                if std::env::var("XF_KV").as_deref() == Ok("int8") {
+                    // INT8 KV: K and V tiles as bytes, then the scales [kv head][position]
+                    let n = self.ctx * 4 * 256;
+                    let mut kb = vec![0u8; n];
+                    let mut vb = vec![0u8; n];
+                    st.read(0, &mut kb)?;
+                    st.read(n, &mut vb)?;
+                    let mut ks = vec![0u32; self.ctx * 4];
+                    let mut vs = vec![0u32; self.ctx * 4];
+                    st.read(2 * n, &mut ks)?;
+                    st.read(2 * n + self.ctx * 16, &mut vs)?;
+                    let mut kk = vec![0u32; rows];
+                    let mut vv = vec![0u32; rows];
+                    for p in 0..self.pos {
+                        for kh in 0..4 {
+                            for d in 0..256 {
+                                kk[(p * 4 + kh) * 256 + d] = kb[((((p / 64 * 4 + kh) * 8 + (p % 64) / 8) * 16 + d / 16) * 8 + p % 8) * 16 + d % 16] as u32;
+                                vv[(p * 4 + kh) * 256 + d] = vb[((((p / 64 * 4 + kh) * 4 + (p % 64) / 16) * 32 + d / 8) * 8 + d % 8) * 16 + p % 16] as u32;
+                            }
+                        }
+                    }
+                    eat(&kk);
+                    eat(&vv);
+                    let sc: Vec<u32> = (0..self.pos * 4).flat_map(|i| [ks[(i % 4) * self.ctx + i / 4], vs[(i % 4) * self.ctx + i / 4]]).collect();
+                    eat(&sc);
+                    continue;
+                }
                 let xmx = std::env::var("XF_KV").as_deref() == Ok("xmx");
                 let kvm = match std::env::var("XF_KV").as_deref() {
                     Ok("bf16") | Ok("fp16") | Ok("xmx") => 2usize,

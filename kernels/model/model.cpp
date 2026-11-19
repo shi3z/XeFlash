@@ -140,7 +140,7 @@ WS carve_ws(void *base, int ctx) {
   w.pm = b.take<float>(MAXM * AH * nb);
   w.pd = b.take<float>(MAXM * AH * nb);
   // XF_KV=xmx uses the fused kernel (segment partials in pseg), so the 378 MB (at 60K) block-partial buffer is only kept for XF_XMX_OLD
-  w.pv = b.take<float>((kv_mode() == 3 && !std::getenv("XF_XMX_OLD")) ? size_t(4096) : size_t(MAXM) * AH * nb * AD);
+  w.pv = b.take<float>(((kv_mode() == 3 && !std::getenv("XF_XMX_OLD")) || kv_mode() == 4) ? size_t(4096) : size_t(MAXM) * AH * nb * AD);
   w.mh = b.take<float>(MAXM * D);
   w.me = b.take<float>(MAXM * 2 * D);
   w.cap = b.take<float>(size_t(5) * MAXM * D);
@@ -182,20 +182,28 @@ int kv_mode() {
     if (!std::strcmp(e, "bf16")) return 1;
     if (!std::strcmp(e, "fp16")) return 2;
     if (!std::strcmp(e, "xmx")) return 3; // FP16 KV in DPAS tile layouts + XMX attention
+    if (!std::strcmp(e, "int8")) return 4; // INT8 KV (one scale per position and kv head) in the DPAS tile layouts + XMX attention
     return 0;
   }();
   return m;
 }
 struct AttnState {
   void *K, *V;
+  float *ks, *vs; // INT8 KV: scale per [kv head][position]
   size_t total;
 };
 AttnState carve_attn(void *base, int ctx) {
   Bump b{static_cast<char *>(base)};
   AttnState s;
+  s.ks = s.vs = nullptr;
   if (kv_mode() == 0) {
     s.K = b.take<float>(size_t(ctx) * AKH * AD);
     s.V = b.take<float>(size_t(ctx) * AKH * AD);
+  } else if (kv_mode() == 4) {
+    s.K = b.take<int8_t>(size_t(ctx) * AKH * AD);
+    s.V = b.take<int8_t>(size_t(ctx) * AKH * AD);
+    s.ks = b.take<float>(size_t(ctx) * AKH);
+    s.vs = b.take<float>(size_t(ctx) * AKH);
   } else {
     s.K = b.take<uint16_t>(size_t(ctx) * AKH * AD);
     s.V = b.take<uint16_t>(size_t(ctx) * AKH * AD);
@@ -970,6 +978,60 @@ void k_attn_kv_x(Q &q, const float *yk, const float *yv, size_t ks, const float 
   });
 }
 
+
+// INT8 KV write: one scale per (position, kv head) for K and for V (max |x| / 127), values rounded to nearest, same tile layouts as the FP16 version.
+void k_attn_kv_x8(Q &q, const float *yk, const float *yv, size_t ks, const float *gain, const float *cs, const float *sn, int8_t *K, int8_t *V,
+                  float *ksc, float *vsc, int ctx, int m, int pos0) {
+  q.parallel_for(sycl::range<1>(size_t(m) * AKH), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const size_t mi = id[0] / AKH, kh = id[0] % AKH;
+    simd<float, 64> v[4], x[4];
+#pragma unroll
+    for (int i = 0; i < 4; i++) v[i].copy_from(yk + mi * ks + kh * AD + i * 64);
+    norm_rope(v, gain, cs + (pos0 + mi) * 32, sn + (pos0 + mi) * 32);
+#pragma unroll
+    for (int i = 0; i < 4; i++) x[i].copy_from(yv + mi * ks + kh * AD + i * 64);
+    const size_t pos = pos0 + mi, b = pos / 64;
+    const int j = int(pos % 64);
+    float sk, sv;
+    {
+      simd<float, 64> mx = es::abs(v[0]), mv = es::abs(x[0]);
+#pragma unroll
+      for (int i = 1; i < 4; i++) {
+        mx = es::max(mx, simd<float, 64>(es::abs(v[i])));
+        mv = es::max(mv, simd<float, 64>(es::abs(x[i])));
+      }
+      const float ak = hmax<64>(mx), av = hmax<64>(mv);
+      sk = ak > 0.0f ? ak * (1.0f / 127.0f) : 1.0f;
+      sv = av > 0.0f ? av * (1.0f / 127.0f) : 1.0f;
+    }
+    const float ik = 1.0f / sk, iv = 1.0f / sv;
+    int8_t *kt = K + ((b * AKH + kh) * 8 + j / 8) * 16 * 128 + (j % 8) * 16;
+#pragma unroll
+    for (int c = 0; c < 16; c++) {
+      simd<float, 16> t = simd<float, 16>(v[c / 4].template select<16, 1>((c % 4) * 16)) * ik;
+      simd<float, 16> hf(0.5f);
+      hf.merge(simd<float, 16>(-0.5f), t < 0.0f);
+      simd<float, 16> r = t + hf; // round to nearest, ties away; the conversion truncates
+      simd<int8_t, 16> qv = es::convert<int8_t>(simd<int32_t, 16>(r));
+      qv.copy_to(kt + c * 128);
+    }
+    int8_t *vt = V + (b * AKH + kh) * 4 * 32 * 128;
+#pragma unroll
+    for (int i = 0; i < 4; i++) {
+      simd<uint32_t, 64> d(i * 64, 1);
+      simd<uint32_t, 64> off = ((d >> 3) + uint32_t(j / 16) * 32u) * 128u + (d & 7u) * 16u + uint32_t(j % 16);
+      simd<float, 64> t = x[i] * iv;
+      simd<float, 64> hf(0.5f);
+      hf.merge(simd<float, 64>(-0.5f), t < 0.0f);
+      simd<float, 64> r = t + hf;
+      simd<int8_t, 64> qv = es::convert<int8_t>(simd<int32_t, 64>(r));
+      es::scatter<int8_t, 64>(vt, off, qv);
+    }
+    ksc[kh * size_t(ctx) + pos] = sk;
+    vsc[kh * size_t(ctx) + pos] = sv;
+  });
+}
+
 void k_attn_xmx(Q &q, const uint16_t *Q16, const uint16_t *K, const uint16_t *V, float *pm, float *pd, float *pvx, int m, int pos0,
                 size_t nbs) {
   const int G = (6 * m + 15) / 16;
@@ -1317,8 +1379,10 @@ void k_attn_xmx2(Q &q, const uint16_t *Q16, const uint16_t *K, const uint16_t *V
 // over the 8 threads (thread t: tile t/2, dim chunks 8*(t%2)..+8 = 8 DPAS), the partial S^T tiles go through SLM (double-buffered, one barrier per
 // sub-block, the two halves are added in a fixed order so results do not depend on the pass), then every thread does the softmax update and the PV DPAS
 // of its own 32 V dims. QK DPAS per thread: 8 per sub-block instead of 64. SLM = 2 x 8 x 512 B = 8 KiB. skip: 8 = no QK dpas, 16 = no PV dpas.
-template <int XB>
-void k_attn_xmx3(Q &q, const uint16_t *Q16, const uint16_t *K, const uint16_t *V, float *pseg, float *psm, float *psd, int m, int pos0, int skip) {
+// KQ = 1: the K and V tiles are INT8 (one scale per position and kv head, ksc / vsc [kv head][ctx]); they are converted to FP16 for the DPAS,
+// S^T rows are multiplied by the key's scale and P rows by the value's scale (the denominator uses the unscaled FP16 weights).
+template <int XB, int KQ = 0>
+void k_attn_xmx3(Q &q, const uint16_t *Q16, const void *Kv, const void *Vv, const float *ksc, const float *vsc, int ctxcap, float *pseg, float *psm, float *psd, int m, int pos0, int skip) {
   constexpr int DQ = 8, NT = 4;
   const int G = (6 * m + 15) / 16;
   const size_t nb = size_t(pos0 + m - 1) / 64 + 1, NS = (nb + XB - 1) / XB;
@@ -1351,12 +1415,19 @@ void k_attn_xmx3(Q &q, const uint16_t *Q16, const uint16_t *K, const uint16_t *V
       simd<float, 128> st(0.0f);
       if (!(skip & 8)) {
         const int jt = dq >> 1, c0 = (dq & 1) * 8;
-        const uint16_t *kt = K + ((b * AKH + kh) * 8 + h2 * 4 + jt) * 16 * 128;
+        const size_t ktile = ((b * AKH + kh) * 8 + h2 * 4 + jt) * 16 * 128;
         for (int c = c0; c < c0 + 8; c++) {
           simd<int32_t, 128> w;
           w.copy_from(reinterpret_cast<const int32_t *>(qt + c * 256));
           simd<int32_t, 64> a;
-          a.copy_from(reinterpret_cast<const int32_t *>(kt + c * 128));
+          if constexpr (KQ) {
+            simd<int8_t, 128> kq;
+            kq.copy_from(static_cast<const int8_t *>(Kv) + ktile + c * 128);
+            simd<sycl::half, 128> kh16 = es::convert<sycl::half>(kq);
+            a = kh16.template bit_cast_view<int32_t>();
+          } else {
+            a.copy_from(reinterpret_cast<const int32_t *>(static_cast<const uint16_t *>(Kv) + ktile + c * 128));
+          }
           st = xmx::dpas<8, 8, float, float, int32_t, int32_t, XT::fp16, XT::fp16>(st, w, a);
         }
       }
@@ -1367,6 +1438,12 @@ void k_attn_xmx3(Q &q, const uint16_t *Q16, const uint16_t *K, const uint16_t *V
       for (int jt = 0; jt < 4; jt++) {
         S[jt] = es::slm_block_load<float, 128>(uint32_t((buf * DQ + 2 * jt) * 512));
         S[jt] += es::slm_block_load<float, 128>(uint32_t((buf * DQ + 2 * jt + 1) * 512));
+        if constexpr (KQ) {
+          simd<float, 8> k8;
+          k8.copy_from(ksc + kh * size_t(ctxcap) + key0 + jt * 8);
+#pragma unroll
+          for (int i = 0; i < 8; i++) S[jt].template select<16, 1>(i * 16) = simd<float, 16>(S[jt].template select<16, 1>(i * 16)) * float(k8[i]);
+        }
       }
       buf ^= 1;
       simd<float, 16> mxb(-1e30f);
@@ -1384,10 +1461,19 @@ void k_attn_xmx3(Q &q, const uint16_t *Q16, const uint16_t *K, const uint16_t *V
 #pragma unroll
       for (int jt = 0; jt < 4; jt++) {
         simd<float, 128> e = es::exp(S[jt] - mnr);
-        P[jt] = es::convert<sycl::half>(e);
-        simd<float, 128> er = es::convert<float>(P[jt]);
+        simd<sycl::half, 128> ph = es::convert<sycl::half>(e);
+        simd<float, 128> er = es::convert<float>(ph);
 #pragma unroll
         for (int i = 0; i < 8; i++) denb += er.template select<16, 1>(i * 16);
+        if constexpr (KQ) {
+          simd<float, 8> v8;
+          v8.copy_from(vsc + kh * size_t(ctxcap) + key0 + jt * 8);
+#pragma unroll
+          for (int i = 0; i < 8; i++) e.template select<16, 1>(i * 16) = simd<float, 16>(e.template select<16, 1>(i * 16)) * float(v8[i]);
+          P[jt] = es::convert<sycl::half>(e);
+        } else {
+          P[jt] = ph;
+        }
       }
       den = den * sc + denb;
       mrun = mnew;
@@ -1404,14 +1490,21 @@ void k_attn_xmx3(Q &q, const uint16_t *Q16, const uint16_t *K, const uint16_t *V
           Bp[kc].template select<16, 2>(p * 32 + 1) = P[tile].template select<16, 1>((r0 + 1) * 16);
         }
       if (!(skip & 16)) {
-        const uint16_t *vbase = V + ((b * AKH + kh) * 4 + h2 * 2) * 32 * 128 + size_t(dq) * NT * 128;
+        const size_t vbase = ((b * AKH + kh) * 4 + h2 * 2) * 32 * 128 + size_t(dq) * NT * 128;
 #pragma unroll
         for (int kc = 0; kc < 2; kc++) {
           simd<int32_t, 128> bw = Bp[kc].template bit_cast_view<int32_t>();
 #pragma unroll
           for (int tt = 0; tt < NT; tt++) {
             simd<int32_t, 64> a;
-            a.copy_from(reinterpret_cast<const int32_t *>(vbase + (kc * 32 + tt) * 128));
+            if constexpr (KQ) {
+              simd<int8_t, 128> vq;
+              vq.copy_from(static_cast<const int8_t *>(Vv) + vbase + (kc * 32 + tt) * 128);
+              simd<sycl::half, 128> v16 = es::convert<sycl::half>(vq);
+              a = v16.template bit_cast_view<int32_t>();
+            } else {
+              a.copy_from(reinterpret_cast<const int32_t *>(static_cast<const uint16_t *>(Vv) + vbase + (kc * 32 + tt) * 128));
+            }
             acc[tt] = xmx::dpas<8, 8, float, float, int32_t, int32_t, XT::fp16, XT::fp16>(acc[tt], bw, a);
           }
         }
@@ -1872,6 +1965,22 @@ struct Pass {
     tm.dtick(P_ATTN, "attn:q-prep");
     static const bool kt = !(std::getenv("XF_ATTN_KT") && std::getenv("XF_ATTN_KT")[0] == '0') && md->ctx % 64 == 0; // default on; XF_ATTN_KT=0 = legacy
     const int kvm = kv_mode();
+    if (kvm == 4) {
+      // INT8 KV: shared XMX kernel only
+      k_attn_q16(q, ws.qr, ws.q16, m);
+      tm.dtick(P_ATTN, "attn:q16");
+      k_attn_kv_x8(q, yk, yv, ks, L.aux[1], md->rope_cos, md->rope_sin, static_cast<int8_t *>(s.K), static_cast<int8_t *>(s.V), s.ks, s.vs, md->ctx, m, pos0);
+      tm.dtick(P_ATTN, "attn:kv-store");
+      static const int xb8 = std::getenv("XF_XMX_XB") ? std::atoi(std::getenv("XF_XMX_XB")) : 8;
+      if (xb8 == 4) k_attn_xmx3<4, 1>(q, ws.q16, s.K, s.V, s.ks, s.vs, md->ctx, ws.pseg, ws.psm, ws.psd, m, pos0, 0);
+      else k_attn_xmx3<8, 1>(q, ws.q16, s.K, s.V, s.ks, s.vs, md->ctx, ws.pseg, ws.psm, ws.psd, m, pos0, 0);
+      tm.dtick(P_ATTN, "attn:xmx-main");
+      k_attn_comb2(q, ws.psm, ws.psd, ws.pseg, ws.yq, qs, ws.go, ws.pmax, m, pos0, xb8 == 4 ? 4 : 8);
+      tm.tick(P_ATTN, "attn:combine");
+      if (int st = gemm(L.m[3], ws.go, ws.y)) return st;
+      pending = true;
+      return mlp(L, 4);
+    }
     if (kvm == 3) {
       const size_t nbx = size_t(pos0 + m - 1) / 64 + 1;
       (void)nbx;
@@ -1889,8 +1998,8 @@ struct Pass {
         const uint16_t *Kc = static_cast<const uint16_t *>(s.K), *Vc = static_cast<const uint16_t *>(s.V);
         static const bool share = !(std::getenv("XF_XMX_SHARE") && std::getenv("XF_XMX_SHARE")[0] == '0'); // default on; XF_XMX_SHARE=0 = unshared kernel // QK shared through SLM (DQ = 8 threads per work-group)
         if (share) {
-          if (xb == 4) k_attn_xmx3<4>(q, ws.q16, Kc, Vc, ws.pseg, ws.psm, ws.psd, m, pos0, skip);
-          else k_attn_xmx3<8>(q, ws.q16, Kc, Vc, ws.pseg, ws.psm, ws.psd, m, pos0, skip);
+          if (xb == 4) k_attn_xmx3<4>(q, ws.q16, Kc, Vc, nullptr, nullptr, 0, ws.pseg, ws.psm, ws.psd, m, pos0, skip);
+          else k_attn_xmx3<8>(q, ws.q16, Kc, Vc, nullptr, nullptr, 0, ws.pseg, ws.psm, ws.psd, m, pos0, skip);
         } else if (xb == 4) {
           if (dqn == 8) k_attn_xmx2<4, 8>(q, ws.q16, Kc, Vc, ws.pseg, ws.psm, ws.psd, m, pos0, skip);
           else k_attn_xmx2<4, 4>(q, ws.q16, Kc, Vc, ws.pseg, ws.psm, ws.psd, m, pos0, skip);

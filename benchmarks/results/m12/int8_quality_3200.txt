@@ -1,0 +1,5 @@
+INT8 KV chunk 8 vs 16 : KL mean 0.00e+00 median 0.00e+00 max 0.00e+00; max|dlogit| 0.000; greedy flips 0/3200 (fp32 margin<0.02: 0)
+INT8 KV chunk 8 vs 1  : KL mean 0.00e+00 median 0.00e+00 max 0.00e+00; max|dlogit| 0.000; greedy flips 0/3200 (fp32 margin<0.02: 0)
+FP32 KV vs FP16 KV (XMX): KL mean 4.91e-05 median 2.28e-06 max 6.59e-02; max|dlogit| 1.795; greedy flips 11/3200 (fp32 margin<0.02: 11)
+FP32 KV vs INT8 KV     : KL mean 6.99e-04 median 9.40e-05 max 3.84e-01; max|dlogit| 7.930; greedy flips 31/3200 (fp32 margin<0.02: 17)
+FP16 KV (XMX) vs INT8 KV: KL mean 6.32e-04 median 9.27e-05 max 4.01e-01; max|dlogit| 8.380; greedy flips 30/3200 (fp32 margin<0.02: 16)

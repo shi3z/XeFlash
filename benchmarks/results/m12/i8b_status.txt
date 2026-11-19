@@ -1,0 +1,6 @@
+sw_1k 0
+sw_8k 0
+sw_30k 0
+e_code_int8 0
+e_30k_int8 0
+e_60k_int8 0

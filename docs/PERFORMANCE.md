@@ -1198,3 +1198,50 @@ The per-kernel synchronisation adds 9 to 10 ms; the real pass is the second numb
   8-row pass 49.92 -> 48.66 ms, 16-row pass 58.25 -> 56.15 ms (1K context, XMX; 1-row pass unchanged).
 - Ideal streaming time for 12.8 GB at the sustained 415 GB/s is about 31 ms; the GEMMs take 43.5 ms now (40 ms with the best segment counts). The remaining 9 to 12 ms would need a different weight stream (fewer bytes, or a layout that reaches the 435 GB/s of a plain read),
   not more XMX work. The weight format (uniform 4-bit plus scales) already is 17% larger than YASAKANI's mixed format.
+
+
+## Part J. INT8 KV (`XF_KV=int8`) and overlap of drafter and Main
+
+### J1. INT8 KV, measured (same model, prompts and build; FP16 KV = `XF_KV=xmx`)
+Scheme: one scale per (position, kv head) for K and one for V (max|x| / 127, round to nearest), the same DPAS tile layouts as the FP16 version; the kernel converts the INT8 tiles to FP16 for the DPAS,
+multiplies the rows of S^T by the key's scale and the rows of P by the value's scale before the PV product (the softmax denominator uses the unscaled weights). Shared XMX kernel only; the FP32 and FP16 paths are untouched.
+
+Quality (3,200 teacher-forced tokens, `benchmarks/results/m12/int8_quality_3200.txt`), against the FP32-KV engine:
+| KV | KL mean | KL max | max abs logit diff | greedy flips | flips with fp32 margin >= 0.02 |
+|---|---:|---:|---:|---:|---:|
+| FP16 (XMX) | 4.9e-5 | 6.6e-2 | 1.8 | 11 / 3200 | 0 |
+| INT8 | **7.0e-4** | 0.38 | 7.9 | **31 / 3200** | 14 |
+Pass sizes 1 / 8 / 16 give bit-identical logits with INT8 as well (exact speculative verification holds). The INT8 error is 14x the FP16 one in KL and about three times the greedy flips, 14 of them at positions where the FP32 top-2 margin was >= 0.02,
+i.e. not only near-ties. Per-position, per-head scales are the simplest scheme; per-channel or per-group scales were not tried.
+
+Attention stage, ms for 16 layers, rows 1 / 8 / 16 (`i8_sweep_*.log`): 1K 2.25 / 2.40 / 2.44 (FP16: 1.31 / 1.48 / 1.59); 8K 2.58 / 4.86 / 6.85 (2.16 / 3.49 / 4.73); 30K 6.97 / 13.6 / 21.4 (7.46 / 10.5 / 14.8).
+The kernel is not limited by DRAM traffic, so halving the bytes does not pay for the conversion and the scale multiplications.
+
+bdraft2, same build (`benchmarks/results/m12/i8e_*.json`), tok/s:
+| case | FP16 KV | INT8 KV |
+|---|---:|---:|
+| code.json, 512 tokens: fixed 8 / fixed 16 / adaptive | 109.1 / 124.6 / 123.0 | 109.1 / 125.4 / 123.7 |
+| 30K summary, 256 tokens: fixed 8 / fixed 16 | 49.8 / 44.8 | 49.0 / 40.4 |
+| 60K summary, 256 tokens: fixed 8 | 40.5 (main pass 68.2 ms) | 38.3 (73.5 ms) |
+VRAM at 60K with bdraft2: KV 3.75 -> 1.90 GiB, total allocation 22.13 -> 20.17 GiB. Tokens and committed state equal plain greedy in every run.
+**Decision**: INT8 KV is a memory option (about 2 GiB at 60K), not a speed option: equal speed at short context, 2 to 10% slower at 30K and 60K, and clearly less accurate. It stays experimental; FP32 remains the default and FP16 (XMX) the fast long-context choice.
+(Note: the code.json numbers of Part G (120.5 for fixed 16) predate the out-projection segment change of Part I; the same-build FP16 figure is 124.6.)
+
+### J2. Can the drafter and the Main pass overlap? (analysis from the measurements above; no overlapped run was built)
+Dependencies of a cycle: the drafter needs the committed tokens and the tap states of the accepted rows, which exist only after the Main pass, its head and the accept decision; the next Main pass needs the draft tokens. The chain
+Main(n) -> accept -> drafter(n+1) -> Main(n+1) is strictly serial for the same stream of tokens: the drafter (6.1 to 7.4 ms, 10 to 12% of a cycle) cannot hide behind the verify pass of the same cycle.
+What could be overlapped, with the time available (8-row pass at 8K, per pass):
+- Inside a Main layer: the GDN `gemv-ab` kernel (2.1 ms per pass, needs only the normed input) is independent of the in-projection GEMM (6.2 ms); the 257 activation-quantisation launches (3.6 ms) and norms (1.6 ms) are on the critical path of their GEMMs.
+  Upper bound for overlapping the independent GDN kernels with the GEMMs: about 2 to 3 ms per pass (4 to 6%), needs a second queue with explicit events and may be absorbed by the memory-bound GEMMs themselves.
+- Narrow GEMMs (the 64 out-projections, 93 us, 7.5 ms per pass in total) use 320 to 640 threads and leave the GPU partly idle, but the kernel following each of them depends on its output; nothing independent is queued next to them.
+- Drafter against the tail of the Main pass: the lm_head GEMM (1.8 ms) and the argmax (0.05 ms) are followed by the accept decision; the drafter's row-wise work on the taps (KV-ring update for the 8 rows) could be computed for all rows and committed for the accepted ones, hiding at most the time of the head, about 1.8 ms (3%).
+- Speculating one cycle ahead (start drafting from the assumption that all drafts are accepted): with acceptance of the first draft around 90% on code, all 7 drafts are accepted in roughly half of the cycles, so about half of the 6 ms would be saved on those cycles and wasted GPU time (slowing the verify pass that runs beside it) on the others.
+  Not attempted; the expected gain is below 5% before the contention cost.
+YASAKANI's drafter takes 1.6 ms inside its 38.9 ms pass (5060 Ti); the 6.2 ms of XeFlash's drafter is the larger target, but a profile of the bdraft2 backend itself (`experimental/bdraft2`) at kernel level has not been made, so its split into scoring, block forward and selection is unknown.
+
+### J3. Summary of the priority list
+1. B60 Main pass profiled per kernel (Part I1): GEMM 43.5 of 59.6 ms synchronised (52 ms real).
+2. The 5060 Ti pass profiled per kernel (Part I2): GEMM 29.3 of 38.9 ms; non-GEMM kernels 9.6 ms against 16 ms.
+3. GEMM: streaming-bound at 65 to 80% of the bandwidth, not XMX-bound; segment count change adopted (bit-identical, -1.3 / -2.1 ms); layout, cache hints, prefetch, unroll: no gain.
+4. INT8 KV: implemented, exact across pass sizes, 14x the KL of FP16, not faster (J1).
+5. Overlap: analysed (J2); no large safe gain found without a drafter profile.
