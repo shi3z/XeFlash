@@ -1,0 +1,54 @@
+device Intel(R) Arc(TM) Pro B60 Graphics
+
+  SIMD packed int4, int32 mad                        8.4 us      16 GB/s     0.06 TOPS (2MNK)
+  SIMD packed int4, int16 x int16 -> int32           6.5 us      20 GB/s     0.08 TOPS (2MNK)
+  DPAS s4 x s8 (two byte planes)                     3.4 us      38 GB/s     0.15 TOPS (2MNK)
+
+  SIMD packed int4, int32 mad                       19.8 us       7 GB/s     0.21 TOPS (2MNK)
+  SIMD packed int4, int16 x int16 -> int32          19.5 us       7 GB/s     0.22 TOPS (2MNK)
+  DPAS s4 x s8 (two byte planes)                     3.4 us      39 GB/s     1.24 TOPS (2MNK)
+
+out projection m=1  N=5120 K=6144  (15.7 MB 4-bit, 320 threads)
+  SIMD packed int4, int32 mad                       74.1 us     212 GB/s     0.85 TOPS (2MNK)
+  SIMD packed int4, int16 x int16 -> int32          74.0 us     213 GB/s     0.85 TOPS (2MNK)
+  DPAS s4 x s8 (two byte planes)                    50.9 us     309 GB/s     1.24 TOPS (2MNK)
+
+out projection m=8  N=5120 K=6144  (15.7 MB 4-bit, 320 threads)
+  SIMD packed int4, int32 mad                      174.3 us      90 GB/s     2.89 TOPS (2MNK)
+  SIMD packed int4, int16 x int16 -> int32         174.2 us      90 GB/s     2.89 TOPS (2MNK)
+  DPAS s4 x s8 (two byte planes)                    54.7 us     288 GB/s     9.21 TOPS (2MNK)
+
+out projection m=16  N=5120 K=6144  (15.7 MB 4-bit, 320 threads)
+  SIMD packed int4, int32 mad                     1841.4 us       9 GB/s     0.55 TOPS (2MNK)
+  SIMD packed int4, int16 x int16 -> int32        1841.2 us       9 GB/s     0.55 TOPS (2MNK)
+  DPAS s4 x s8 (two byte planes)                   144.8 us     109 GB/s     6.95 TOPS (2MNK)
+
+gate+up m=1  N=34816 K=5120  (89.1 MB 4-bit, 2176 threads)
+  SIMD packed int4, int32 mad                      222.6 us     400 GB/s     1.60 TOPS (2MNK)
+  SIMD packed int4, int16 x int16 -> int32         220.2 us     405 GB/s     1.62 TOPS (2MNK)
+  DPAS s4 x s8 (two byte planes)                   207.5 us     429 GB/s     1.72 TOPS (2MNK)
+
+gate+up m=8  N=34816 K=5120  (89.1 MB 4-bit, 2176 threads)
+  SIMD packed int4, int32 mad                      561.0 us     159 GB/s     5.08 TOPS (2MNK)
+  SIMD packed int4, int16 x int16 -> int32         561.0 us     159 GB/s     5.08 TOPS (2MNK)
+  DPAS s4 x s8 (two byte planes)                   215.7 us     413 GB/s    13.22 TOPS (2MNK)
+
+gate+up m=16  N=34816 K=5120  (89.1 MB 4-bit, 2176 threads)
+  SIMD packed int4, int32 mad                     4749.7 us      19 GB/s     1.20 TOPS (2MNK)
+  SIMD packed int4, int16 x int16 -> int32        4746.5 us      19 GB/s     1.20 TOPS (2MNK)
+  DPAS s4 x s8 (two byte planes)                   368.9 us     242 GB/s    15.46 TOPS (2MNK)
+
+GDN in-proj m=1  N=16384 K=5120  (41.9 MB 4-bit, 1024 threads)
+  SIMD packed int4, int32 mad                      101.2 us     414 GB/s     1.66 TOPS (2MNK)
+  SIMD packed int4, int16 x int16 -> int32         100.2 us     419 GB/s     1.67 TOPS (2MNK)
+  DPAS s4 x s8 (two byte planes)                   100.9 us     416 GB/s     1.66 TOPS (2MNK)
+
+GDN in-proj m=8  N=16384 K=5120  (41.9 MB 4-bit, 1024 threads)
+  SIMD packed int4, int32 mad                      280.8 us     149 GB/s     4.78 TOPS (2MNK)
+  SIMD packed int4, int16 x int16 -> int32         280.7 us     149 GB/s     4.78 TOPS (2MNK)
+  DPAS s4 x s8 (two byte planes)                   103.3 us     406 GB/s    12.99 TOPS (2MNK)
+
+GDN in-proj m=16  N=16384 K=5120  (41.9 MB 4-bit, 1024 threads)
+  SIMD packed int4, int32 mad                     2389.4 us      18 GB/s     1.12 TOPS (2MNK)
+  SIMD packed int4, int16 x int16 -> int32        2388.8 us      18 GB/s     1.12 TOPS (2MNK)
+  DPAS s4 x s8 (two byte planes)                   175.3 us     239 GB/s    15.32 TOPS (2MNK)

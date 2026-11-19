@@ -1,0 +1,217 @@
+device Intel(R) Arc(TM) Pro B60 Graphics, in-order queue, cold weights
+
+out projection m=1  N=5120 K=6144 (15.7 MB 4-bit), tokens/thread 1 x 1 groups, U=2: 320 threads, 384 dpas per thread, 0.13 GOP issued (1 dpas = 1024 ops)
+  mode                                              us      GB/s      TOPS   % of 196.5
+  0 read weights only                             63.5       248       2.0         1.0%
+  1 DPAS only (GEMM chain structure)               8.7      1814      14.5         7.4%
+  2 DPAS only (8 chains)                           9.8      1609      12.9         6.6%
+  3 SLM operands + DPAS                            8.2      1910      15.3         7.8%
+  4 weights streamed + DPAS (X in regs)           60.0       262       2.1         1.1%
+  5 weights + s4->s8 expansion, no DPAS          107.3       147       1.2         0.6%
+  6 weights + expansion + s8 DPAS                 89.9       175       1.4         0.7%
+  7 weights + X planes streamed + DPAS            56.3       279       2.2         1.1%
+  8 = 7 with the next tiles requested first       50.2       313       2.5         1.3%
+
+out projection m=8  N=5120 K=6144 (15.7 MB 4-bit), tokens/thread 8 x 1 groups, U=2: 320 threads, 384 dpas per thread, 1.01 GOP issued (1 dpas = 8192 ops)
+  mode                                              us      GB/s      TOPS   % of 196.5
+  0 read weights only                             54.9       286      18.3         9.3%
+  1 DPAS only (GEMM chain structure)              13.2      1191      76.2        38.8%
+  2 DPAS only (8 chains)                          11.1      1421      90.9        46.3%
+  3 SLM operands + DPAS                            6.3      2487     159.2        81.0%
+  4 weights streamed + DPAS (X in regs)           56.3       279      17.9         9.1%
+  5 weights + s4->s8 expansion, no DPAS          102.9       153       9.8         5.0%
+  6 weights + expansion + s8 DPAS                112.0       140       9.0         4.6%
+  7 weights + X planes streamed + DPAS            61.9       254      16.3         8.3%
+  8 = 7 with the next tiles requested first       56.1       280      17.9         9.1%
+
+out projection m=16  N=5120 K=6144 (15.7 MB 4-bit), tokens/thread 8 x 2 groups, U=1: 320 threads, 768 dpas per thread, 2.01 GOP issued (1 dpas = 8192 ops)
+  mode                                              us      GB/s      TOPS   % of 196.5
+  0 read weights only                             85.6       184      23.5        12.0%
+  1 DPAS only (GEMM chain structure)              22.8       690      88.3        44.9%
+  2 DPAS only (8 chains)                          21.3       738      94.5        48.1%
+  3 SLM operands + DPAS                           11.4      1384     177.1        90.1%
+  4 weights streamed + DPAS (X in regs)           87.6       179      23.0        11.7%
+  5 weights + s4->s8 expansion, no DPAS          112.4       140      17.9         9.1%
+  6 weights + expansion + s8 DPAS                114.6       137      17.6         8.9%
+  7 weights + X planes streamed + DPAS            89.3       176      22.5        11.5%
+  8 = 7 with the next tiles requested first       65.3       241      30.8        15.7%
+
+down m=1  N=5120 K=17408 (44.6 MB 4-bit), tokens/thread 1 x 1 groups, U=2: 320 threads, 1088 dpas per thread, 0.36 GOP issued (1 dpas = 1024 ops)
+  mode                                              us      GB/s      TOPS   % of 196.5
+  0 read weights only                            109.3       408       3.3         1.7%
+  1 DPAS only (GEMM chain structure)              15.4      2894      23.1        11.8%
+  2 DPAS only (8 chains)                          18.3      2439      19.5         9.9%
+  3 SLM operands + DPAS                           14.1      3165      25.3        12.9%
+  4 weights streamed + DPAS (X in regs)          108.8       410       3.3         1.7%
+  5 weights + s4->s8 expansion, no DPAS          267.1       167       1.3         0.7%
+  6 weights + expansion + s8 DPAS                230.7       193       1.5         0.8%
+  7 weights + X planes streamed + DPAS           111.2       401       3.2         1.6%
+  8 = 7 with the next tiles requested first      105.6       422       3.4         1.7%
+
+down m=8  N=5120 K=17408 (44.6 MB 4-bit), tokens/thread 8 x 1 groups, U=2: 320 threads, 1088 dpas per thread, 2.85 GOP issued (1 dpas = 8192 ops)
+  mode                                              us      GB/s      TOPS   % of 196.5
+  0 read weights only                            110.0       405      25.9        13.2%
+  1 DPAS only (GEMM chain structure)              35.7      1248      79.9        40.7%
+  2 DPAS only (8 chains)                          29.8      1494      95.6        48.7%
+  3 SLM operands + DPAS                           15.6      2852     182.6        92.9%
+  4 weights streamed + DPAS (X in regs)          112.1       398      25.4        13.0%
+  5 weights + s4->s8 expansion, no DPAS          267.2       167      10.7         5.4%
+  6 weights + expansion + s8 DPAS                296.7       150       9.6         4.9%
+  7 weights + X planes streamed + DPAS           132.4       337      21.5        11.0%
+  8 = 7 with the next tiles requested first      122.9       363      23.2        11.8%
+
+down m=16  N=5120 K=17408 (44.6 MB 4-bit), tokens/thread 8 x 2 groups, U=1: 320 threads, 2176 dpas per thread, 5.70 GOP issued (1 dpas = 8192 ops)
+  mode                                              us      GB/s      TOPS   % of 196.5
+  0 read weights only                            181.0       246      31.5        16.0%
+  1 DPAS only (GEMM chain structure)              62.9       709      90.7        46.2%
+  2 DPAS only (8 chains)                          58.8       757      96.9        49.3%
+  3 SLM operands + DPAS                           30.1      1479     189.4        96.4%
+  4 weights streamed + DPAS (X in regs)          188.4       237      30.3        15.4%
+  5 weights + s4->s8 expansion, no DPAS          301.8       148      18.9         9.6%
+  6 weights + expansion + s8 DPAS                307.6       145      18.5         9.4%
+  7 weights + X planes streamed + DPAS           219.8       203      26.0        13.2%
+  8 = 7 with the next tiles requested first      183.8       242      31.0        15.8%
+
+gate+up m=1  N=34816 K=5120 (89.1 MB 4-bit), tokens/thread 1 x 1 groups, U=2: 2176 threads, 320 dpas per thread, 0.71 GOP issued (1 dpas = 1024 ops)
+  mode                                              us      GB/s      TOPS   % of 196.5
+  0 read weights only                            211.5       421       3.4         1.7%
+  1 DPAS only (GEMM chain structure)              20.6      4327      34.6        17.6%
+  2 DPAS only (8 chains)                          18.8      4747      38.0        19.3%
+  3 SLM operands + DPAS                           18.5      4830      38.6        19.7%
+  4 weights streamed + DPAS (X in regs)          211.7       421       3.4         1.7%
+  5 weights + s4->s8 expansion, no DPAS          232.0       384       3.1         1.6%
+  6 weights + expansion + s8 DPAS                231.7       385       3.1         1.6%
+  7 weights + X planes streamed + DPAS           211.6       421       3.4         1.7%
+  8 = 7 with the next tiles requested first      206.9       431       3.4         1.8%
+
+gate+up m=8  N=34816 K=5120 (89.1 MB 4-bit), tokens/thread 8 x 1 groups, U=2: 2176 threads, 320 dpas per thread, 5.70 GOP issued (1 dpas = 8192 ops)
+  mode                                              us      GB/s      TOPS   % of 196.5
+  0 read weights only                            213.8       417      26.7        13.6%
+  1 DPAS only (GEMM chain structure)              37.5      2376     152.0        77.4%
+  2 DPAS only (8 chains)                          34.5      2582     165.3        84.1%
+  3 SLM operands + DPAS                           35.6      2507     160.4        81.6%
+  4 weights streamed + DPAS (X in regs)          217.7       409      26.2        13.3%
+  5 weights + s4->s8 expansion, no DPAS          233.5       382      24.4        12.4%
+  6 weights + expansion + s8 DPAS                239.5       372      23.8        12.1%
+  7 weights + X planes streamed + DPAS           216.4       412      26.4        13.4%
+  8 = 7 with the next tiles requested first      215.8       413      26.4        13.5%
+
+gate+up m=16  N=34816 K=5120 (89.1 MB 4-bit), tokens/thread 8 x 2 groups, U=1: 2176 threads, 640 dpas per thread, 11.41 GOP issued (1 dpas = 8192 ops)
+  mode                                              us      GB/s      TOPS   % of 196.5
+  0 read weights only                            217.9       409      52.4        26.6%
+  1 DPAS only (GEMM chain structure)              73.7      1210     154.8        78.8%
+  2 DPAS only (8 chains)                          68.6      1299     166.3        84.6%
+  3 SLM operands + DPAS                           68.1      1308     167.4        85.2%
+  4 weights streamed + DPAS (X in regs)          223.2       399      51.1        26.0%
+  5 weights + s4->s8 expansion, no DPAS          261.4       341      43.6        22.2%
+  6 weights + expansion + s8 DPAS                248.3       359      46.0        23.4%
+  7 weights + X planes streamed + DPAS           223.2       399      51.1        26.0%
+  8 = 7 with the next tiles requested first      219.2       407      52.0        26.5%
+
+GDN in-proj m=1  N=16384 K=5120 (41.9 MB 4-bit), tokens/thread 1 x 1 groups, U=2: 1024 threads, 320 dpas per thread, 0.34 GOP issued (1 dpas = 1024 ops)
+  mode                                              us      GB/s      TOPS   % of 196.5
+  0 read weights only                            101.3       414       3.3         1.7%
+  1 DPAS only (GEMM chain structure)              10.5      3992      31.9        16.3%
+  2 DPAS only (8 chains)                           9.7      4312      34.5        17.6%
+  3 SLM operands + DPAS                            8.7      4811      38.5        19.6%
+  4 weights streamed + DPAS (X in regs)          103.0       407       3.3         1.7%
+  5 weights + s4->s8 expansion, no DPAS          109.8       382       3.1         1.6%
+  6 weights + expansion + s8 DPAS                106.4       394       3.2         1.6%
+  7 weights + X planes streamed + DPAS           100.0       419       3.4         1.7%
+  8 = 7 with the next tiles requested first      100.7       416       3.3         1.7%
+
+GDN in-proj m=8  N=16384 K=5120 (41.9 MB 4-bit), tokens/thread 8 x 1 groups, U=2: 1024 threads, 320 dpas per thread, 2.68 GOP issued (1 dpas = 8192 ops)
+  mode                                              us      GB/s      TOPS   % of 196.5
+  0 read weights only                            102.2       410      26.3        13.4%
+  1 DPAS only (GEMM chain structure)              18.0      2325     148.8        75.7%
+  2 DPAS only (8 chains)                          17.8      2360     151.0        76.9%
+  3 SLM operands + DPAS                           17.6      2381     152.4        77.6%
+  4 weights streamed + DPAS (X in regs)          104.5       401      25.7        13.1%
+  5 weights + s4->s8 expansion, no DPAS          110.5       380      24.3        12.4%
+  6 weights + expansion + s8 DPAS                115.0       365      23.3        11.9%
+  7 weights + X planes streamed + DPAS           102.0       411      26.3        13.4%
+  8 = 7 with the next tiles requested first      103.2       406      26.0        13.2%
+
+GDN in-proj m=16  N=16384 K=5120 (41.9 MB 4-bit), tokens/thread 8 x 2 groups, U=1: 1024 threads, 640 dpas per thread, 5.37 GOP issued (1 dpas = 8192 ops)
+  mode                                              us      GB/s      TOPS   % of 196.5
+  0 read weights only                            100.4       418      53.5        27.2%
+  1 DPAS only (GEMM chain structure)              35.2      1193     152.7        77.7%
+  2 DPAS only (8 chains)                          34.8      1205     154.2        78.5%
+  3 SLM operands + DPAS                           32.4      1293     165.5        84.2%
+  4 weights streamed + DPAS (X in regs)          102.7       408      52.3        26.6%
+  5 weights + s4->s8 expansion, no DPAS          132.5       316      40.5        20.6%
+  6 weights + expansion + s8 DPAS                120.4       348      44.6        22.7%
+  7 weights + X planes streamed + DPAS           104.9       400      51.2        26.1%
+  8 = 7 with the next tiles requested first      102.1       411      52.6        26.8%
+
+attention qkv m=1  N=14336 K=5120 (36.7 MB 4-bit), tokens/thread 1 x 1 groups, U=2: 896 threads, 320 dpas per thread, 0.29 GOP issued (1 dpas = 1024 ops)
+  mode                                              us      GB/s      TOPS   % of 196.5
+  0 read weights only                             90.2       407       3.3         1.7%
+  1 DPAS only (GEMM chain structure)              10.5      3503      28.0        14.3%
+  2 DPAS only (8 chains)                           9.7      3778      30.2        15.4%
+  3 SLM operands + DPAS                            7.7      4749      38.0        19.3%
+  4 weights streamed + DPAS (X in regs)           91.5       401       3.2         1.6%
+  5 weights + s4->s8 expansion, no DPAS          108.3       339       2.7         1.4%
+  6 weights + expansion + s8 DPAS                103.6       354       2.8         1.4%
+  7 weights + X planes streamed + DPAS            89.8       409       3.3         1.7%
+  8 = 7 with the next tiles requested first       92.5       397       3.2         1.6%
+
+attention qkv m=8  N=14336 K=5120 (36.7 MB 4-bit), tokens/thread 8 x 1 groups, U=2: 896 threads, 320 dpas per thread, 2.35 GOP issued (1 dpas = 8192 ops)
+  mode                                              us      GB/s      TOPS   % of 196.5
+  0 read weights only                             90.4       406      26.0        13.2%
+  1 DPAS only (GEMM chain structure)              18.0      2035     130.2        66.3%
+  2 DPAS only (8 chains)                          17.8      2061     131.9        67.1%
+  3 SLM operands + DPAS                           14.3      2563     164.1        83.5%
+  4 weights streamed + DPAS (X in regs)           92.4       397      25.4        12.9%
+  5 weights + s4->s8 expansion, no DPAS          108.5       338      21.7        11.0%
+  6 weights + expansion + s8 DPAS                110.9       331      21.2        10.8%
+  7 weights + X planes streamed + DPAS            92.7       396      25.3        12.9%
+  8 = 7 with the next tiles requested first       95.2       385      24.7        12.6%
+
+attention qkv m=16  N=14336 K=5120 (36.7 MB 4-bit), tokens/thread 8 x 2 groups, U=1: 896 threads, 640 dpas per thread, 4.70 GOP issued (1 dpas = 8192 ops)
+  mode                                              us      GB/s      TOPS   % of 196.5
+  0 read weights only                             89.6       409      52.4        26.7%
+  1 DPAS only (GEMM chain structure)              35.2      1044     133.6        68.0%
+  2 DPAS only (8 chains)                          34.8      1054     134.9        68.7%
+  3 SLM operands + DPAS                           26.9      1366     174.9        89.0%
+  4 weights streamed + DPAS (X in regs)           91.8       400      51.2        26.0%
+  5 weights + s4->s8 expansion, no DPAS          132.5       277      35.4        18.0%
+  6 weights + expansion + s8 DPAS                117.7       312      39.9        20.3%
+  7 weights + X planes streamed + DPAS            94.2       390      49.9        25.4%
+  8 = 7 with the next tiles requested first       94.2       390      49.9        25.4%
+
+lm_head m=1  N=248320 K=5120 (635.7 MB 4-bit), tokens/thread 1 x 1 groups, U=2: 15520 threads, 320 dpas per thread, 5.09 GOP issued (1 dpas = 1024 ops)
+  mode                                              us      GB/s      TOPS   % of 196.5
+  0 read weights only                           1430.2       444       3.6         1.8%
+  1 DPAS only (GEMM chain structure)             115.0      5527      44.2        22.5%
+  2 DPAS only (8 chains)                         107.8      5897      47.2        24.0%
+  3 SLM operands + DPAS                          113.9      5583      44.7        22.7%
+  4 weights streamed + DPAS (X in regs)         1430.5       444       3.6         1.8%
+  5 weights + s4->s8 expansion, no DPAS         1516.2       419       3.4         1.7%
+  6 weights + expansion + s8 DPAS               1490.1       427       3.4         1.7%
+  7 weights + X planes streamed + DPAS          1432.5       444       3.6         1.8%
+  8 = 7 with the next tiles requested first     1444.0       440       3.5         1.8%
+
+lm_head m=8  N=248320 K=5120 (635.7 MB 4-bit), tokens/thread 8 x 1 groups, U=2: 15520 threads, 320 dpas per thread, 40.68 GOP issued (1 dpas = 8192 ops)
+  mode                                              us      GB/s      TOPS   % of 196.5
+  0 read weights only                           1455.1       437      28.0        14.2%
+  1 DPAS only (GEMM chain structure)             216.6      2935     187.8        95.6%
+  2 DPAS only (8 chains)                         214.0      2971     190.1        96.8%
+  3 SLM operands + DPAS                          219.3      2899     185.5        94.4%
+  4 weights streamed + DPAS (X in regs)         1487.5       427      27.4        13.9%
+  5 weights + s4->s8 expansion, no DPAS         1533.6       415      26.5        13.5%
+  6 weights + expansion + s8 DPAS               1588.6       400      25.6        13.0%
+  7 weights + X planes streamed + DPAS          1495.8       425      27.2        13.8%
+  8 = 7 with the next tiles requested first     1504.9       422      27.0        13.8%
+
+lm_head m=16  N=248320 K=5120 (635.7 MB 4-bit), tokens/thread 8 x 2 groups, U=1: 15520 threads, 640 dpas per thread, 81.37 GOP issued (1 dpas = 8192 ops)
+  mode                                              us      GB/s      TOPS   % of 196.5
+  0 read weights only                           1474.1       431      55.2        28.1%
+  1 DPAS only (GEMM chain structure)             432.9      1468     187.9        95.6%
+  2 DPAS only (8 chains)                         429.1      1481     189.6        96.5%
+  3 SLM operands + DPAS                          429.0      1482     189.7        96.5%
+  4 weights streamed + DPAS (X in regs)         1512.2       420      53.8        27.4%
+  5 weights + s4->s8 expansion, no DPAS         1598.7       398      50.9        25.9%
+  6 weights + expansion + s8 DPAS               1620.8       392      50.2        25.5%
+  7 weights + X planes streamed + DPAS          1561.6       407      52.1        26.5%
+  8 = 7 with the next tiles requested first     1516.4       419      53.7        27.3%

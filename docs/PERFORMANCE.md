@@ -1376,3 +1376,104 @@ Key: `submit<WF, R, G, U, A16, PIPE>` with WF 0 = s4, 3 = bf16; `submit_exp<WF, 
    gate+up 221.8 us against 242.5 at 8 rows (-8.5% for -25% bytes; ideal at the s4 read rate: about 178 us, -27%), -16% at 1 row, -4.5% at 16 rows, no gain on the down projection at 8 rows.
    So **fewer bytes is the lever, but the 3-bit tile layout has to be repacked to 256-byte units (4 tiles = 768 B) before it pays**; the accuracy of 3-bit weights is a separate question that was not tested here.
 6. For the s4 kernel itself: stream rate 368 GB/s on gate+up (89% of the 415 GB/s probe ceiling and below the 417 GB/s of the bf16 kernel, which moves 512 B per tile step per thread): the remaining inefficiency of the 4-bit kernel is in the 256-byte step, not in the XMX.
+
+
+## Part M. How much of the XMX does the 4-bit GEMM use? Measurement and cause analysis (no production kernel was changed; 3-bit work paused)
+
+Sources and method. Hardware: Intel's [Arc Pro B60 datasheet](https://www.intel.com/content/dam/www/central-libraries/us/en/documents/2026-03/datasheet-b60-gpu.pdf) and
+[Arc Pro B-series quick reference](https://www.intel.com/content/dam/www/central-libraries/us/en/documents/2026-03/intel-arc-pro-b-series-graphics-quick-reference-guide-v1-0.pdf): 20 Xe cores, 160 XMX engines, 2400 MHz, 197 INT8 TOPS, 456 GB/s.
+The same configuration comes from the driver: Level Zero reports 5 slices x 4 subslices x 8 EUs = 160 EUs, 8 threads per EU (1,280 resident threads), core clock 2,400 MHz.
+Standalone probes (`kernels/probe/`, no production kernel involved): `dpas_peak.cpp`, `dpas_chain.cpp`, `bw_probe.cpp`, `bw_shapes.cpp`, `xmx_probe.cpp`, `simd_int4.cpp`, `call_xfgemm.cpp`; production GEMM via `xf-bench --cold` (weights rotated through copies larger than L2) and `libxfk` `xf_gemm`.
+All probes: in-order queue, cold weights, random data (constant or arithmetic-progression data reads 1.5 to 5x faster: memory compression), steady-state back-to-back launches. Raw data: `benchmarks/results/m12/`.
+
+### M1. Theoretical peak and what the machine can sustain
+| quantity | theory (datasheet, clock x engines) | measured with synthetic probes |
+|---|---:|---:|
+| INT8 / s4 x s8 / u4 x s8 XMX | 197 TOPS (160 engines x 512 OP/clk x 2.4 GHz = 196.6) | **196.5 TOPS** (99.9%, 1,280 threads, operands in registers) |
+| BF16 / FP16 XMX | 98.3 TFLOPS (half the INT8 rate: 160 x 256 FLOP/clk x 2.4 GHz) | **98.2 TFLOPS** (bf16), 98.2 (fp16) |
+| memory | 456 GB/s (192-bit GDDR6) | **440 GB/s asymptote** (97% of 456; fit of read-only kernel time against bytes), 415 GB/s at 1 to 90 MB |
+A dpas.8x8 (s4 / s8, 8 x 16 x 32 MAC = 8,192 ops) occupies an XMX engine for 16 clocks at peak. s4 and u4 weights run at the s8 rate: one dpas covers 32 columns whatever the weight width, so 4-bit weights buy memory, not XMX speed.
+Hardware counters (XMX activity, EU active / stall, cache hit rate, DRAM traffic) are **not available** here: `zetMetricGroupGet` returns 0 groups (0x7ffffffe) and `/proc/sys/dev/xe/observation_paranoid` is 1 (observation needs CAP_PERFMON; not changed).
+Every utilisation figure below is therefore an estimate from synthetic kernels or from kernel times; measured quantities are times, instruction counts (disassembly) and byte counts.
+
+### M2. What limits the DPAS rate in the kernels (`dpas_chain.txt`: s4 x s8, operands in registers, TOPS of 196.5)
+| threads per EU \ independent accumulator chains | 1 | 2 | 4 | 8 | 16 |
+|---|---:|---:|---:|---:|---:|
+| 1 | 30.1 | 49.1 | 46.1 | 49.1 | 36.5 |
+| 2 | 98.2 | 98.2 | 92.1 | 98.2 | 72.2 |
+| 4 | 196.5 | 196.5 | 184.2 | 196.5 | 142.5 |
+| 8 | 151.4 | 196.5 | 196.5 | 196.5 | 154.0 |
+One thread cannot issue more than about one dpas.8x8 every 64 clocks (49 TOPS even with 8 chains; one dependent chain: about 100 clocks of latency per dpas), while the engine consumes one every 16: **the XMX needs at least 4 resident threads per EU (640 threads) to reach the peak**, 2 chains per thread are enough.
+The 8-token GEMM kernel keeps 4 chains per thread (U = 2 tiles x 2 byte planes), the 16-token one 4 to 8. The narrow matrices launch 320 threads (2 per EU): the XMX cannot exceed about 98 TOPS there, whatever else happens.
+
+### M3. Operand supply and what DPAS rates the loop structure reaches (`xmx_probe.txt`; same thread layout, tile loop and weight layout as the production kernel; us per call, cold)
+| shape | m | read only us | DPAS only us (% of peak) | SLM operands + DPAS us (% of peak) | weights streamed + DPAS us | = with next tiles first (production-like) us | s4->s8 expansion + s8 DPAS us |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| out projection | 8 | 54.9 | 13.2 (39%) | 6.3 (81%) | 56.3 | 56.1 | 112.0 |
+| out projection | 16 | 85.6 | 22.8 (45%) | 11.4 (90%) | 87.6 | 65.3 | 114.6 |
+| down | 8 | 110.0 | 35.7 (41%) | 15.6 (93%) | 112.1 | 122.9 | 296.7 |
+| down | 16 | 181.0 | 62.9 (46%) | 30.1 (96%) | 188.4 | 183.8 | 307.6 |
+| gate+up | 8 | 213.8 | 37.5 (77%) | 35.6 (82%) | 217.7 | 215.8 | 239.5 |
+| gate+up | 16 | 217.9 | 73.7 (79%) | 68.1 (85%) | 223.2 | 219.2 | 248.3 |
+| GDN in-proj | 8 | 102.2 | 18.0 (76%) | 17.6 (78%) | 104.5 | 103.2 | 115.0 |
+| GDN in-proj | 16 | 100.4 | 35.2 (78%) | 32.4 (84%) | 102.7 | 102.1 | 120.4 |
+| attention qkv | 8 | 90.4 | 18.0 (66%) | 14.3 (84%) | 92.4 | 95.2 | 110.9 |
+| attention qkv | 16 | 89.6 | 35.2 (68%) | 26.9 (89%) | 91.8 | 94.2 | 117.7 |
+| lm_head | 8 | 1455.1 | 216.6 (96%) | 219.3 (94%) | 1487.5 | 1504.9 | 1588.6 |
+| lm_head | 16 | 1474.1 | 432.9 (96%) | 429.0 (96%) | 1512.2 | 1516.4 | 1620.8 |
+- DPAS alone (operands in registers, the GEMM's own chain structure) reaches 76 to 79% of the INT8 peak on the large shapes (the head: 96%); with 8 chains 84%.
+- **Operands supplied from SLM (staged once, read back every tile) + DPAS reach 78 to 96% of the peak** (down m = 16: 96%): SLM supply does not limit the XMX.
+- Streaming the real 4-bit weights from memory + DPAS takes the read-only time plus 1 to 3% (gate+up m = 8: 217.7 against 213.8 us): the XMX work is hidden behind the loads when the threads are numerous (13.6 per EU on gate+up) and the next tiles are requested before the DPAS.
+- Expansion s4 -> s8 in registers + s8 DPAS (the `s4>s8` variant): +12% on gate+up, **+100 to +170% on the 320-thread matrices** (out projection 112 us against 56, down 297 against 123): the expansion is vector-ALU work that few threads cannot hide.
+- Packed-int4 on the vector ALUs without XMX (`simd_int4.txt`, results identical to the DPAS ones and to a host reference): at m = 1 it ties with the DPAS kernel on the large shapes (gate+up 220 against 208 us, GDN in-proj 100 against 101) because both wait for the weights, and loses on the narrow one (74 against 51 us);
+  at m = 8 it is 2.6 to 3.2x slower (gate+up 561 against 216 us: 2 expansion ops plus one multiply-add per token for every weight), at m = 16 it collapses (register pressure). It never wins; the hypothesis that m = 1 favours SIMD is not supported, because the XMX kernel already reaches the read time at m = 1.
+
+### M4. Per shape and per m: production 4-bit GEMM (s4 weights, 16-bit activations as two byte planes, pipelined loop, best segment count), peak and measured
+F = 2MNK is the logical work; "DPAS ops issued" counts what the XMX executes (padding to 1 / 8 / 16 rows, two byte planes); "% of XMX peak" is that rate against 196.5 TOPS; GB/s is the stored 4-bit weight bytes over the call time.
+| shape (N x K) | m | threads (per EU) | dpas / thread | DPAS ops issued (G) | XMX peak TOPS | production us | segs | effective TFLOPS (F = 2MNK) | physical XMX TOPS | % of XMX peak | GB/s (4-bit weights) | % of 456 | read-only us (same layout) | DPAS-only us | SLM-fed + DPAS us | weights + DPAS us | verdict |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| out projection 5120x6144 | 1 | 320 (2.0) | 384 | 0.13 | 196.5 | 61.2 | 1 | 1.03 | 2.1 | 1.1% | 257 | 56% | 63.5 | 8.7 | 8.2 | 60.0 | latency / occupancy limited stream: even the read-only kernel is 68% above the bandwidth floor (320 threads, short streams); dpas.8x1 (1/8 of the XMX work per instruction) |
+| out projection 5120x6144 | 8 | 320 (2.0) | 384 | 1.01 | 196.5 | 65.9 | 1 | 7.64 | 15.3 | 7.8% | 239 | 52% | 54.9 | 13.2 | 6.3 | 56.3 | latency / occupancy limited stream: even the read-only kernel is 45% above the bandwidth floor (320 threads, short streams) |
+| out projection 5120x6144 | 16 | 320 (2.0) | 768 | 2.01 | 196.5 | 77.5 | 1 | 12.99 | 25.9 | 13.2% | 203 | 45% | 85.6 | 22.8 | 11.4 | 87.6 | latency / occupancy limited stream: even the read-only kernel is 126% above the bandwidth floor (320 threads, short streams) |
+| down 5120x17408 | 1 | 320 (2.0) | 1088 | 0.36 | 196.5 | 116.2 | 1 | 1.53 | 3.1 | 1.6% | 384 | 84% | 109.3 | 15.4 | 14.1 | 108.8 | memory-bandwidth bound (read-only 109 us, XMX 14% of it); dpas.8x1 (1/8 of the XMX work per instruction) |
+| down 5120x17408 | 8 | 640 (4.0) | 1088 | 2.85 | 196.5 | 131.3 | 2 | 10.86 | 21.7 | 11.0% | 339 | 74% | 110.0 | 35.7 | 15.6 | 112.1 | memory bound + exposed load/compute serialisation |
+| down 5120x17408 | 16 | 640 (4.0) | 2176 | 5.70 | 196.5 | 160.0 | 2 | 17.83 | 35.6 | 18.1% | 279 | 61% | 181.0 | 62.9 | 30.1 | 188.4 | latency / occupancy limited stream: even the read-only kernel is 69% above the bandwidth floor (640 threads, short streams) |
+| gate+up 34816x5120 | 1 | 2176 (13.6) | 320 | 0.71 | 196.5 | 230.1 | 1 | 1.55 | 3.1 | 1.6% | 387 | 85% | 211.5 | 20.6 | 18.5 | 211.7 | memory-bandwidth bound (read-only 212 us, XMX 10% of it); dpas.8x1 (1/8 of the XMX work per instruction) |
+| gate+up 34816x5120 | 8 | 2176 (13.6) | 320 | 5.70 | 196.5 | 242.5 | 1 | 11.76 | 23.5 | 12.0% | 368 | 81% | 213.8 | 37.5 | 35.6 | 217.7 | memory-bandwidth bound (read-only 214 us, XMX 18% of it) |
+| gate+up 34816x5120 | 16 | 2176 (13.6) | 640 | 11.41 | 196.5 | 253.6 | 1 | 22.49 | 45.0 | 22.9% | 351 | 77% | 217.9 | 73.7 | 68.1 | 223.2 | memory bound + exposed load/compute serialisation |
+| GDN in-proj 16384x5120 | 1 | 1024 (6.4) | 320 | 0.34 | 196.5 | 111.3 | 1 | 1.51 | 3.1 | 1.6% | 377 | 83% | 101.3 | 10.5 | 8.7 | 103.0 | memory-bandwidth bound (read-only 101 us, XMX 10% of it); dpas.8x1 (1/8 of the XMX work per instruction) |
+| GDN in-proj 16384x5120 | 8 | 1024 (6.4) | 320 | 2.68 | 196.5 | 115.3 | 1 | 11.64 | 23.2 | 11.8% | 364 | 80% | 102.2 | 18.0 | 17.6 | 104.5 | memory-bandwidth bound (read-only 102 us, XMX 18% of it) |
+| GDN in-proj 16384x5120 | 16 | 1024 (6.4) | 640 | 5.37 | 196.5 | 118.7 | 1 | 22.61 | 45.2 | 23.0% | 353 | 77% | 100.4 | 35.2 | 32.4 | 102.7 | memory bound + exposed load/compute serialisation |
+| attention qkv 14336x5120 | 1 | 896 (5.6) | 320 | 0.29 | 196.5 | 103.3 | 1 | 1.42 | 2.8 | 1.4% | 355 | 78% | 90.2 | 10.5 | 7.7 | 91.5 | memory-bandwidth bound (read-only 90 us, XMX 12% of it); dpas.8x1 (1/8 of the XMX work per instruction) |
+| attention qkv 14336x5120 | 8 | 896 (5.6) | 320 | 2.35 | 196.5 | 106.8 | 1 | 11.00 | 22.0 | 11.2% | 344 | 75% | 90.4 | 18.0 | 14.3 | 92.4 | memory bound + exposed load/compute serialisation |
+| attention qkv 14336x5120 | 16 | 896 (5.6) | 640 | 4.70 | 196.5 | 109.1 | 1 | 21.53 | 43.1 | 21.9% | 336 | 74% | 89.6 | 35.2 | 26.9 | 91.8 | memory bound + exposed load/compute serialisation |
+| lm_head 248320x5120 | 1 | 15520 (97.0) | 320 | 5.09 | 196.5 | 1473.3 | 1 | 1.73 | 3.5 | 1.8% | 431 | 95% | 1430.2 | 115.0 | 113.9 | 1430.5 | memory-bandwidth bound (read-only 1430 us, XMX 8% of it); dpas.8x1 (1/8 of the XMX work per instruction) |
+| lm_head 248320x5120 | 8 | 15520 (97.0) | 320 | 40.68 | 196.5 | 1571.7 | 1 | 12.94 | 25.9 | 13.2% | 404 | 89% | 1455.1 | 216.6 | 219.3 | 1487.5 | memory-bandwidth bound (read-only 1455 us, XMX 15% of it) |
+| lm_head 248320x5120 | 16 | 15520 (97.0) | 640 | 81.37 | 196.5 | 1771.1 | 1 | 22.97 | 45.9 | 23.4% | 359 | 79% | 1474.1 | 432.9 | 429.0 | 1512.2 | memory bound + exposed load/compute serialisation |
+
+
+Verdict key. "memory-bandwidth bound": the read-only kernel with the same layout takes about the call time and the XMX alone takes 10 to 18% of it. "Latency / occupancy limited stream": even the read-only kernel is 45 to 126% above the sustained-bandwidth floor
+(bytes / 415 GB/s): 320 threads, 2 per EU, short streams of 49 to 139 KB each, a fixed ramp and tail per launch. "Exposed load / compute serialisation": the call is more than 15% above the read-only time.
+Static ISA (ocloc disassembly): all production kernels 128 GRF, no spill, no SLM, no barrier. The 8-token loop body is 8 `dpas.8x8` per trip (2 stages x U = 2 x 2 byte planes) in two groups of 4 issued back to back (`{Atomic}`), each group preceded by `sync.allwr` on the loads of its stage (the next stage's loads are issued before);
+the 1-token kernel uses `dpas.8x1` (a repeat count of 1: one eighth of the work per instruction); 4 independent accumulator chains per stage, no dependency between consecutive dpas of a group. Dynamic count per thread = tiles x planes (x 2 groups at 16 tokens), column "dpas / thread".
+
+### M5. Roofline reading
+- Arithmetic intensity of the weight stream: 2 x M x 2 (two byte planes) operations of the XMX per 0.5 byte of weight = 16 M ops / byte (m = 8: 128, m = 16: 256, in physical ops) against a ridge point of 196.5 TOPS / 440 GB/s = 447 ops / byte: **every case is far left of the ridge (memory side)**;
+  the XMX would become the limit only at about 28 tokens (two planes) or 56 (one 8-bit plane), i.e. prefill, not decoding.
+- Floor of a call = fixed cost + bytes / bandwidth: the read-only kernel fits `t = 10.8 us + MB / 440 GB/s` over 15.7 MB to 636 MB (residuals within 4 us except the 320-thread out projection, +8.5 us).
+  Production 8-row pass, the five layer GEMMs without the head: measured 35.4 ms; stream at 440 GB/s 27.6 ms; 256 launches x 10.8 us = 2.8 ms; **5.0 ms above the read-only floor are the production kernel's own overhead.**
+- **Weight read is not the whole story**: the stream of the large matrices reaches 340 to 387 GB/s (77 to 85% of 456), the head 431 GB/s (95%), and the same loop in a standalone probe reaches the read-only time (gate+up m = 8: 215.8 us) while the production kernel takes 243.4 us.
+  Bisection with the probe: production epilogue 0 us, 64-bit index arithmetic (division, modulo) +7 us, run-time strides +3 us: 226.5 us; **about 17 us (7%) of the gap remain unexplained** (not found in the loop structure, the allocation alignment, the number of rotated buffers, the build flags or the benchmark path:
+  `libxfk` called from a C++ harness gives 243.4 us like `xf-bench`). Candidate causes still to bisect: remaining address arithmetic, register allocation of the production kernel (56 `send` against about 35), the order of loads and DPAS in the compiled loop.
+
+### M6. Where the GEMM time goes (summary)
+1. Not XMX throughput: XMX alone is 10 to 18% of the call at 8 tokens, 18 to 25% at 16; at the peak structure it could run 5 to 10x faster. SLM or expanded operands would not help, and expanding the weights (s4 -> s8, BF16) makes it slower.
+2. Bandwidth: the large shapes stream at 77 to 85% of 456 GB/s; the sustained ceiling is 440 GB/s (97%). Remaining loss on them: the per-launch fixed cost (10.8 us x 256 per pass = 2.8 ms) and the 7% kernel overhead above (5 ms per pass).
+3. Narrow matrices (out projection 64 per pass, down 64): 320 to 640 threads, 2 to 4 per EU: the read-only stream itself is at 52 to 74% of the floor, the XMX could reach only 50% of its peak, and short streams pay the ramp: latency / occupancy limited. Adding column segments adds threads but also partial sums.
+4. m = 1: dpas.8x1, memory-bound at the read time (the large shapes); the 320-thread shapes are occupancy-bound.
+5. "85 to 94% of the theoretical bandwidth" is measured only on the largest shapes and the head; the weighted share over a pass is 35.4 ms measured against a 30.4 ms floor from the fit (86%): the GEMM is **not** at its floor and not "optimised": 5.0 ms (14% of the GEMM time) lie above it, and the fixed cost per launch is a further 2.8 ms.
+   What the measurements do not show: a gain from the XMX itself, from SLM operand supply or from expanded weights.
+
+### M7. Estimates against measurements
+Measured: all times, bytes, dpas counts (static from the ISA, dynamic = tiles x planes x groups), GRF / SLM / spill, thread counts, peak XMX and sustained read rates of the synthetic probes. Estimated (no counters): XMX busy share (= DPAS-only time / call time), stall split between memory and compute (from the read-only and DPAS-only kernels),
+occupancy-based limits (from the chain / thread scaling probe), the fixed launch cost (from the fit), the unexplained 17 us.

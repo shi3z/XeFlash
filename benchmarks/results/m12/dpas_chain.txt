@@ -1,0 +1,6 @@
+s4 x s8 dpas.8x8, operands in registers: TOPS (peak 196.5) by independent chains per thread (columns) and threads per EU (rows)
+thr/EU             1       2       4       8      16
+1               30.1    49.1    46.1    49.1    36.5
+2               98.2    98.2    92.1    98.2    72.2
+4              196.5   196.5   184.2   196.5   142.5
+8              151.4   196.5   196.5   196.5   154.0

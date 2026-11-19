@@ -34,6 +34,8 @@ const SHAPES: &[Shape] = &[
     Shape { name: "merged.gate_up", rows: 34816, cols: 5120 },
     // Output projections of the 27B model (GDN out and attention o): 64 per pass, the narrowest GEMMs.
     Shape { name: "out_proj", rows: 5120, cols: 6144 },
+    // The output head (vocabulary x hidden).
+    Shape { name: "lm_head", rows: 248320, cols: 5120 },
 ];
 
 struct Case {
