@@ -32,6 +32,8 @@ const SHAPES: &[Shape] = &[
     Shape { name: "merged.qkvz", rows: 16384, cols: 5120 },
     Shape { name: "merged.attn_qkv", rows: 14336, cols: 5120 },
     Shape { name: "merged.gate_up", rows: 34816, cols: 5120 },
+    // Output projections of the 27B model (GDN out and attention o): 64 per pass, the narrowest GEMMs.
+    Shape { name: "out_proj", rows: 5120, cols: 6144 },
 ];
 
 struct Case {
@@ -57,9 +59,11 @@ struct Weights {
     bf16: Vec<u16>,
     row_scale: Vec<f32>,
     row_scale_dev: DeviceBuf,
+    /// Extra device copies of the packed weights (--cold): the timing loop cycles through them so that the weights come from DRAM, not L2.
+    copies: Vec<DeviceBuf>,
 }
 
-fn make_weights(dev: &Device, shape: Shape, format: WeightFormat) -> Result<Weights> {
+fn make_weights(dev: &Device, shape: Shape, format: WeightFormat, cold: bool) -> Result<Weights> {
     let n = shape.rows * shape.cols;
     let mut rng = Rng::new(0xC0FFEE ^ (n as u64) ^ ((format as u64) << 40));
     let row_scale: Vec<f32> = (0..shape.rows).map(|_| 0.5 + 0.5 * rng.unit_f32().abs()).collect();
@@ -67,12 +71,16 @@ fn make_weights(dev: &Device, shape: Shape, format: WeightFormat) -> Result<Weig
     if format == WeightFormat::Bf16 {
         let bf16: Vec<u16> = (0..n).map(|_| f32_to_bf16(rng.unit_f32())).collect();
         let packed = pack_weights_bf16(shape.rows, shape.cols, &bf16)?;
-        Ok(Weights { dev: dev.upload(&packed)?, int: Vec::new(), bf16, row_scale, row_scale_dev })
+        let nc = if cold { (160_000_000usize / (packed.len() * 4).max(1)).max(1) } else { 0 };
+        let copies = (0..nc).map(|_| dev.upload(&packed)).collect::<Result<Vec<_>>>()?;
+        Ok(Weights { dev: dev.upload(&packed)?, int: Vec::new(), bf16, row_scale, row_scale_dev, copies })
     } else {
         let (lo, hi) = format.int_range();
         let int: Vec<i8> = (0..n).map(|_| rng.range_i8(lo, hi)).collect();
         let packed = pack_weights(format, shape.rows, shape.cols, &int)?;
-        Ok(Weights { dev: dev.upload(&packed)?, int, bf16: Vec::new(), row_scale, row_scale_dev })
+        let nc = if cold { (160_000_000usize / (packed.len() * std::mem::size_of_val(&packed[0])).max(1)).max(1) } else { 0 };
+        let copies = (0..nc).map(|_| dev.upload(&packed)).collect::<Result<Vec<_>>>()?;
+        Ok(Weights { dev: dev.upload(&packed)?, int, bf16: Vec::new(), row_scale, row_scale_dev, copies })
     }
 }
 
@@ -179,16 +187,36 @@ fn run_case(dev: &Device, w: &Weights, c: &Case, min_time: f64) -> Result<Outcom
     }
 
     // ---- timing ----
+    let srcs: Vec<&DeviceBuf> = if w.copies.is_empty() { vec![&w.dev] } else { w.copies.iter().collect() };
+    let mut rot: Vec<Gemm> = Vec::new();
+    for wb in srcs {
+        rot.push(Gemm {
+            format: c.format,
+            rows,
+            cols,
+            tokens: m,
+            tokens_per_thread: c.tpt,
+            segs: c.segs,
+            w: wb,
+            x: &x_dev,
+            x_lo: xlo_dev.as_ref(),
+            row_scale: &w.row_scale_dev,
+            token_scale: &ts_dev,
+            y: &y_dev,
+            y_part: ypart_dev.as_ref(),
+            token_offset: to_dev.as_ref(),
+        });
+    }
     let t0 = Instant::now();
-    dev.gemm(&gemm)?;
+    dev.gemm(&rot[0])?;
     dev.wait()?;
     let one = t0.elapsed().as_secs_f64();
     let reps = ((min_time / one.max(1e-6)).ceil() as usize).clamp(3, 2000);
     let mut samples = Vec::new();
     for _ in 0..5 {
         let t = Instant::now();
-        for _ in 0..reps {
-            dev.gemm(&gemm)?;
+        for i in 0..reps {
+            dev.gemm(&rot[i % rot.len()])?;
         }
         dev.wait()?;
         samples.push(t.elapsed().as_secs_f64() / reps as f64 * 1e3);
@@ -224,7 +252,7 @@ fn main() -> Result<()> {
     let json_path = args.iter().position(|a| a == "--json").and_then(|i| args.get(i + 1)).cloned();
     let only_shape = args.iter().position(|a| a == "--shape").and_then(|i| args.get(i + 1)).cloned();
     let only_fmt = args.iter().position(|a| a == "--format").and_then(|i| args.get(i + 1)).cloned();
-    if let Some(bad) = args.iter().find(|a| a.starts_with("--") && !["--quick", "--json", "--shape", "--format"].contains(&a.as_str())) {
+    if let Some(bad) = args.iter().find(|a| a.starts_with("--") && !["--quick", "--json", "--shape", "--format", "--segs", "--tokens", "--cold"].contains(&a.as_str())) {
         return Err(Error::Invalid(format!("unknown option {bad}")));
     }
 
@@ -248,9 +276,14 @@ fn main() -> Result<()> {
     let (queued, waited) = launch_overhead(&dev)?;
     println!("launch   : {queued:.2} us queued, {waited:.2} us with a wait per launch\n");
 
+    // --segs 1,2,4,8 : column segments to try (default 1 and, for narrow matrices, 4); --tokens 1,8,16 : token counts
+    let cold = args.iter().any(|a| a == "--cold"); // rotate over weight copies > L2 so that DRAM bandwidth is measured
+    let seg_list: Option<Vec<usize>> = args.iter().position(|a| a == "--segs").and_then(|i| args.get(i + 1)).map(|v| v.split(',').filter_map(|x| x.parse().ok()).collect());
+    let tok_list: Option<Vec<usize>> = args.iter().position(|a| a == "--tokens").and_then(|i| args.get(i + 1)).map(|v| v.split(',').filter_map(|x| x.parse().ok()).collect());
     let formats =
         [WeightFormat::Bf16, WeightFormat::S8, WeightFormat::S4Exp8, WeightFormat::S4, WeightFormat::S3, WeightFormat::S2];
-    let token_counts: &[usize] = if quick { &[1, 8, 64] } else { &[1, 8, 16, 64, 256] };
+    let token_counts_vec: Vec<usize> = tok_list.clone().unwrap_or_else(|| if quick { vec![1, 8, 64] } else { vec![1, 8, 16, 64, 256] });
+    let token_counts: &[usize] = &token_counts_vec;
     let min_time = if quick { 0.1 } else { 0.4 };
 
     println!(
@@ -266,7 +299,7 @@ fn main() -> Result<()> {
             if only_fmt.as_ref().is_some_and(|s| format.name() != s) {
                 continue;
             }
-            let w = make_weights(&dev, *shape, format)?;
+            let w = make_weights(&dev, *shape, format, cold)?;
             for &tokens in token_counts {
                 let tpt = match tokens {
                     1 => 1,
@@ -284,7 +317,21 @@ fn main() -> Result<()> {
                         variants.push((4, true));
                     }
                 }
+                if let Some(sl) = &seg_list {
+                    variants.clear();
+                    for &sg in sl {
+                        variants.push((sg, false));
+                        if matches!(format, WeightFormat::S4 | WeightFormat::S3 | WeightFormat::S8) && tokens <= 16 {
+                            variants.push((sg, true));
+                        }
+                    }
+                }
+                let tcol = if format == WeightFormat::Bf16 { 16 } else { 32 };
+                let unroll = match tpt { 1 => 4, 8 => 2, _ => 1 };
                 for (segs, a16) in variants {
+                    if shape.cols % (tcol * unroll * segs) != 0 {
+                        continue; // this segment count does not divide the columns
+                    }
                     let case = Case { shape: *shape, format, tokens, tpt, segs, a16 };
                     let o = run_case(&dev, &w, &case, min_time)?;
                     let weights = (shape.rows * shape.cols) as f64;

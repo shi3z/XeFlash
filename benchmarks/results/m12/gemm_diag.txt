@@ -1,0 +1,28 @@
+XF_GEMM_DBG=0 XF_GEMM_U=2 merged.gate_up   34816x5120 s4+a16    8    8    1    0.3095    0.3096    575.9    288.0    18.43  exact
+XF_GEMM_DBG=0 XF_GEMM_U=1 merged.gate_up   34816x5120 s4+a16    8    8    1    0.3100    0.3100    575.1    287.5    18.40  exact
+XF_GEMM_DBG=0 XF_GEMM_U=4 merged.gate_up   34816x5120 s4+a16    8    8    1    0.3052    0.3052    584.0    292.0    18.69  exact
+XF_GEMM_DBG=1 XF_GEMM_U=2 merged.gate_up   34816x5120 s4+a16    8    8    1    0.2486    0.2486    717.1    358.5    22.95  rel 7.7e7
+XF_GEMM_DBG=2 XF_GEMM_U=2 merged.gate_up   34816x5120 s4+a16    8    8    1    0.2443    0.2443    729.7    364.9    23.35  rel 4.8e1
+XF_GEMM_DBG=3 XF_GEMM_U=2 merged.gate_up   34816x5120 s4+a16    8    8    1    0.2461    0.2462    724.3    362.1    23.18  rel 7.7e7
+XF_GEMM_DBG=3 XF_GEMM_U=4 merged.gate_up   34816x5120 s4+a16    8    8    1    0.2439    0.2439    730.9    365.5    23.39  rel 7.7e7
+XF_GEMM_DBG=0 XF_GEMM_U=2 mlp.down       5120x17408 s4+a16    8    8    4    0.1560    0.1561    571.3    285.6    18.28  exact
+XF_GEMM_DBG=0 XF_GEMM_U=1 mlp.down       5120x17408 s4+a16    8    8    4    0.1559    0.1560    571.6    285.8    18.29  exact
+XF_GEMM_DBG=0 XF_GEMM_U=4 mlp.down       5120x17408 s4+a16    8    8    4    0.1544    0.1544    577.4    288.7    18.48  exact
+XF_GEMM_DBG=1 XF_GEMM_U=2 mlp.down       5120x17408 s4+a16    8    8    4    0.1396    0.1397    638.3    319.1    20.42  rel 4.4e7
+XF_GEMM_DBG=2 XF_GEMM_U=2 mlp.down       5120x17408 s4+a16    8    8    4    0.1352    0.1352    659.4    329.7    21.10  rel 7.3e0
+XF_GEMM_DBG=3 XF_GEMM_U=2 mlp.down       5120x17408 s4+a16    8    8    4    0.1392    0.1392    640.4    320.2    20.49  rel 4.4e7
+XF_GEMM_DBG=3 XF_GEMM_U=4 mlp.down       5120x17408 s4+a16    8    8    4    0.1387    0.1387    642.8    321.4    20.57  rel 4.4e7
+XF_GEMM_DBG=0 XF_GEMM_U=2 out_proj        5120x6144 s4+a16    8    8    2    0.1142    0.1144    275.4    137.7     8.81  exact
+XF_GEMM_DBG=0 XF_GEMM_U=1 out_proj        5120x6144 s4+a16    8    8    2    0.1146    0.1146    274.5    137.3     8.78  exact
+XF_GEMM_DBG=0 XF_GEMM_U=4 out_proj        5120x6144 s4+a16    8    8    2    0.1132    0.1132    278.0    139.0     8.90  exact
+XF_GEMM_DBG=1 XF_GEMM_U=2 out_proj        5120x6144 s4+a16    8    8    2    0.1048    0.1048    300.2    150.1     9.61  rel 1.4e7
+XF_GEMM_DBG=2 XF_GEMM_U=2 out_proj        5120x6144 s4+a16    8    8    2    0.0979    0.0980    321.3    160.6    10.28  rel 3.9e0
+XF_GEMM_DBG=3 XF_GEMM_U=2 out_proj        5120x6144 s4+a16    8    8    2    0.1011    0.1011    311.2    155.6     9.96  rel 1.4e7
+XF_GEMM_DBG=3 XF_GEMM_U=4 out_proj        5120x6144 s4+a16    8    8    2    0.0993    0.0993    316.7    158.4    10.14  rel 1.4e7
+XF_GEMM_DBG=0 XF_GEMM_U=2 merged.qkvz    16384x5120 s4+a16    8    8    1    0.1420    0.1420    590.7    295.3    18.90  exact
+XF_GEMM_DBG=0 XF_GEMM_U=1 merged.qkvz    16384x5120 s4+a16    8    8    1    0.1427    0.1428    587.7    293.9    18.81  exact
+XF_GEMM_DBG=0 XF_GEMM_U=4 merged.qkvz    16384x5120 s4+a16    8    8    1    0.1401    0.1401    598.8    299.4    19.16  exact
+XF_GEMM_DBG=1 XF_GEMM_U=2 merged.qkvz    16384x5120 s4+a16    8    8    1    0.1190    0.1191    704.6    352.3    22.55  rel 6.4e7
+XF_GEMM_DBG=2 XF_GEMM_U=2 merged.qkvz    16384x5120 s4+a16    8    8    1    0.1165    0.1165    720.3    360.1    23.05  rel 1.5e1
+XF_GEMM_DBG=3 XF_GEMM_U=2 merged.qkvz    16384x5120 s4+a16    8    8    1    0.1171    0.1171    716.6    358.3    22.93  rel 6.4e7
+XF_GEMM_DBG=3 XF_GEMM_U=4 merged.qkvz    16384x5120 s4+a16    8    8    1    0.1159    0.1159    723.7    361.9    23.16  rel 6.4e7

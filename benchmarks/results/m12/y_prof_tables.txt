@@ -1,0 +1,76 @@
+== YASAKANI 5060 Ti code
+rows=8: 30 passes, 37.80 ms per pass (sum of blocking kernel times, drafter kernels included)
+  GEMM (lnord)             29.38 ms/pass      292 launches/pass
+  GDN                       2.81 ms/pass      192 launches/pass
+  drafter / sampler         1.72 ms/pass       75 launches/pass
+  norm / residual           1.13 ms/pass      129 launches/pass
+  attention (KV read)       1.10 ms/pass       48 launches/pass
+  MLP activation            1.08 ms/pass       64 launches/pass
+  head argmax               0.54 ms/pass        1 launches/pass
+  other                     0.03 ms/pass        2 launches/pass
+  top kernels:
+     24.87 ms/pass   256.0 calls/pass     97.2 us/call  lnord_kernel<6, 8, true, 1, 1, false, 4, 8, true>
+      2.16 ms/pass    27.2 calls/pass     79.5 us/call  lnord_kernel<8, 8, true, 1, 1, false, 4, 8, false>
+      1.69 ms/pass     1.0 calls/pass   1693.9 us/call  lnord_kernel<8, 8, true, 1, 1, false, 4, 8, true>
+      1.13 ms/pass   129.0 calls/pass      8.8 us/call  yskn::q35_res_norm_xsm_kernel
+      1.08 ms/pass    64.0 calls/pass     16.9 us/call  yskn::q35_mlp_kernel
+      1.03 ms/pass    48.0 calls/pass     21.5 us/call  yskn::wk_state_kernel
+      1.00 ms/pass    48.0 calls/pass     20.8 us/call  yskn::q35_mix_kernel
+      0.60 ms/pass     7.0 calls/pass     85.2 us/call  lnord_kernel<8, 16, true, 1, 1, false, 0, 0, false>
+== YASAKANI 5060 Ti 8k
+rows=8: 69 passes, 38.92 ms per pass (sum of blocking kernel times, drafter kernels included)
+  GEMM (lnord)             29.29 ms/pass      290 launches/pass
+  GDN                       2.84 ms/pass      192 launches/pass
+  attention (KV read)       2.39 ms/pass       48 launches/pass
+  drafter / sampler         1.61 ms/pass       71 launches/pass
+  norm / residual           1.15 ms/pass      129 launches/pass
+  MLP activation            1.08 ms/pass       64 launches/pass
+  head argmax               0.54 ms/pass        1 launches/pass
+  other                     0.03 ms/pass        2 launches/pass
+  top kernels:
+     24.86 ms/pass   256.0 calls/pass     97.1 us/call  lnord_kernel<6, 8, true, 1, 1, false, 4, 8, true>
+      2.51 ms/pass    30.8 calls/pass     81.6 us/call  lnord_kernel<8, 8, true, 1, 1, false, 4, 8, false>
+      1.71 ms/pass     1.0 calls/pass   1714.5 us/call  lnord_kernel<8, 8, true, 1, 1, false, 4, 8, true>
+      1.49 ms/pass    13.0 calls/pass    114.3 us/call  q35_atxpk4_kernel<5, true, 3, 4, false>
+      1.15 ms/pass   129.0 calls/pass      8.9 us/call  yskn::q35_res_norm_xsm_kernel
+      1.08 ms/pass    64.0 calls/pass     16.9 us/call  yskn::q35_mlp_kernel
+      1.04 ms/pass    48.0 calls/pass     21.6 us/call  yskn::wk_state_kernel
+      1.00 ms/pass    48.0 calls/pass     20.9 us/call  yskn::q35_mix_kernel
+== YASAKANI 5060 Ti 30k
+rows=8: 75 passes, 42.07 ms per pass (sum of blocking kernel times, drafter kernels included)
+  GEMM (lnord)             29.43 ms/pass      293 launches/pass
+  attention (KV read)       5.33 ms/pass       48 launches/pass
+  GDN                       2.83 ms/pass      192 launches/pass
+  drafter / sampler         1.69 ms/pass       76 launches/pass
+  norm / residual           1.14 ms/pass      129 launches/pass
+  MLP activation            1.08 ms/pass       64 launches/pass
+  head argmax               0.54 ms/pass        1 launches/pass
+  other                     0.03 ms/pass        2 launches/pass
+  top kernels:
+     24.82 ms/pass   256.0 calls/pass     96.9 us/call  lnord_kernel<6, 8, true, 1, 1, false, 4, 8, true>
+      3.88 ms/pass    13.0 calls/pass    298.5 us/call  q35_atxpk4_kernel<5, true, 3, 4, false>
+      2.70 ms/pass    33.0 calls/pass     81.7 us/call  lnord_kernel<8, 8, true, 1, 1, false, 4, 8, false>
+      1.71 ms/pass     1.0 calls/pass   1712.8 us/call  lnord_kernel<8, 8, true, 1, 1, false, 4, 8, true>
+      1.14 ms/pass   129.0 calls/pass      8.8 us/call  yskn::q35_res_norm_xsm_kernel
+      1.08 ms/pass    64.0 calls/pass     16.9 us/call  yskn::q35_mlp_kernel
+      1.04 ms/pass    48.0 calls/pass     21.6 us/call  yskn::wk_state_kernel
+      1.00 ms/pass    48.0 calls/pass     20.9 us/call  yskn::q35_mix_kernel
+== YASAKANI 5060 Ti 60k
+rows=8: 77 passes, 46.04 ms per pass (sum of blocking kernel times, drafter kernels included)
+  GEMM (lnord)             29.40 ms/pass      293 launches/pass
+  attention (KV read)       9.32 ms/pass       48 launches/pass
+  GDN                       2.84 ms/pass      192 launches/pass
+  drafter / sampler         1.69 ms/pass       76 launches/pass
+  norm / residual           1.13 ms/pass      129 launches/pass
+  MLP activation            1.09 ms/pass       64 launches/pass
+  head argmax               0.53 ms/pass        1 launches/pass
+  other                     0.03 ms/pass        2 launches/pass
+  top kernels:
+     24.79 ms/pass   256.0 calls/pass     96.8 us/call  lnord_kernel<6, 8, true, 1, 1, false, 4, 8, true>
+      7.13 ms/pass    13.0 calls/pass    548.2 us/call  q35_atxpk4_kernel<5, true, 3, 4, false>
+      2.68 ms/pass    32.7 calls/pass     81.8 us/call  lnord_kernel<8, 8, true, 1, 1, false, 4, 8, false>
+      1.71 ms/pass     1.0 calls/pass   1710.5 us/call  lnord_kernel<8, 8, true, 1, 1, false, 4, 8, true>
+      1.54 ms/pass     3.0 calls/pass    512.8 us/call  q35_atxpk4_kernel<5, false, 3, 4, false>
+      1.13 ms/pass   129.0 calls/pass      8.8 us/call  yskn::q35_res_norm_xsm_kernel
+      1.09 ms/pass    64.0 calls/pass     17.0 us/call  yskn::q35_mlp_kernel
+      1.04 ms/pass    48.0 calls/pass     21.6 us/call  yskn::wk_state_kernel

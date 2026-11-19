@@ -1,0 +1,97 @@
+loaded /data/B60special/models/xfm/qwen38-27b-s4-cal.xfm in 6.3s, context capacity 30720 tokens
+device allocations      count          GiB
+  DeltaNet state           48       0.2168
+  KV cache                 16       3.7500
+  MTP                       5       0.3687
+  MTP KV cache              1       0.2344
+  RoPE table                2       0.0073
+  body matrices           256      11.3428
+  embedding (bf16)          1       2.3682
+  lm_head                   1       0.5920
+  matrix scales           779       0.0393
+  small tensors           408       0.0978
+  workspace                 1       0.2535
+  TOTAL requested        1518      19.2708
+driver free VRAM: 22.4843 GiB before, 3.1766 GiB after, difference 19.3077 GiB
+long30000 K=0    17.27 tok/s | 1.00 tok/pass | trunk  57.56 ms/pass, MTP   0.00 ms/pass | prefill 181 tok/s | accept []
+[27775, 383, 279, 3766]
+outputs identical across draft lengths: true
+profile ( 1 tokens/pass, sync per stage, ms): norm 1.66 quant 3.18 gemm 35.92 gdn 6.52 attn 15.35 mlp 0.96 head 1.55 | total 65.14
+          unprofiled: 56.10 ms/pass
+profile ( 8 tokens/pass, sync per stage, ms): norm 1.69 quant 3.74 gemm 41.39 gdn 7.39 attn 29.62 mlp 1.49 head 1.82 | total 87.15
+          unprofiled: 77.67 ms/pass
+profile (16 tokens/pass, sync per stage, ms): norm 1.70 quant 3.72 gemm 45.74 gdn 10.25 attn 55.29 mlp 2.11 head 1.89 | total 120.68
+          unprofiled: 111.47 ms/pass
+profile (MTP step, 1 row, sync per stage, ms): norm 0.455 quant 0.062 gemm 0.550 gdn 0.000 attn 0.078 mlp 0.015 head 1.546 | total 2.705
+          unprofiled (includes argmax read-back): 2.541 ms/step
+deep position 30104: cycle K=6, 4 fill rows: draft chain 19.19 ms, trunk pass 75.57 ms, whole cycle 94.76 ms
+deep position 30104: cycle K=7, 4 fill rows: draft chain 22.16 ms, trunk pass 77.69 ms, whole cycle 99.85 ms
+profile (device chain, 1 fill row, 1 drafts, full head, ms): norm 0.433 quant 0.064 gemm 0.549 gdn 0.000 attn 0.077 mlp 0.015 head 1.544 | total 2.682
+          unprofiled: 2.522 ms per chain
+profile (device chain, 1 fill row, 7 drafts, full head, ms): norm 3.015 quant 0.453 gemm 3.849 gdn 0.000 attn 0.566 mlp 0.106 head 10.826 | total 18.814
+          unprofiled: 17.617 ms per chain
+[prof-detail] empty queue synchronisation: 0.3 us per tick
+[prof-detail] key (rows | kernel)                             calls   total ms    us/call     net us      GB/s
+[prof-detail] m=01 act-quant                                   2442     30.655       12.6       12.3       0.0
+[prof-detail] m=01 addnorm                                     1314     16.417       12.5       12.2       0.0
+[prof-detail] m=01 attn:combine                                 276     23.254       84.3       84.0       0.0
+[prof-detail] m=01 attn:kv-store                                276      2.715        9.8        9.6       0.0
+[prof-detail] m=01 attn:main                                    276     76.376      276.7      276.4       0.0
+[prof-detail] m=01 attn:q-prep                                  276      4.173       15.1       14.8       0.0
+[prof-detail] m=01 embed                                          6      0.242       40.4       40.1       0.0
+[prof-detail] m=01 gdn:conv                                     288      4.470       15.5       15.2       0.0
+[prof-detail] m=01 gdn:core                                     288     12.401       43.1       42.8       0.0
+[prof-detail] m=01 gdn:gate                                     288      2.733        9.5        9.2       0.0
+[prof-detail] m=01 gdn:gemv-ab                                  288     12.506       43.4       43.1       0.0
+[prof-detail] m=01 gdn:post                                     288      4.268       14.8       14.5       0.0
+[prof-detail] m=01 gdn:qk-norm                                  288      2.727        9.5        9.2       0.0
+[prof-detail] m=01 gemm  5120x17408                             564     71.504      126.8      126.5  198686.8
+[prof-detail] m=01 gemm  5120x6144                              564     39.528       70.1       69.8  127077.5
+[prof-detail] m=01 gemm 14336x5120                              276     31.660      114.7      114.4   88518.6
+[prof-detail] m=01 gemm 16384x5120                              288     35.148      122.0      121.8   99206.4
+[prof-detail] m=01 gemm 248320x5120  (head)                     186    279.933     1505.0     1504.7   78578.6
+[prof-detail] m=01 gemm 34816x5120                              564    136.647      242.3      242.0  207718.4
+[prof-detail] m=01 head:argmax                                    6      0.239       39.8       39.6       0.0
+[prof-detail] m=01 mlp-act                                      564      8.460       15.0       14.7       0.0
+[prof-detail] m=08 act-quant                                   1542     22.441       14.6       14.3       0.0
+[prof-detail] m=08 addnorm                                      774     10.065       13.0       12.7       0.0
+[prof-detail] m=08 attn:combine                                  96     32.170      335.1      334.8       0.0
+[prof-detail] m=08 attn:kv-store                                 96      1.546       16.1       15.8       0.0
+[prof-detail] m=08 attn:main                                     96    142.510     1484.5     1484.2       0.0
+[prof-detail] m=08 attn:q-prep                                   96      1.517       15.8       15.5       0.0
+[prof-detail] m=08 embed                                          6      0.100       16.6       16.4       0.0
+[prof-detail] m=08 gdn:conv                                     288      4.508       15.7       15.4       0.0
+[prof-detail] m=08 gdn:core                                     288     17.320       60.1       59.9       0.0
+[prof-detail] m=08 gdn:gate                                     288      2.787        9.7        9.4       0.0
+[prof-detail] m=08 gdn:gemv-ab                                  288     12.416       43.1       42.8       0.0
+[prof-detail] m=08 gdn:post                                     288      4.419       15.3       15.1       0.0
+[prof-detail] m=08 gdn:qk-norm                                  288      2.918       10.1        9.9       0.0
+[prof-detail] m=08 gemm  5120x17408                             384     58.018      151.1      150.8  113472.0
+[prof-detail] m=08 gemm  5120x6144                              384     42.653      111.1      110.8   54511.8
+[prof-detail] m=08 gemm 14336x5120                               96     11.486      119.6      119.4   29516.2
+[prof-detail] m=08 gemm 16384x5120                              288     37.234      129.3      129.0   93635.6
+[prof-detail] m=08 gemm 248320x5120  (head)                       6     10.614     1768.9     1768.7    2156.5
+[prof-detail] m=08 gemm 34816x5120                              384     98.976      257.8      257.5  132929.1
+[prof-detail] m=08 head:argmax                                    6      0.280       46.6       46.3       0.0
+[prof-detail] m=08 mlp-act                                      384      8.920       23.2       23.0       0.0
+[prof-detail] m=16 act-quant                                   1542     22.302       14.5       14.2       0.0
+[prof-detail] m=16 addnorm                                      774     10.079       13.0       12.7       0.0
+[prof-detail] m=16 attn:combine                                  96     49.009      510.5      510.2       0.0
+[prof-detail] m=16 attn:kv-store                                 96      1.527       15.9       15.6       0.0
+[prof-detail] m=16 attn:main                                     96    279.684     2913.4     2913.1       0.0
+[prof-detail] m=16 attn:q-prep                                   96      1.527       15.9       15.6       0.0
+[prof-detail] m=16 embed                                          6      0.112       18.6       18.4       0.0
+[prof-detail] m=16 gdn:conv                                     288      6.642       23.1       22.8       0.0
+[prof-detail] m=16 gdn:core                                     288     22.769       79.1       78.8       0.0
+[prof-detail] m=16 gdn:gate                                     288      2.843        9.9        9.6       0.0
+[prof-detail] m=16 gdn:gemv-ab                                  288     21.745       75.5       75.2       0.0
+[prof-detail] m=16 gdn:post                                     288      4.579       15.9       15.6       0.0
+[prof-detail] m=16 gdn:qk-norm                                  288      2.896       10.1        9.8       0.0
+[prof-detail] m=16 gemm  5120x17408                             384     65.412      170.3      170.1  100625.0
+[prof-detail] m=16 gemm  5120x6144                              384     50.460      131.4      131.1   46060.3
+[prof-detail] m=16 gemm 14336x5120                               96     12.237      127.5      127.2   27699.5
+[prof-detail] m=16 gemm 16384x5120                              288     39.868      138.4      138.2   87437.3
+[prof-detail] m=16 gemm 248320x5120  (head)                       6     10.854     1809.0     1808.7    2108.8
+[prof-detail] m=16 gemm 34816x5120                              384    106.461      277.2      277.0  123573.9
+[prof-detail] m=16 head:argmax                                    6      0.462       77.0       76.7       0.0
+[prof-detail] m=16 mlp-act                                      384     12.637       32.9       32.6       0.0

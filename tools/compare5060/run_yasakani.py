@@ -26,6 +26,8 @@ ap.add_argument("--item", action="append", required=True, help="ids.json:new_tok
 ap.add_argument("--modes", default="on,off")
 ap.add_argument("--json", required=True)
 ap.add_argument("--save-ids", default="")
+ap.add_argument("--env", action="append", default=[], help="YSKN_X=V engine setting (e.g. YSKN_PROF=1 for the per-kernel profile)")
+ap.add_argument("--spec", action="append", default=[], help="k=v speculation setting (e.g. use_graph=0)")
 a = ap.parse_args()
 
 from yasakani import Engine, ModelPack  # noqa: E402
@@ -53,7 +55,7 @@ threading.Thread(target=watch, daemon=True).start()
 pack = ModelPack.load(a.model_dir)
 fmt = ChatFormatter(pack.root)
 t0 = time.time()
-eng = Engine(pack, max_ctx=a.max_ctx, dll=a.dll, profile=RuntimeProfile.default(pack, {}))
+eng = Engine(pack, max_ctx=a.max_ctx, dll=a.dll, profile=RuntimeProfile.default(pack, dict(kv.split("=", 1) for kv in a.env)))
 eng.warmup([fmt.encode("warm-up"), fmt.prompt([{"role": "user", "content": "warm-up"}])[0]], n_gen=32)
 print(f"# max_ctx {eng.max_ctx}, load {time.time() - t0:.1f}s, GPU memory now {peak[0]} MiB", flush=True)
 greedy = Sampling(0.0, 0.95, 20, 0.0, 0)
@@ -63,7 +65,7 @@ for item in a.item:
     ids = json.loads(Path(path).read_text())
     for mode in a.modes.split(","):
         from_spec = {} if mode == "on" else None
-        spec = {} if mode == "on" else None
+        spec = {k: int(v) for k, v in (kv.split("=", 1) for kv in a.spec)} if mode == "on" else None
         if mode == "off":
             # YASAKANI's own "look-ahead off" setting (quickstart/lookahead_check.py NO_LOOKAHEAD)
             import importlib.util
@@ -71,6 +73,7 @@ for item in a.item:
             m = importlib.util.module_from_spec(sp)
             sp.loader.exec_module(m)
             spec = dict(m.NO_LOOKAHEAD)
+            spec.update({k: int(v) for k, v in (kv.split("=", 1) for kv in a.spec)})
         eng.reset()
         eng.set_sampling(greedy)
         r = eng.generate(ids, int(n), spec=spec)

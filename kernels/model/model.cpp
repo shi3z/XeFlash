@@ -19,6 +19,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <string>
 
 #include "../ctx.hpp"
 
@@ -1657,24 +1659,70 @@ void k_pick(Q &q, const float *candv, const int32_t *candi, int npad, int32_t *d
 }
 
 // -------------------------------------------------------------- pass driver
+// XF_PROF_DETAIL=1 (with a profiled forward): per-kernel / per-GEMM-shape accounting with a synchronisation after every kernel, dumped at exit.
+// The cost of one empty synchronisation is measured once and printed so that it can be subtracted (calls x sync_us).
+struct DetAcc {
+  double ms = 0, bytes = 0;
+  long calls = 0;
+};
+struct DetReg {
+  std::map<std::string, DetAcc> t;
+  double sync_us = 0;
+  ~DetReg() {
+    if (t.empty()) return;
+    std::fprintf(stderr, "[prof-detail] empty queue synchronisation: %.1f us per tick\n", sync_us);
+    std::fprintf(stderr, "[prof-detail] %-44s %8s %10s %10s %10s %9s\n", "key (rows | kernel)", "calls", "total ms", "us/call", "net us", "GB/s");
+    for (auto &kv : t) {
+      const DetAcc &a = kv.second;
+      const double net = a.ms * 1e3 / a.calls - sync_us;
+      std::fprintf(stderr, "[prof-detail] %-44s %8ld %10.3f %10.1f %10.1f %9.1f\n", kv.first.c_str(), a.calls, a.ms, a.ms * 1e3 / a.calls, net,
+                   a.bytes > 0 ? a.bytes / a.calls / (net > 0.1 ? net : 0.1) / 1e3 : 0.0);
+    }
+  }
+};
+DetReg &detreg() {
+  static DetReg r;
+  return r;
+}
 struct Timer {
   Q &q;
   double *prof;
   bool trace; // XF_TRACE_STAGES: wait and print a marker after every stage
+  bool detail;
+  int mrows = 0;
   std::chrono::steady_clock::time_point t0;
-  Timer(Q &queue, double *p) : q(queue), prof(p), trace(std::getenv("XF_TRACE_STAGES") != nullptr) {
+  Timer(Q &queue, double *p) : q(queue), prof(p), trace(std::getenv("XF_TRACE_STAGES") != nullptr), detail(p && std::getenv("XF_PROF_DETAIL")) {
+    if (detail && detreg().sync_us == 0) {
+      q.wait_and_throw();
+      const auto a = std::chrono::steady_clock::now();
+      for (int i = 0; i < 500; i++) q.wait_and_throw();
+      detreg().sync_us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - a).count() / 500;
+    }
     if (prof) t0 = std::chrono::steady_clock::now();
   }
-  // Attribute everything submitted since the last call to category `cat`.
-  void tick(int cat) {
+  // Attribute everything submitted since the last call to category `cat` (and, with XF_PROF_DETAIL, to `tag`).
+  void tick(int cat, const char *tag = nullptr, double bytes = 0) {
     if (!prof && !trace) return;
     if (trace) std::fprintf(stderr, "%d", cat);
     q.wait_and_throw();
     if (trace) std::fprintf(stderr, ". ");
     if (!prof) return;
     const auto t1 = std::chrono::steady_clock::now();
-    prof[cat] += std::chrono::duration<double, std::milli>(t1 - t0).count();
+    const double dt = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    prof[cat] += dt;
+    if (detail && tag) {
+      char key[96];
+      std::snprintf(key, sizeof key, "m=%02d %s", mrows, tag);
+      DetAcc &a = detreg().t[key];
+      a.ms += dt;
+      a.calls++;
+      a.bytes += bytes;
+    }
     t0 = t1;
+  }
+  // Extra tick used only for the detailed profile (adds no synchronisation otherwise).
+  void dtick(int cat, const char *tag) {
+    if (detail) tick(cat, tag);
   }
 };
 enum { P_NORM = 0, P_QUANT, P_GEMM, P_GDN, P_ATTN, P_MLP, P_HEAD, P_COUNT };
@@ -1698,14 +1746,19 @@ struct Pass {
     const int m = one ? 1 : this->m, mpad = one ? 1 : this->mpad, tpt = one ? 1 : this->tpt;
     const float *pmax = pm ? pm : ws.pmax;
     k_quant(q, v, vs ? vs : size_t(mat.cols), mat.cols, mat.cs, mat.cmax, pmax, m, mpad, ws.xhi, ws.xlo, ws.ts, ws.toff);
-    tm.tick(P_QUANT);
+    tm.tick(P_QUANT, "act-quant");
     xf_gemm_desc d{};
     d.wfmt = mat.fmt;
     d.rows = mat.rows;
     d.cols = mat.cols;
     d.m = m;
     d.tokens_per_thread = tpt;
+    // Column segments: narrow matrices need more threads than their row blocks give. Measured cold (xf-bench --cold, benchmarks/results/m12):
+    // 5120x6144 (o / GDN out projections) is fastest with 2 segments for <= 8 rows and 1 for 16 rows (4 costs 20 / 11 us per call); 5120x17408 with 4.
+    // The integer partial sums are exact, so the segment count does not change any result.
+    static const bool seg_old = std::getenv("XF_GEMM_SEGS_OLD") != nullptr;
     d.segs = (mat.rows < 8192 && m > 1) ? 4 : 1;
+    if (!seg_old && mat.rows < 8192 && mat.cols <= 8192 && m > 1) d.segs = m <= 8 ? 2 : 1;
     d.a16 = 1;
     d.w = mat.w;
     d.x = ws.xhi;
@@ -1718,7 +1771,14 @@ struct Pass {
     static const bool no_bias = std::getenv("XF_NO_BIAS") != nullptr; // diagnostic
     d.bias = no_bias ? nullptr : mat.bias;
     const int st = xf_gemm(ctx, &d);
-    tm.tick(gemm_cat);
+    if (tm.detail) {
+      const int bits = mat.fmt == XF_W_S2 ? 2 : mat.fmt == XF_W_S3 ? 3 : 4;
+      char tag[64];
+      std::snprintf(tag, sizeof tag, "gemm %5dx%-5d %s", mat.rows, mat.cols, gemm_cat == P_HEAD ? "(head)" : "");
+      tm.tick(gemm_cat, tag, double(mat.rows) * mat.cols * bits / 8.0);
+    } else {
+      tm.tick(gemm_cat);
+    }
     return st;
   }
 
@@ -1726,7 +1786,7 @@ struct Pass {
   void norm(const float *gain) {
     k_addnorm(ctx->q, ws.h, pending ? ws.y : nullptr, gain, ws.xn, ws.pmax, m);
     pending = false;
-    tm.tick(P_NORM);
+    tm.tick(P_NORM, "addnorm");
   }
   void flush() {
     if (pending) k_add(ctx->q, ws.h, ws.y, m);
@@ -1752,7 +1812,7 @@ struct Pass {
     const float *uptr = merged ? ws.g + FF : ws.u + size_t(MAXM) * FF;
     const size_t stride = merged ? gs : size_t(FF);
     k_mlp_act(q, const_cast<float *>(gptr), uptr, stride, ws.pmax, m);
-    tm.tick(P_MLP);
+    tm.tick(P_MLP, "mlp-act");
     if (int st = gemm(L.m[gi + 2], gptr, ws.y, stride)) return st;
     pending = true;
     return XF_OK;
@@ -1770,12 +1830,17 @@ struct Pass {
     if (!merged)
       if (int st = gemm(L.m[1], ws.xn, ws.yz)) return st;
     k_gemv_f32(q, L.aux[0], ws.xn, ws.yab, 96, m);
+    tm.dtick(P_GDN, "gdn:gemv-ab");
     k_conv(q, s.raw, rs, s.hist, L.aux[1], ws.act, m);
+    tm.dtick(P_GDN, "gdn:conv");
     k_gdn_qk(q, ws.act, ws.qn, s.kn, m);
+    tm.dtick(P_GDN, "gdn:qk-norm");
     k_gdn_gate(q, ws.yab, L.aux[2], L.aux[3], s.beta, s.decay, m);
+    tm.dtick(P_GDN, "gdn:gate");
     k_gdn_core(q, s.S, ws.act, ws.qn, s.kn, s.beta, s.decay, s.dsave, ws.gout, m);
+    tm.dtick(P_GDN, "gdn:core");
     k_gdn_post(q, ws.gout, z, zs, L.aux[4], ws.go, ws.pmax, m);
-    tm.tick(P_GDN);
+    tm.tick(P_GDN, "gdn:post");
     if (int st = gemm(L.m[2], ws.go, ws.y)) return st;
     pending = true;
     return mlp(L, 3);
@@ -1804,6 +1869,7 @@ struct Pass {
       yv = ws.yv;
     }
     k_attn_q(q, ws.yq, qs, L.aux[0], md->rope_cos, md->rope_sin, ws.qr, m, pos0);
+    tm.dtick(P_ATTN, "attn:q-prep");
     static const bool kt = !(std::getenv("XF_ATTN_KT") && std::getenv("XF_ATTN_KT")[0] == '0') && md->ctx % 64 == 0; // default on; XF_ATTN_KT=0 = legacy
     const int kvm = kv_mode();
     if (kvm == 3) {
@@ -1817,7 +1883,9 @@ struct Pass {
         const int xb = std::getenv("XF_XMX_XB") ? std::atoi(std::getenv("XF_XMX_XB")) : 8;
         const int dqn = std::getenv("XF_XMX_DQ") ? std::atoi(std::getenv("XF_XMX_DQ")) : 4;
         k_attn_q16(q, ws.qr, ws.q16, m);
+        tm.dtick(P_ATTN, "attn:q16");
         k_attn_kv_x(q, yk, yv, ks, L.aux[1], md->rope_cos, md->rope_sin, static_cast<uint16_t *>(s.K), static_cast<uint16_t *>(s.V), m, pos0);
+        tm.dtick(P_ATTN, "attn:kv-store");
         const uint16_t *Kc = static_cast<const uint16_t *>(s.K), *Vc = static_cast<const uint16_t *>(s.V);
         static const bool share = !(std::getenv("XF_XMX_SHARE") && std::getenv("XF_XMX_SHARE")[0] == '0'); // default on; XF_XMX_SHARE=0 = unshared kernel // QK shared through SLM (DQ = 8 threads per work-group)
         if (share) {
@@ -1830,8 +1898,9 @@ struct Pass {
           if (dqn == 8) k_attn_xmx2<8, 8>(q, ws.q16, Kc, Vc, ws.pseg, ws.psm, ws.psd, m, pos0, skip);
           else k_attn_xmx2<8, 4>(q, ws.q16, Kc, Vc, ws.pseg, ws.psm, ws.psd, m, pos0, skip);
         }
+        tm.dtick(P_ATTN, "attn:xmx-main");
         k_attn_comb2(q, ws.psm, ws.psd, ws.pseg, ws.yq, qs, ws.go, ws.pmax, m, pos0, xb == 4 ? 4 : 8);
-        tm.tick(P_ATTN);
+        tm.tick(P_ATTN, "attn:combine");
         if (int st = gemm(L.m[3], ws.go, ws.y)) return st;
         pending = true;
         return mlp(L, 4);
@@ -1859,6 +1928,7 @@ struct Pass {
     }
     if (kvm && !kt) { xf_set_error("XF_KV needs the K^T layout (ctx multiple of 64, XF_ATTN_KT != 0)"); return XF_ERR_INVALID; }
     k_attn_kv(q, yk, yv, ks, L.aux[1], md->rope_cos, md->rope_sin, s.K, s.V, m, pos0, kt, kvm);
+    tm.dtick(P_ATTN, "attn:kv-store");
     if (kt) {
       // Re-read each pass so a sweep can change them between passes (cheap).
       const char *eh = std::getenv("XF_ATTN_HG"), *et = std::getenv("XF_ATTN_TG"), *eg = std::getenv("XF_ATTN_GP");
@@ -1935,8 +2005,9 @@ struct Pass {
         std::fprintf(stderr, "[attn] legacy path (hg=%d), rows=%d, pos0=%d, row-major K\n", hg, m, pos0);
       }
     }
+    tm.dtick(P_ATTN, "attn:main");
     k_attn_comb(q, ws.pm, ws.pd, ws.pv, ws.yq, qs, ws.go, ws.pmax, m, pos0, nbs);
-    tm.tick(P_ATTN);
+    tm.tick(P_ATTN, "attn:combine");
     if (int st = gemm(L.m[3], ws.go, ws.y)) return st;
     pending = true;
     return mlp(L, 4);
@@ -1979,10 +2050,11 @@ int xf_forward(xf_ctx *ctx, const xf_model *md, int m, int pos0, int l0, int l1,
   return xf_guard("xf_forward", [&]() -> int {
     const int tpt = m == 1 ? 1 : m <= 8 ? 8 : 16;
     Pass p{ctx, md, carve_ws(md->ws, md->ctx), m, tpt, tpt, Timer(ctx->q, prof)};
+    p.tm.mrows = p.m;
     Q &q = ctx->q;
     if (flags & XF_FWD_EMBED) {
       k_embed(q, md->embed, p.ws.ids + slot, p.ws.h, m);
-      p.tm.tick(P_NORM);
+      p.tm.tick(P_NORM, "embed");
     }
     // XF_SYNC_LAYERS=n: wait for the queue every n layers (diagnostic / workaround knob).
     static const int sync_every = [] {
@@ -2004,7 +2076,7 @@ int xf_forward(xf_ctx *ctx, const xf_model *md, int m, int pos0, int l0, int l1,
       if (int st = p.gemm(md->head, p.ws.xn, p.ws.logits)) return st;
       k_argmax(q, p.ws.logits, p.ws.amv, p.ws.ami, m);
       k_amax_final(q, p.ws.amv, p.ws.ami, m, p.ws.ids + 32, reinterpret_cast<float *>(p.ws.ids + 48), nullptr, nullptr);
-      p.tm.tick(P_HEAD);
+      p.tm.tick(P_HEAD, "head:argmax");
     }
     p.flush();
     return XF_OK;
@@ -2075,6 +2147,7 @@ int xf_mtp_step(xf_ctx *ctx, const xf_model *md, const xf_mtp *mtp, int m, int p
   return xf_guard("xf_mtp_step", [&]() -> int {
     const int tpt = m == 1 ? 1 : m <= 8 ? 8 : 16;
     Pass p{ctx, md, carve_ws(md->ws, md->ctx), m, tpt, tpt, Timer(ctx->q, prof)};
+    p.tm.mrows = p.m;
     return mtp_step(p, mtp, nullptr, pos0, src_row, m - 1, nullptr, nullptr);
   });
 }
@@ -2105,10 +2178,12 @@ int xf_spec_draft(xf_ctx *ctx, const xf_model *md, const xf_mtp *mtp, const xf_s
     {
       const int tpt = n == 1 ? 1 : n <= 8 ? 8 : 16;
       Pass p{ctx, md, w, n, tpt, tpt, Timer(ctx->q, prof)};
+    p.tm.mrows = p.m;
       if (int st = mtp_step(p, mtp, sk, pos0, 0, n - 1, w.ids, w.ids + 16 + 1)) return st;
     }
     for (int j = 2; j <= k; j++) {
       Pass p{ctx, md, w, 1, 1, 1, Timer(ctx->q, prof)};
+    p.tm.mrows = p.m;
       // input: token d_{j-1} (in ids[0]) and the MTP hidden state that produced it
       if (int st = mtp_step(p, mtp, sk, pos0 + n - 1 + (j - 1), j == 2 ? n - 1 : 0, 0, w.ids, w.ids + 16 + j)) return st;
     }

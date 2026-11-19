@@ -1,0 +1,32 @@
+{
+ "max_ctx": 65536,
+ "peak_mib": 15460,
+ "rows": [
+  {
+   "prompt": "long60000",
+   "mode": "on",
+   "prompt_tokens": 60024,
+   "tokens": 256,
+   "passes": 78,
+   "prefill_ms": 93632.392527,
+   "gen_ms": 3727.112265,
+   "tok_s": 68.4175795815477,
+   "tok_per_pass": 3.269230769230769,
+   "prefill_tok_s": 641.0601970113214,
+   "per_pass_ms": {
+    "verify": 42.47728937179487,
+    "draft": 4.627425846153847,
+    "commit": 0.0275441282051282,
+    "record": 0.004951512820512819,
+    "ctx": 0.0,
+    "total": 47.77852185897436
+   },
+   "rows_hist": {
+    "5": 1,
+    "8": 77
+   },
+   "sha": "c55b0c1ca643",
+   "peak_mib_so_far": 15460
+  }
+ ]
+}

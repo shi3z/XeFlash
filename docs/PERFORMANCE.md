@@ -1142,3 +1142,59 @@ passed / graded: short fp32: 2/7; short xmx: 2/7; 8K fp32: 0/3; 8K xmx: 0/3; 30K
 - The two engines produce **different text** from the same prompt (the greedy sequences diverge after 15 to 51 tokens, e.g. code.json after 24): different weight quantisation (XeFlash INT4 s4 container vs YASAKANI speed model),
   and different KV formats (FP16 vs INT8 rows). Acceptance and tokens per pass therefore differ per prompt, and the numbers compare engines on the same prompt and length, not on the same generated text.
 - Not measured: the same drafter state on both sides (each uses its own bdraft2 integration), repeated runs / variance, prefill speed of XeFlash for the long prompts at the same settings (YASAKANI prefill 644 to 790 tok/s is in the json).
+
+
+## Part I. Where the Main verification pass goes (B60 against the RTX 5060 Ti), and the GEMM
+
+Profiles: `XF_PROF_DETAIL=1 xf-run gen ... --profile` (every kernel followed by a synchronisation; the sum is larger than the real pass, both are given) and, for YASAKANI,
+`YSKN_PROF=1` with `use_graph=0` (`scripts/y5060_prof.sh`). Parsers: `tools/profile/`. Raw logs and tables: `benchmarks/results/m12/`.
+Same prompts on both sides (`long8000`, `long30000`, `long60000`, `code`), 8-row verify pass.
+
+### I1. B60, 8-row pass, ms per pass (XMX attention, FP16 KV; FP32-KV numbers in `b60_tables_*_none.md`)
+| part | 1K | 8K | 30K |
+|---|---:|---:|---:|
+| GEMM (all projections + head) | 43.5 | 43.3 | 43.6 |
+| activation quantisation (257 launches) | 3.6 | 3.6 | 3.7 |
+| GDN kernels (core 2.9, gemv a/b 2.1, conv, post, qk-norm, gate) | 7.3 | 7.3 | 7.3 |
+| attention (q-prep, kv-store, main, combine) | ~2.0 (FP32 KV) | 4.0 | 11.8 |
+| RMSNorm + residual (129 launches) | 1.6 | 1.6 | 1.6 |
+| MLP activation | 1.5 | 1.5 | 1.5 |
+| **sum of synchronised kernels** | 59.6 | 61.4 | 68.9 |
+| **real pass time (no per-kernel sync)** | **50.5** | **52.1** | **59.5** |
+The per-kernel synchronisation adds 9 to 10 ms; the real pass is the second number. Not measured separately: the host side of a pass (launch queue, read-back of the argmax).
+
+### I2. RTX 5060 Ti (YASAKANI), 8-row pass, ms per pass (blocking per-kernel times, drafter kernels included)
+| part | 8K | 30K | 60K |
+|---|---:|---:|---:|
+| GEMM (`lnord_kernel`: 256 layer GEMMs 24.9 ms, the others and the head ~4.5) | 29.3 | 29.4 | 29.4 |
+| attention (reads 4-bit packed KV) | 2.4 | 5.3 | 9.3 |
+| GDN | 2.8 | 2.8 | 2.8 |
+| norm / residual (129 launches) | 1.15 | 1.14 | 1.13 |
+| MLP activation | 1.08 | 1.08 | 1.09 |
+| head argmax | 0.54 | 0.54 | 0.53 |
+| drafter / sampler kernels | 1.6 | 1.7 | 1.7 |
+| **total** | **38.9** | **42.1** | **46.0** |
+(reported unsynchronised verify time in the earlier tables: 34.8 / 37.4 / 41.5 ms.) About 850 launches per pass against about 1,500 on the B60.
+
+### I3. What explains the 15 ms gap in the pass (8K; B60 52.1 real / 61.4 synchronised, 5060 Ti 38.9 synchronised)
+| | B60 | 5060 Ti | difference |
+|---|---:|---:|---:|
+| GEMM | 43.3 | 29.3 | +14.0 |
+| GDN | 7.3 | 2.8 | +4.5 |
+| activation quantisation + norm + MLP activation | 6.7 | 2.2 | +4.5 |
+| attention | 4.0 | 2.4 | +1.6 |
+- GEMM: the B60 streams 12.8 GB of weights per pass (4-bit codes + scales, head included) at 296-361 GB/s (65 to 80% of the 456 GB/s peak, which YASAKANI's own report puts at 381-448 GB/s sustained on this card);
+  YASAKANI streams about 10.9 GB at 393 GB/s (88% of 448). More bytes (+17%) and a lower fraction of the bandwidth both contribute.
+- The 5060 Ti fuses the activation quantisation into other kernels; XeFlash runs it as 257 separate launches per pass.
+- Attention at long context: YASAKANI's KV is 4-bit packed (`atxpk4` kernels), XeFlash reads 16-bit.
+
+### I4. GEMM on the B60: is the XMX the limit? (xf-bench --cold: weights rotated through 160 MB of copies so that they come from DRAM; `benchmarks/results/m12/gemm_*.txt`)
+- Per shape at 8 rows, in-model time against the cold benchmark: gate+up 259 / 248 us, down 151 / 142, GDN in-proj 129 / 115, out projections 117 / 93 (best segment count), attention qkv 119 / 104 us. The in-model numbers are the benchmark's.
+- With the DPAS and the activation loads switched off (diagnostic, results wrong) the kernel takes the same time as the full kernel (gate+up 244-248 us against 248 us): **the GEMM is limited by streaming the weights, not by XMX work or the activation loads**;
+  row count barely changes it (gate+up 242 / 259 / 279 us for 1 / 8 / 16 rows).
+- Unroll 1 / 2 / 4 tiles, L1-uncached or streaming loads, prefetch of tiles ahead: no effect (within 2%). Tile-major weight order: slower for wide matrices (gate+up 248 -> 396 us), faster for the narrowest one (out projection 116 -> 94 us); not adopted.
+- Narrow matrices (5120 rows = 320 row blocks) reach only 134-255 GB/s: too few threads for the memory system; splitting the columns (segments) adds threads but also partial sums and a combine kernel.
+  **Adopted**: the out projections (5120 x 6144) use 2 column segments for <= 8 rows and 1 for 16 rows instead of 4 (the 4 was a rule of thumb). Results are bit-identical (integer partial sums; checked on 1,600 tokens, pass sizes 8 and 16);
+  8-row pass 49.92 -> 48.66 ms, 16-row pass 58.25 -> 56.15 ms (1K context, XMX; 1-row pass unchanged).
+- Ideal streaming time for 12.8 GB at the sustained 415 GB/s is about 31 ms; the GEMMs take 43.5 ms now (40 ms with the best segment counts). The remaining 9 to 12 ms would need a different weight stream (fewer bytes, or a layout that reaches the 435 GB/s of a plain read),
+  not more XMX work. The weight format (uniform 4-bit plus scales) already is 17% larger than YASAKANI's mixed format.

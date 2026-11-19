@@ -1,0 +1,124 @@
+[q35_g6] prefill only, temporary workspace 93978920 bytes
+[KV-PROTOCOL] target_kv=int8-row-f32-scale
+[TB-CAP] capacity mode (k=5): packed K streams 16/16, packed V streams 13/16; KV of the attention layers 1384.0 MiB (INT8 containers: 2080.0 MiB); staging 4096 rows
+[qwen3_5] 64 layers loaded, LNORD codes 9.76 GB, free 3.4 / 16.6 GB
+[qwen3_5] SHEAD drafter head loaded (/data/yasakani/model-speed/bdraft2_k8.shead): rank 512, 1.41 GB, score grid 72 blocks; GPU free 0.5 / 16.6 GB
+# max_ctx 65536, load 3.9s, GPU memory now 15444 MiB
+long60000                on     68.4 tok/s | 3.27 tok/pass | 47.78 ms/pass (verify 42.48 draft 4.63) | prefill 641 tok/s | peak 15460 MiB
+[prof] rows=1 ms=0.607 n=12 b9670
+[prof] rows=1 ms=0.583 n=26 d1ec0
+[prof] rows=1 ms=0.041 n=2 113a10
+[prof] rows=1 ms=0.046 n=2 113d10
+[prof] rows=1 ms=0.029 n=2 114450
+[prof] rows=1 ms=0.083 n=10 115b60
+[prof] rows=2 ms=0.124 n=6 d1ec0
+[prof] rows=3 ms=0.153 n=8 d1ec0
+[prof] rows=4 ms=0.283 n=6 b9890
+[prof] rows=4 ms=0.705 n=53 d1ec0
+[prof] rows=4 ms=0.007 n=1 113a10
+[prof] rows=4 ms=0.013 n=1 113d10
+[prof] rows=4 ms=0.009 n=1 114450
+[prof] rows=4 ms=0.033 n=5 115b60
+[prof] rows=4 ms=0.113 n=3 128d00
+[prof] rows=5 ms=24.528 n=256 b7360
+[prof] rows=5 ms=1.624 n=1 b9120
+[prof] rows=5 ms=0.444 n=6 b9890
+[prof] rows=5 ms=0.279 n=1 d1930
+[prof] rows=5 ms=0.122 n=8 d1ec0
+[prof] rows=5 ms=0.056 n=1 d2200
+[prof] rows=5 ms=6.495 n=13 f09e0
+[prof] rows=5 ms=1.362 n=3 f0c00
+[prof] rows=5 ms=0.020 n=1 113a10
+[prof] rows=5 ms=0.022 n=1 113d10
+[prof] rows=5 ms=0.021 n=1 114450
+[prof] rows=5 ms=0.107 n=5 115b60
+[prof] rows=5 ms=0.845 n=48 127f30
+[prof] rows=5 ms=0.344 n=48 128260
+[prof] rows=5 ms=0.309 n=16 128480
+[prof] rows=5 ms=0.860 n=64 128590
+[prof] rows=5 ms=1.041 n=129 1286a0
+[prof] rows=5 ms=0.008 n=1 1288c0
+[prof] rows=5 ms=0.372 n=48 1289d0
+[prof] rows=5 ms=0.850 n=48 128ae0
+[prof] rows=5 ms=0.187 n=16 128bf0
+[prof] rows=6 ms=5.578 n=72 b9890
+[prof] rows=6 ms=0.134 n=12 d1ec0
+[prof] rows=6 ms=0.023 n=2 113470
+[prof] rows=6 ms=0.018 n=2 113a10
+[prof] rows=6 ms=0.050 n=2 113d10
+[prof] rows=6 ms=0.034 n=2 113e90
+[prof] rows=6 ms=0.036 n=2 114010
+[prof] rows=6 ms=0.263 n=24 114450
+[prof] rows=6 ms=0.735 n=2 114630
+[prof] rows=6 ms=0.025 n=2 114810
+[prof] rows=6 ms=0.017 n=2 114ab0
+[prof] rows=6 ms=0.062 n=2 114be0
+[prof] rows=6 ms=0.112 n=2 114d10
+[prof] rows=6 ms=0.146 n=10 115130
+[prof] rows=6 ms=0.178 n=20 115470
+[prof] rows=6 ms=0.610 n=10 115620
+[prof] rows=6 ms=0.110 n=10 1157e0
+[prof] rows=6 ms=0.092 n=2 1159c0
+[prof] rows=6 ms=0.141 n=10 115b60
+[prof] rows=6 ms=0.168 n=20 115d60
+[prof] rows=6 ms=0.016 n=2 115f40
+[prof] rows=6 ms=0.032 n=2 11ad20
+[prof] rows=6 ms=0.083 n=10 11c230
+[prof] rows=6 ms=0.032 n=2 1288c0
+[prof] rows=7 ms=0.584 n=42 d1ec0
+[prof] rows=7 ms=0.026 n=1 128d00
+[prof] rows=8 ms=1908.875 n=19712 b7360
+[prof] rows=8 ms=131.711 n=77 b9120
+[prof] rows=8 ms=17.156 n=216 b9670
+[prof] rows=8 ms=206.139 n=2520 b9890
+[prof] rows=8 ms=40.603 n=77 d1930
+[prof] rows=8 ms=6.266 n=456 d1ec0
+[prof] rows=8 ms=6.305 n=77 d2200
+[prof] rows=8 ms=548.768 n=1001 f09e0
+[prof] rows=8 ms=118.454 n=231 f0c00
+[prof] rows=8 ms=1.337 n=76 113470
+[prof] rows=8 ms=1.378 n=76 113a10
+[prof] rows=8 ms=2.019 n=76 113d10
+[prof] rows=8 ms=1.265 n=76 113e90
+[prof] rows=8 ms=1.346 n=76 114010
+[prof] rows=8 ms=10.174 n=912 114450
+[prof] rows=8 ms=27.902 n=76 114630
+[prof] rows=8 ms=0.940 n=76 114810
+[prof] rows=8 ms=1.760 n=76 114ab0
+[prof] rows=8 ms=1.744 n=76 114be0
+[prof] rows=8 ms=4.199 n=76 114d10
+[prof] rows=8 ms=5.594 n=380 115130
+[prof] rows=8 ms=6.330 n=760 115470
+[prof] rows=8 ms=23.462 n=380 115620
+[prof] rows=8 ms=4.270 n=380 1157e0
+[prof] rows=8 ms=3.138 n=76 1159c0
+[prof] rows=8 ms=8.437 n=380 115b60
+[prof] rows=8 ms=7.130 n=760 115d60
+[prof] rows=8 ms=0.591 n=76 115f40
+[prof] rows=8 ms=1.131 n=76 11ad20
+[prof] rows=8 ms=3.416 n=380 11c230
+[prof] rows=8 ms=77.305 n=3696 127f30
+[prof] rows=8 ms=28.844 n=3696 128260
+[prof] rows=8 ms=31.160 n=1232 128480
+[prof] rows=8 ms=83.601 n=4928 128590
+[prof] rows=8 ms=87.386 n=9933 1286a0
+[prof] rows=8 ms=2.435 n=153 1288c0
+[prof] rows=8 ms=32.932 n=3696 1289d0
+[prof] rows=8 ms=79.842 n=3696 128ae0
+[prof] rows=8 ms=19.352 n=1232 128bf0
+[prof] rows=16 ms=0.555 n=12 b9890
+[prof] rows=16 ms=1132.127 n=22524 ba220
+[prof] rows=16 ms=22.235 n=3818 d1ec0
+[prof] rows=16 ms=27.769 n=3756 113a10
+[prof] rows=16 ms=58.132 n=3756 113d10
+[prof] rows=16 ms=40.392 n=3756 114450
+[prof] rows=16 ms=122.879 n=18780 115b60
+[prof-total] rows=1 ms=1.389
+[prof-total] rows=2 ms=0.124
+[prof-total] rows=3 ms=0.153
+[prof-total] rows=4 ms=1.163
+[prof-total] rows=5 ms=39.895
+[prof-total] rows=6 ms=8.696
+[prof-total] rows=7 ms=0.610
+[prof-total] rows=8 ms=3544.697
+[prof-total] rows=16 ms=1404.090
