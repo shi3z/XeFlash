@@ -1,0 +1,14 @@
+eng_gen
+eng_bd
+gm_merged.gate_up_m1_wg0
+gm_merged.gate_up_m8_wg4
+gm_merged.gate_up_m8_wg0
+gm_mlp.down_m1_wg0
+gm_mlp.down_m8_wg4
+gm_mlp.down_m8_wg0
+gm_out_proj_m1_wg0
+gm_out_proj_m8_wg4
+gm_out_proj_m8_wg0
+gm_mlp.down_m1_wg4
+gm_out_proj_m1_wg4
+done

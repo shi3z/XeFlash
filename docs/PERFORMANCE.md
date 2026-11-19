@@ -1869,3 +1869,34 @@ The generation speed gain is about 1 to 4% (fixed 16 rows: +2.6 to +3.4%, fixed 
 ### Q6. Decision
 Adopted: the Main pass is shorter in every configuration, the tokens and the committed state are identical, logits are bit-identical, GRF / spill unchanged, the previous launch stays available (`XF_GEMM_WG=0`). Not adopted: work-groups for 1 row (no gain; one shape-dependent size, 20, gives -6% on the out projection at 1 row = 0.2 ms per 1-row pass, not understood), RB = 2 (postponed).
 Next candidates for the narrow shapes: more loads in flight per thread (the idle share with the work-group is still 11 to 30% and the stalls are SBID), checked with the VTune counters of Part P.
+
+
+## Part R. VTune: memory hierarchy of the 4-bit GEMM, and a first profile of the whole engine (B60)
+Setup as in Part P (`gpu-hotspots`, `ptrace_scope` / `perf_event_paranoid` lowered for the runs and restored). Raw data: `benchmarks/results/m18/*.csv` and `*.summary.txt`; collection scripts are in the commit message history of Part P / Q (`characterization-mode=global-memory-accesses`).
+
+### R1. Where the loads are served (micro benchmark, cold weights, `xf-bench`, 1 segment; GB/s are averages over the sampling windows, so lower than bytes / time)
+| shape | m | launch | avg us | LSC read GB/s (load pipe, all threads) | LSC miss % | LSC->L3 read GB/s | L3 read GB/s | L3 miss % | DRAM read GB/s | LSC input avail % | LSC output ready % | SLM GB/s |
+|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| merged.gate_up | 1 | plain | 207 | 510 | 17.1 | 408 | 409 | 99.1 | 407 | 89 | 10 | 0 |
+| merged.gate_up | 8 | plain | 216 | 1176 | 9.1 | 408 | 409 | 95.8 | 394 | 89 | 9 | 0 |
+| merged.gate_up | 8 | WG 4 | 216 | 1168 | 9.1 | 405 | 405 | 95.7 | 391 | 91 | 9 | 0 |
+| mlp.down | 1 | plain | 105 | 474 | 17.2 | 381 | 382 | 99.2 | 379 | 43 | 9 | 0 |
+| mlp.down | 1 | WG 4 | 116 | 435 | 17.9 | 354 | 354 | 98.5 | 348 | 20 | 8 | 0 |
+| mlp.down | 8 | plain | 128 | 947 | 9.0 | 336 | 336 | 99.5 | 318 | 45 | 7 | 0 |
+| mlp.down | 8 | WG 4 | 111 | 1072 | 9.5 | 402 | 402 | 99.3 | 360 | 80 | 8 | 0 |
+| out_proj | 1 | plain | 51 | 305 | 17.3 | 245 | 245 | 98.7 | 243 | 36 | 6 | 0 |
+| out_proj | 1 | WG 4 | 56 | 285 | 18.0 | 231 | 231 | 97.7 | 227 | 14 | 6 | 0 |
+| out_proj | 8 | plain | 56 | 708 | 9.2 | 251 | 251 | 93.3 | 236 | 37 | 5 | 0 |
+| out_proj | 8 | WG 4 | 51 | 749 | 9.8 | 284 | 284 | 88.6 | 250 | 40 | 6 | 0 |
+
+- **The load pipe carries about 3x the DRAM traffic at 8 rows** (gate+up: 1,176 GB/s read through the load-store cache against 394 GB/s from DRAM, 91% of the load-store cache requests hit, miss 9.1%); at 1 row 510 against 407 GB/s (miss 17%). This is the 3.0x / 1.25x load-byte ratio computed from the ISA in Part O4, now measured:
+  the activation tiles come from the cache, the weights stream from DRAM (L3 miss ratio 95.7 to 99.5%, L3 read bandwidth equal to DRAM read bandwidth: no weight reuse anywhere). SLM is not used (0 GB/s).
+- **The load-store cache sees a pending request 89% of the time for gate+up** (`Input Available`), against 36 to 45% for the narrow matrices (down, out projection): the wide kernels keep the load pipe full, the narrow ones do not. With the work-group launch the narrow 8-row kernels rise from 45 to 80% (down) and 37 to 40% (out projection), and L3 read bandwidth from 336 to 402 GB/s (down) and 251 to 284 GB/s (out projection).
+  This is the counter-level picture of Part Q: the dispatch change gives the narrow kernels more simultaneous requests.
+- 1 row, down: work-groups of 4 **lower** the pending-request share from 43% to 20% and the DRAM read from 379 to 348 GB/s, in line with the 10% slower time. So for 1 row the spread launch has fewer loads in flight, not more; the reason (which threads share a core, and what the 32-byte activation loads do) is still unexplained.
+
+### R2. Whole-engine profile (`xf-run gen` and `xf-run cmp` with bdraft2 under VTune; `eng_gen`, `eng_bd`)
+- Both collections ran (305 MB result for the gen run). `gen` has 82 distinct GPU kernels / 228 thousand launches in the run (it times several loops, so this is not one pass); with bdraft2 attached 178 distinct kernels: **the drafter adds about 96 kernel types**.
+- The two programs contain the host-device copies of the benchmark scaffolding (`zeCommandListAppendMemoryCopy`, 5 to 6 s in total) and warm-up passes, so their totals are not a per-pass breakdown; the per-kernel averages (e.g. the 1-row GEMM 78 to 209 us, `k_gdn_core` 37 to 55 us, `k_mlp_act` 25 us, `k_addnorm_quant` 5 us) are usable, the cycle split between Main and drafter was not extracted from them.
+- GEMM kernels dominate GPU task time; XMX pipe active 13.6 to 14.6% for the 16-row GEMMs in the engine, 9 to 9.4% for the 8-row ones, about 1% for the 1-row ones (the same numbers as in the micro benchmark). The DRAM read figures of the engine profile (216 to 224 GB/s for the GEMMs) are time averages that include launch gaps and are not comparable with the micro benchmark.
+- Not done: a per-pass timeline (kernel gaps inside one verify pass, kernel launch count per pass for the comparison with the 5060 Ti's ~850), and instruction-level attribution (`source-analysis` collects but the JIT-compiled ESIMD kernels have no code mapping).

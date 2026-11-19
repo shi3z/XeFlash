@@ -1,0 +1,47 @@
+Elapsed Time: 24.304s
+    GPU Time: 11.232s
+XVE Array Stalled/Idle: 90.8% of Elapsed time with GPU busy
+    Occupancy: 48.2% of peak value
+
+        Hottest GPU Computing Tasks with Low Occupancy
+        Computing Task                                                                                                                                                               Total Time  SIMD Width  Peak XVE Threads Occupancy(%)  Occupancy(%)  SIMD Utilization(%)
+        ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------  ----------  ----------  -----------------------------  ------------  -------------------
+        (anonymous namespace)::submit<(int)0, (int)1, (int)1, (int)2, (bool)1, (int)2>(sycl::_V1::event, sycl::_V1::queue&, xf_gemm_desc const&)::{lambda(sycl::_V1::id<(int)1>)#1}      2.792s           1                         100.0%         47.8%               100.0%
+        (anonymous namespace)::submit<(int)0, (int)1, (int)1, (int)2, (bool)1, (int)2>(sycl::_V1::event, sycl::_V1::queue&, xf_gemm_desc const&)::{lambda(sycl::_V1::id<(int)1>)#1}      2.078s           1                          25.0%         46.8%               100.0%
+        (anonymous namespace)::submit<(int)0, (int)1, (int)1, (int)2, (bool)1, (int)2>(sycl::_V1::event, sycl::_V1::queue&, xf_gemm_desc const&)::{lambda(sycl::_V1::id<(int)1>)#1}      1.029s           1                          80.0%         43.2%               100.0%
+        [Others]                                                                                                                                                                         3.572s         N/A                           0.0%         53.1%                 0.0%
+    Sampler Busy: 0.0% of peak value
+
+        Hottest GPU Computing Tasks with High Sampler Usage
+        Computing Task  Total Time
+        --------------  ----------
+Collection and Platform Info
+    Application Command Line: scripts/b60run "timeout" "900" "./target/release/xf-run" "cmp" "/data/B60special/models/xfm/qwen38-27b-s4-cal.xfm" "benchmarks/prompts/code.json" "128" "--only-bd" "--configs" "8" "--ctx" "1024" "--sketch" "/data/xeflash-drafter/checkpoints/export/xeflash_mtp_v2/f_fc_fq4" "--rank" "512" "--groups" "40" "--bdraft" "/data/yasakani/model-speed/qwen38_27b_speed.yskn,/data/yasakani/model-speed/bdraft2_k8.yskn" 
+    Operating System: 7.0.0-43-generic DISTRIB_ID=Ubuntu DISTRIB_RELEASE=26.04 DISTRIB_CODENAME=resolute DISTRIB_DESCRIPTION="Ubuntu 26.04.1 LTS"
+    Computer Name: aiarcade02
+    Result Size: 325.3 MB 
+    Collection start time: 11:06:15 19/11/2026 UTC
+    Collection stop time: 11:06:39 19/11/2026 UTC
+    Collector Type: Event-based sampling driver,User-mode sampling and tracing
+    CPU
+        Name: Unknown
+        Frequency: 3.192 GHz
+        Logical CPU Count: 12
+    GPU
+        Name: Battlemage G21 [Arc Pro B60]
+        Vendor: Intel Corporation
+        XVE Count: 160
+        Max XVE Thread Count: 8
+        Max Core Frequency: 2.400 GHz
+        GPU OpenCL Info
+            Version
+            Max Compute Units: 160
+            Max Work Group Size: 1,024
+            Local Memory: 131.1 KB 
+            SVM Capabilities
+
+Recommendations:
+    GPU Time, % of Elapsed time: 46.2%
+     | GPU utilization is low. Switch to the for in-depth analysis of host
+     | activity. Poor GPU utilization can prevent the application from
+     | offloading effectively.
