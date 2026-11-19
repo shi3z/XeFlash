@@ -16,6 +16,7 @@
 //   verify   (<= 8 tokens)  R=8 G=1 U=2
 //   verify   (<= 16 tokens) R=8 G=2 U=1
 //   prefill  (many tokens)  R=8 G=4 U=1   XMX bound, weights reused from cache
+#include <cstdlib>
 #include <sycl/ext/intel/esimd.hpp>
 
 #include "../ctx.hpp"
@@ -125,7 +126,9 @@ ESIMD_INLINE simd<float, 16> finish(simd<int32_t, 16> si, simd<int32_t, 16> li, 
   return f * rsv * ts + bias;
 }
 
-template <int WF, int R, int G, int U, bool A16> sycl::event submit(sycl::queue &q, const xf_gemm_desc &d) {
+// PIPE: software-pipelined integer loop: the weight / activation tiles of the next U tiles are requested before the DPAS of the current U tiles
+// (two register sets A / B), so that memory requests stay in flight during the arithmetic. Needs cols / tile_cols / segs to be a multiple of 2 * U.
+template <int WF, int R, int G, int U, bool A16, bool PIPE = false> sycl::event submit(sycl::queue &q, const xf_gemm_desc &d) {
   using F = Fmt<WF>;
   constexpr int TPT = R * G;
   constexpr int WDW = F::stored_dw;
@@ -208,6 +211,39 @@ template <int WF, int R, int G, int U, bool A16> sycl::event submit(sycl::queue 
           accl[u][g] = 0;
         }
 
+      if constexpr (PIPE) {
+        simd<int32_t, WDW> wa[U], wb[U];
+        simd<int32_t, XDW> xa[U], xb[U], xla[U], xlb[U];
+#define XF_PL(WV, XV, XLV, T)                                         \
+  _Pragma("unroll") for (int u = 0; u < U; u++) {                    \
+    WV[u].copy_from(wp + ((T) + u) * WDW);                           \
+    XV[u].copy_from(X + xoff + ((T) + u) * xstride);                 \
+    if constexpr (A16) XLV[u].copy_from(XL + xoff + ((T) + u) * xstride); \
+  }
+#define XF_PC(WV, XV, XLV)                                                              \
+  _Pragma("unroll") for (int u = 0; u < U; u++) {                                        \
+    simd<int32_t, F::opnd_dw> w = operand<WF>(WV[u]);                                    \
+    _Pragma("unroll") for (int g = 0; g < G; g++) {                                      \
+      simd<int32_t, 8 * R> a = XV[u].template select<8 * R, 1>(g * 8 * R);              \
+      acc[u][g] = mac<WF, R>(acc[u][g], w, a, false);                                    \
+    }                                                                                    \
+    if constexpr (A16) {                                                                 \
+      _Pragma("unroll") for (int g = 0; g < G; g++) {                                    \
+        simd<int32_t, 8 * R> a = XLV[u].template select<8 * R, 1>(g * 8 * R);          \
+        accl[u][g] = mac<WF, R>(accl[u][g], w, a, true);                                 \
+      }                                                                                  \
+    }                                                                                    \
+  }
+        XF_PL(wa, xa, xla, 0)
+        for (size_t t = 0; t < tps; t += 2 * U) {
+          XF_PL(wb, xb, xlb, t + U)
+          XF_PC(wa, xa, xla)
+          if (t + 2 * U < tps) XF_PL(wa, xa, xla, t + 2 * U)
+          XF_PC(wb, xb, xlb)
+        }
+#undef XF_PL
+#undef XF_PC
+      } else
       for (size_t t = 0; t < tps; t += U) {
 #pragma unroll
         for (int u = 0; u < U; u++) {
@@ -319,6 +355,128 @@ template <bool A16> sycl::event combine_int(sycl::queue &q, const xf_gemm_desc &
   });
 }
 
+
+// ---- Controlled experiment kernel (XF_GEMM_EXP=A..H, s4 + 16-bit activations, 8 tokens per thread): the same thread layout, tile loop and epilogue
+// for every mode; only the body of the tile loop changes. Results are meaningless (no combine kernel is run); times are for the main kernel only.
+//   A read the weight tiles only         B read + s4 -> s8 expansion (no DPAS)          C weights resident in registers + DPAS, activations from memory
+//   D read + DPAS (= the real kernel)    E = D with next-tile loads issued before the DPAS   F = D without activation loads
+//   G = D without DPAS (reads W and X)   H = DPAS only, weights and activations in registers
+template <int MODE> sycl::event submit_exp(sycl::queue &q, const xf_gemm_desc &d) {
+  constexpr int R = 8, U = 2, WDW = 64, XDW = 64;
+  const int32_t *W = static_cast<const int32_t *>(d.w), *X = static_cast<const int32_t *>(d.x), *XL = static_cast<const int32_t *>(d.xlo);
+  const size_t rows = d.rows, rowblks = rows / 16, tiles = size_t(d.cols) / 32, segs = d.segs, tps = tiles / segs;
+  const size_t mpad = (size_t(d.m) + 7) / 8 * 8, tgroups = mpad / 8;
+  int32_t *YI = d.segs > 1 ? static_cast<int32_t *>(d.ypart) : reinterpret_cast<int32_t *>(d.y);
+  const bool multi = d.segs > 1;
+  return q.parallel_for(sycl::range<1>(rowblks * tgroups * segs), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const size_t idx = id[0], rb = idx % rowblks, tg = (idx / rowblks) % tgroups, seg = idx / (rowblks * tgroups);
+    const int32_t *wp = W + (rb * tiles + seg * tps) * WDW;
+    const size_t xoff = (seg * tps * mpad + tg * 8) * 8, xstride = mpad * 8;
+    simd<int32_t, 16 * R> acc[U], accl[U];
+#pragma unroll
+    for (int u = 0; u < U; u++) acc[u] = accl[u] = 0;
+    simd<int32_t, 16> fold(0);
+    simd<int32_t, WDW> wreg(0);
+    simd<int32_t, XDW> xreg(0), xlreg(0);
+    if constexpr (MODE == 2 || MODE == 7) wreg.copy_from(wp);
+    if constexpr (MODE == 5 || MODE == 7) {
+      xreg.copy_from(X + xoff);
+      xlreg.copy_from(XL + xoff);
+    }
+    auto keep = [&](simd<int32_t, WDW> v) SYCL_ESIMD_FUNCTION {
+#pragma unroll
+      for (int i = 0; i < WDW; i += 16) fold ^= v.template select<16, 1>(i);
+    };
+    if constexpr (MODE == 4) {
+      simd<int32_t, WDW> wa[U], wb[U];
+      simd<int32_t, XDW> xa[U], xb[U], xla[U], xlb[U];
+#pragma unroll
+      for (int u = 0; u < U; u++) {
+        wa[u].copy_from(wp + u * WDW);
+        xa[u].copy_from(X + xoff + u * xstride);
+        xla[u].copy_from(XL + xoff + u * xstride);
+      }
+      for (size_t t = 0; t < tps; t += 2 * U) {
+#pragma unroll
+        for (int u = 0; u < U; u++) {
+          wb[u].copy_from(wp + (t + U + u) * WDW);
+          xb[u].copy_from(X + xoff + (t + U + u) * xstride);
+          xlb[u].copy_from(XL + xoff + (t + U + u) * xstride);
+        }
+#pragma unroll
+        for (int u = 0; u < U; u++) {
+          acc[u] = mac<XF_W_S4, R>(acc[u], wa[u], xa[u].template select<8 * R, 1>(0), false);
+          accl[u] = mac<XF_W_S4, R>(accl[u], wa[u], xla[u].template select<8 * R, 1>(0), true);
+        }
+        if (t + 2 * U < tps) {
+#pragma unroll
+          for (int u = 0; u < U; u++) {
+            wa[u].copy_from(wp + (t + 2 * U + u) * WDW);
+            xa[u].copy_from(X + xoff + (t + 2 * U + u) * xstride);
+            xla[u].copy_from(XL + xoff + (t + 2 * U + u) * xstride);
+          }
+        }
+#pragma unroll
+        for (int u = 0; u < U; u++) {
+          acc[u] = mac<XF_W_S4, R>(acc[u], wb[u], xb[u].template select<8 * R, 1>(0), false);
+          accl[u] = mac<XF_W_S4, R>(accl[u], wb[u], xlb[u].template select<8 * R, 1>(0), true);
+        }
+      }
+    } else {
+      for (size_t t = 0; t < tps; t += U) {
+#pragma unroll
+        for (int u = 0; u < U; u++) {
+          simd<int32_t, WDW> ws = wreg;
+          if constexpr (MODE == 0 || MODE == 1 || MODE == 3 || MODE == 5 || MODE == 6) ws.copy_from(wp + (t + u) * WDW);
+          if constexpr (MODE == 0) {
+            keep(ws);
+          } else if constexpr (MODE == 1) {
+            simd<int32_t, 128> w8 = expand_s4_to_s8(ws);
+#pragma unroll
+            for (int i = 0; i < 128; i += 16) fold ^= w8.template select<16, 1>(i);
+          } else {
+            simd<int32_t, XDW> xv = xreg, xl = xlreg;
+            if constexpr (MODE == 2 || MODE == 3 || MODE == 6) {
+              xv.copy_from(X + xoff + (t + u) * xstride);
+              xl.copy_from(XL + xoff + (t + u) * xstride);
+            }
+            if constexpr (MODE == 6) {
+              keep(ws);
+              keep(xv);
+              keep(xl);
+            } else {
+              acc[u] = mac<XF_W_S4, R>(acc[u], ws, xv.template select<8 * R, 1>(0), false);
+              accl[u] = mac<XF_W_S4, R>(accl[u], ws, xl.template select<8 * R, 1>(0), true);
+            }
+          }
+        }
+      }
+    }
+    simd<int32_t, 16 * R> s = acc[0] + acc[1], sl = accl[0] + accl[1];
+#pragma unroll
+    for (int m = 0; m < R; m++) {
+      simd<int32_t, 16> si = s.template select<16, 1>(16 * m) ^ fold, li = sl.template select<16, 1>(16 * m);
+      const size_t tok = tg * 8 + m;
+      if (multi) {
+        si.copy_to(YI + ((seg * 2) * mpad + tok) * rows + rb * 16);
+        li.copy_to(YI + ((seg * 2 + 1) * mpad + tok) * rows + rb * 16);
+      } else {
+        (si ^ li).copy_to(YI + tok * rows + rb * 16);
+      }
+    }
+  });
+}
+
+bool pipe_mode() {
+  static const bool on = !(std::getenv("XF_GEMM_PIPE") && std::getenv("XF_GEMM_PIPE")[0] == '0'); // default on; XF_GEMM_PIPE=0 = the previous loop
+  return on;
+}
+int pipe_u() {
+  static const int u = std::getenv("XF_GEMM_PU") ? std::atoi(std::getenv("XF_GEMM_PU")) : 2;
+  return u == 1 ? 1 : 2;
+}
+constexpr bool F_IS_FLOAT(int wf) { return wf == XF_W_BF16; }
+
 template <int WF, bool A16> int dispatch(sycl::queue &q, const xf_gemm_desc &d) {
   switch (d.tokens_per_thread) {
   case 1:
@@ -327,17 +485,29 @@ template <int WF, bool A16> int dispatch(sycl::queue &q, const xf_gemm_desc &d) 
     // at full clock. One tile per trip is fine. Observed, not understood; see
     // docs/EXPERIMENTS.md.
     if constexpr (WF == XF_W_S8 && A16) submit<WF, 1, 1, 1, A16>(q, d);
+    else if (pipe_mode() && !F_IS_FLOAT(WF) && WF != XF_W_S8) submit<WF, 1, 1, 2, A16, true>(q, d);
     else submit<WF, 1, 1, 4, A16>(q, d);
     return XF_OK;
-  case 8: submit<WF, 8, 1, 2, A16>(q, d); return XF_OK;
-  case 16: submit<WF, 8, 2, 1, A16>(q, d); return XF_OK;
+  case 8:
+    if (pipe_mode() && !F_IS_FLOAT(WF)) {
+      if (pipe_u() == 1) submit<WF, 8, 1, 1, A16, true>(q, d);
+      else submit<WF, 8, 1, 2, A16, true>(q, d);
+    } else submit<WF, 8, 1, 2, A16>(q, d);
+    return XF_OK;
+  case 16:
+    if (pipe_mode() && !F_IS_FLOAT(WF)) submit<WF, 8, 2, 1, A16, true>(q, d);
+    else submit<WF, 8, 2, 1, A16>(q, d);
+    return XF_OK;
   case 32: submit<WF, 8, 4, 1, A16>(q, d); return XF_OK;
   }
   xf_set_error("xf_gemm: tokens_per_thread must be 1, 8, 16 or 32");
   return XF_ERR_INVALID;
 }
 
-int unroll_of(int tpt) { return tpt == 1 ? 4 : tpt == 8 ? 2 : 1; }
+int unroll_of(int tpt) {
+  if (pipe_mode()) return tpt == 8 ? 2 * pipe_u() : tpt == 16 ? 2 : tpt == 1 ? 4 : 1; // the pipelined loop handles 2 * U tiles per trip
+  return tpt == 1 ? 4 : tpt == 8 ? 2 : 1;
+}
 
 } // namespace
 
@@ -353,6 +523,18 @@ extern "C" int xf_gemm(xf_ctx *ctx, const xf_gemm_desc *dp) {
   if (d.cols % (tc * unroll_of(d.tokens_per_thread) * d.segs) != 0) {
     xf_set_error("xf_gemm: cols must be a multiple of tile_cols * unroll * segs");
     return XF_ERR_INVALID;
+  }
+  if (const char *ex = std::getenv("XF_GEMM_EXP"); ex && d.wfmt == XF_W_S4 && d.a16 && d.tokens_per_thread == 8) {
+    switch (ex[0]) {
+    case 'A': submit_exp<0>(ctx->q, d); return XF_OK;
+    case 'B': submit_exp<1>(ctx->q, d); return XF_OK;
+    case 'C': submit_exp<2>(ctx->q, d); return XF_OK;
+    case 'D': submit_exp<3>(ctx->q, d); return XF_OK;
+    case 'E': submit_exp<4>(ctx->q, d); return XF_OK;
+    case 'F': submit_exp<5>(ctx->q, d); return XF_OK;
+    case 'G': submit_exp<6>(ctx->q, d); return XF_OK;
+    case 'H': submit_exp<7>(ctx->q, d); return XF_OK;
+    }
   }
   return xf_guard("xf_gemm", [&]() -> int {
     int st = XF_ERR_INVALID;

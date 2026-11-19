@@ -1245,3 +1245,36 @@ YASAKANI's drafter takes 1.6 ms inside its 38.9 ms pass (5060 Ti); the 6.2 ms of
 3. GEMM: streaming-bound at 65 to 80% of the bandwidth, not XMX-bound; segment count change adopted (bit-identical, -1.3 / -2.1 ms); layout, cache hints, prefetch, unroll: no gain.
 4. INT8 KV: implemented, exact across pass sizes, 14x the KL of FP16, not faster (J1).
 5. Overlap: analysed (J2); no large safe gain found without a drafter profile.
+
+
+## Part K. 4-bit GEMM read efficiency (priority 1), controlled experiments
+
+### K1. What the memory system gives (`kernels/probe/bw_probe.cpp`, `bw_small.cpp`, `bw_shapes.cpp`; random data, 512 MiB / cold)
+- Streaming reads with one contiguous stream per thread (the layout of the weights: `[row block][tile][256 B]`) reach 390 to 440 GB/s from 1,024 threads up, whatever the number of loads in flight per thread (U = 1 to 8):
+  the hardware prefetches the sequential streams. 16-group interleaving without sequential streams does not (56 GB/s at U = 1). Constant or arithmetic-progression data reads at 600 to 2,000 GB/s (memory compression): all probes use random bytes.
+- A 16 MiB read (the size of an out projection) takes 39 us on an out-of-order queue and **54.8 us on the in-order queue the engine uses** (the tail of one kernel is not hidden by the next); big matrices 402 to 415 GB/s:
+  floor per pass for the 5 shapes of the model at 8 rows 30.7 ms (pure reads, in order) against about 38 ms for the GEMMs before this work (head excluded). (An earlier estimate of 13 ms of slack used the out-of-order probe and was too large; the slack is about 7 ms, 19%.)
+- The GEMM uses the same layout and thread layout as the probe (rows / 16 streams, 256 B tiles), so layout and number of threads are not what limits it: tile-major order is slower (gate+up 248 -> 396 us), L1/L2 hints and prefetch do nothing.
+
+### K2. A-H on one shape: 5120 x 6144, 8 tokens, s4 weights with 16-bit activations (`XF_GEMM_EXP=A..H`, same range of threads, same tile loop and epilogue in every mode; cold weights; main kernel only, us)
+| experiment | what it isolates | segs 1 | segs 2 | segs 4 |
+|---|---|---:|---:|---:|
+| A read the weight tiles only | weight load | 66.1 | 73.2 | 93.6 |
+| B read + s4 -> s8 expansion, no DPAS | dequantisation (this does not exist in the real s4 kernel: the DPAS takes the packed s4 directly) | 114.7 | 95.4 | 100.0 |
+| C weights resident in registers + DPAS, activations from memory | XMX work and activation loads | 40.8 | 26.8 | 24.0 |
+| D read + DPAS (the production loop) | the real kernel | 98.4 | 79.0 | 97.7 |
+| E = D with the next tiles requested before the DPAS (double buffer) | overlap of load and compute | **65.9** | **71.0** | 95.9 |
+| F = D without activation loads | | 67.5 | 74.5 | 95.2 |
+| G = D without DPAS (reads W and X) | | 74.2 | 72.7 | 94.2 |
+| H DPAS only, weights and activations in registers | pure XMX | 24.3 | 18.7 | 21.0 |
+Same experiment on gate+up (34816 x 5120, segs 1): A 237, B 263, C 72, D 245, E 242, F 238, G 240, H 62 us.
+- The XMX work is small (H 19 to 24 us for the narrow matrix, 62 us for gate+up; C with the activation loads 27 to 72 us), and expanding s4 to s8 in registers costs 20 to 50 us on top of the read (B against A): the native s4 DPAS is the right design, a format that needs expansion would be slower.
+- D is slower than A + (small) because the next tile's loads are issued only after the current DPAS: with the double buffer (E) the narrow matrix goes from 98.4 to 65.9 us (segs 1) and equals the read-only kernel (A, 66.1); on gate+up the gain is 1%, because there the reads are already continuous.
+- Reading alone (A) in this kernel is 66 to 73 us against the 54.8 us in-order floor of the probe for the same bytes: about 20% remain in the kernel structure (epilogue, tail), not in the weight stream.
+
+### K3. Adopted (bit-identical results, checked on 1,600 tokens at pass sizes 1 / 8 / 16 and in `xf-bench`)
+- Software-pipelined integer loop for the 8-token and 16-token GEMM kernels (default; `XF_GEMM_PIPE=0` restores the previous loop). Cold GEMM, us per call, best segments: out projection m=8 92.1 -> 65.9 (segs 1), m=16 102.8 -> 77.5; down (5120 x 17408) m=8 143.7 -> 131.4 (segs 2), m=16 163.3 -> 160.0;
+  gate+up, qkvz, attention qkv within 2%; m = 1 unchanged.
+- Segment counts: rows < 8192 and m > 1: 1 segment for 5120 x 6144 and 2 for 5120 x 17408 (the combine kernel disappears for the out projections).
+- Pass time at 1K context, XMX, no per-kernel synchronisation: 8 rows 48.65 -> 46.72 ms, 16 rows 56.15 -> 53.88 ms, 1 row 42.31 -> 42.09 ms (from the start of Part I: 49.92 -> 46.72 and 58.25 -> 53.88, i.e. -6.4% and -7.5%).
+- Not adopted: tile-major weight order, cache hints, prefetch, larger unroll.

@@ -1,0 +1,7 @@
+pure read of the weight bytes of each shape (4-bit), one stream per 16-row block, cold, back to back
+shape                        MB  threads      read us           GB/s
+gate+up 34816x5120         89.1     2176        215.0            415
+down 5120x17408            44.6      320        110.0            405
+GDN in 16384x5120          41.9     1024        102.3            410
+attn qkv 14336x5120        36.7      896         91.2            402
+out proj 5120x6144         15.7      320         54.8            287

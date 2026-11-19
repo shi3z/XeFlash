@@ -1846,12 +1846,16 @@ struct Pass {
     d.cols = mat.cols;
     d.m = m;
     d.tokens_per_thread = tpt;
-    // Column segments: narrow matrices need more threads than their row blocks give. Measured cold (xf-bench --cold, benchmarks/results/m12):
-    // 5120x6144 (o / GDN out projections) is fastest with 2 segments for <= 8 rows and 1 for 16 rows (4 costs 20 / 11 us per call); 5120x17408 with 4.
-    // The integer partial sums are exact, so the segment count does not change any result.
+    // Column segments (partial sums over K, merged by a combine kernel): narrow matrices have few row blocks. With the software-pipelined loop of the GEMM
+    // (default) the out projections (5120 x 6144) are fastest with 1 segment and 5120 x 17408 (down) with 2 (xf-bench --cold, benchmarks/results/m12/gemm_pipe_sweep.txt);
+    // with XF_GEMM_PIPE=0 the earlier rule applies (4, or 2 / 1 for the out projections). Integer partial sums are exact: no result depends on the segment count.
+    static const bool pipe_on = !(std::getenv("XF_GEMM_PIPE") && std::getenv("XF_GEMM_PIPE")[0] == '0');
     static const bool seg_old = std::getenv("XF_GEMM_SEGS_OLD") != nullptr;
     d.segs = (mat.rows < 8192 && m > 1) ? 4 : 1;
-    if (!seg_old && mat.rows < 8192 && mat.cols <= 8192 && m > 1) d.segs = m <= 8 ? 2 : 1;
+    if (mat.rows < 8192 && m > 1) {
+      if (pipe_on && !seg_old) d.segs = mat.cols <= 8192 ? 1 : 2;
+      else if (!seg_old && mat.cols <= 8192) d.segs = m <= 8 ? 2 : 1;
+    }
     d.a16 = 1;
     d.w = mat.w;
     d.x = ws.xhi;
