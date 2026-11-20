@@ -2155,3 +2155,116 @@ Main pass (48.1-50.7 ms at 16 rows) is now 96-97% of the cycle. Ceiling of this 
 (JSONL), reached 90%. Correctness caveat unchanged: the code-edit answer is still not equal to the official expected text (0/5, also for greedy; a
 4-bit model deviation), so that speedup is for the model's own output.
 Next limits: Main pass cost per row count (Part W), a device-side ring catch-up to remove the 1.7 ms, and copy proposals longer than 16 rows.
+
+
+## Part Y — 32-row verify: where the Main pass loses time, and what 32-row candidates would accept (2026-11-20)
+
+Goal: can a 32-row Main pass get close to the 16-row cost, and is it worth it for the copy+bdraft2 hybrid? Measured: GEMM kernels at 16/32/64 rows (ISA,
+VTune counters, work-group and segment sweeps), the Main-pass stage profile at 1/8/16 rows, and the exact acceptance of 32/64-row copy candidates.
+All GPU runs through `scripts/b60run`; VTune needed the three sysctls, set by `scripts/vtune_m32.sh` and restored afterwards (verified 1 / 4 / 1,
+`benchmarks/results/m27/vtune/sysctl_restore.txt`). Raw data: `benchmarks/results/m27/` (`isa/`, `vtune/`, `unit_s4_cold_m1_64.*`, `profile_*.log`, `*_sweep*.txt`, `width_oracle.md`).
+Code touched: one experiment hook in `kernels/gemm/gemm.cpp` (`XF_GEMM_WG32`, default 0 = unchanged launch); nothing else.
+
+### Y1. Cold GEMM times (the unit table of Part W used warm weights; small matrices stayed in L3) — `xf-bench --cold`, best variant, ms
+| shape (x layers) | m=1 | 8 | 16 | 32 (a8) | 64 (a8) | 32 vs 16 (a8) |
+|---|---|---|---|---|---|---|
+| gate_up (64) | 0.208 | 0.216 | 0.228 | 0.266 | 0.531 | +16% |
+| qkvz (48) | 0.101 | 0.102 | 0.104 | 0.124 | 0.226 | +19% |
+| attn_qkv (16) | 0.092 | 0.089 | 0.092 | 0.112 | 0.198 | +21% |
+| down (64) | 0.106 | 0.112 | 0.134 | 0.243 | 0.237 | **+82%** |
+| out_proj (64) | 0.049 | 0.050 | 0.057 | 0.099 | 0.099 | **+74%** |
+| lm_head (1) | 1.443 | 1.501 | 1.561 | 1.843 | 3.637 | +18% |
+| **GEMM sum per pass** | 30.96 (a16) | 32.07 (a16) | 34.84 (a16) / 33.70 (a8) | **48.44** | 73.14 | **+14.7 ms** |
+Of the +14.7 ms from 16 to 32 rows, down contributes 7.0, out_proj 2.7, gate_up 2.4, qkvz 1.0, attn_qkv 0.3, lm_head 0.3: **two narrow shapes cause 66%**.
+At m=16 the 16-bit-activation kernel costs only +3% over the 8-bit one (memory bound); only the 8-bit kernel exists for 32 rows.
+
+### Y2. Static ISA (`isa_analyze.py`, `m27/isa/`)
+The 32-row kernel is `submit<R=8,G=4,U=1,a16=false,PIPE=0>`: the **old non-pipelined loop**, 128 GRF, no spill (scratch none), 5 loads (1 weight tile + 4 activation
+loads of 256 B) and 4 DPAS per trip, three 64-bit multiplies in the address arithmetic, no software prefetch. The 16-row kernel is the pipelined PIPE=2 loop (10 loads, 8 DPAS
+per two-stage trip, pointer-bumped 32-bit addresses). Registers: accumulators of 16 rows x 32 tokens are 32 GRF with 8-bit activations; with two 16-bit planes they are 64 GRF
+plus two stages of activation tiles: does not fit 128 GRF, a 32-row 16-bit-activation kernel needs 256 GRF mode (4 instead of 8 threads per EU) or another decomposition.
+
+### Y3. VTune counters (gpu-hotspots overview, cold, 1 segment; m=16 rows are a8 and a16 variants, 32/64 a8)
+shape|m|kernel|global|local|avg us|n|spill|GRF|XVE act%|stall%|idle%|occ%|XMX%|SBID%|Send%|DistAcc%|L3 miss%|DRAM GB/s
+merged.gate_up|16|W0 R8 G2 U1 a16=0 P2|2176|4|226.0|7897|0|128|8.9|78.5|12.6|77.6|12.1|82.4|57.2|2.8|95.3|372
+merged.gate_up|16|W0 R8 G2 U1 a16=1 P2|2176|4|228.0|7797|0|128|15.4|73.2|11.4|78.6|24.1|69.6|64.6|1.7|94.6|374
+merged.gate_up|32|W0 R8 G4 U1 a16=0 P0|2176|32|265.0|6712|0|128|25.0|67.8|7.2|80.6|20.8|65.8|10.5|19.3|95.1|326
+merged.gate_up|64|W0 R8 G4 U1 a16=0 P0|4352|32|535.0|3457|0|128|25.4|68.5|6.2|86.8|21.2|66.9|16.1|22.5|95.2|331
+mlp.down|16|W0 R8 G2 U1 a16=0 P2|320|4|115.0|10002|0|128|7.9|80.0|12.1|21.9|11.4|83.7|0.0|1.8|99.3|354
+mlp.down|16|W0 R8 G2 U1 a16=1 P2|320|4|132.0|10002|0|128|12.5|77.3|10.1|22.4|20.1|78.3|0.0|0.4|99.2|312
+mlp.down|32|W0 R8 G4 U1 a16=0 P0|320|32|243.0|7272|0|128|10.4|36.3|53.3|23.3|11.3|35.5|0.0|8.1|98.8|176
+mlp.down|64|W0 R8 G4 U1 a16=0 P0|640|32|237.0|7387|0|128|21.3|72.4|6.3|46.7|23.1|71.2|0.0|16.8|92.3|182
+merged.attn_qkv|16|W0 R8 G2 U1 a16=0 P2|896|4|93.0|10002|0|128|8.3|73.2|18.4|56.6|11.2|77.0|10.7|2.2|96.2|341
+merged.attn_qkv|16|W0 R8 G2 U1 a16=1 P2|896|4|92.0|10002|0|128|14.8|71.6|13.7|60.0|23.0|69.6|65.6|0.9|97.4|347
+merged.attn_qkv|32|W0 R8 G4 U1 a16=0 P0|896|32|112.0|10002|0|128|23.1|62.2|14.7|59.4|19.1|58.9|0.7|14.6|93.2|296
+merged.attn_qkv|64|W0 R8 G4 U1 a16=0 P0|1792|32|197.0|8637|0|128|27.1|57.6|15.3|69.2|22.7|54.6|10.0|20.0|89.3|272
+out_proj|16|W0 R8 G2 U1 a16=0 P2|320|4|65.0|10002|0|128|5.0|74.0|21.0|19.3|6.7|75.7|0.0|1.8|88.2|211
+out_proj|16|W0 R8 G2 U1 a16=1 P2|320|4|57.0|10002|0|128|9.6|68.6|21.8|19.0|14.8|68.7|0.0|1.0|81.8|234
+out_proj|32|W0 R8 G4 U1 a16=0 P0|320|32|103.0|10002|0|128|10.3|33.0|56.7|21.2|8.9|30.9|0.0|8.0|87.0|137
+out_proj|64|W0 R8 G4 U1 a16=0 P0|640|32|103.0|10002|0|128|20.3|65.6|14.0|41.9|17.6|61.4|0.0|15.7|87.8|139
+
+Reading: (i) no spill, 128 GRF everywhere. (ii) Launch: the m=32/64 kernels run with Work Size:Local = 32 (runtime default); the m=16 kernels with local 4.
+(iii) Wide shapes at 32 rows: XVE active 23-25% (m=16: 9-15%), XMX pipe 19-21% (a8 m=16: 11-12%, a16 24%), thread occupancy 59-81%, DRAM 296-326 GB/s (m=16: 341-374), Send stall only
+1-11% (m=16: 57-66% on gate_up): the loads are *not* saturating the memory pipe, the threads wait for results (SBID 59-66%) because the loop has no prefetch. Latency bound.
+(iv) Narrow shapes at 32 rows: only 320 threads: XVE idle 53-57%, occupancy 21-23%, DRAM 137-176 GB/s: **idle, not stalled** (same diagnosis as Part P4 for 8 rows).
+(v) m=64 is two sequential 32-row groups: DRAM bytes per weight double, time x2 on wide shapes (gate_up 535 us).
+Work-group sweep (`XF_GEMM_WG32`, `m27/wg32_sweep.txt`): local 2-16 changes gate_up/qkvz by <1% and out_proj by 1%; down improves 6% (0.2435 -> 0.229): placement is not the main cause.
+Segments (`segs_narrow_m32.txt`): down at 32 rows with 4 column segments 0.2432 -> **0.1886 ms (-22%)** with the existing kernel (the default segment rule excludes m>16); out_proj does not improve. That alone would save 3.5 ms per pass.
+
+### Y4. Main-pass stage profile (`xf-run gen --profile`, synchronised stages, ms; GEMM column excludes the head)
+| ctx | rows | norm | quant | GEMM | GDN | attn | mlp | head | unprofiled pass |
+|---|---|---|---|---|---|---|---|---|---|
+| ~3K | 1 | 1.73 | 1.74 | 31.98 | 3.74 | 1.44 | 0.97 | 1.49 | 37.9 |
+| ~3K | 8 | 1.91 | 1.97 | 33.55 | 4.52 | 1.69 | 1.45 | 1.56 | 41.7 |
+| ~3K | 16 | 2.05 | 2.08 | 35.61 | 6.52 | 2.03 | 2.16 | 1.64 | 46.9 |
+| ~8K | 1 | 1.78 | 1.75 | 32.16 | 3.76 | 2.17 | 0.96 | 1.49 | 38.7 |
+| ~8K | 8 | 1.93 | 2.03 | 33.63 | 4.55 | 3.51 | 1.47 | 1.56 | 43.5 |
+| ~8K | 16 | 2.04 | 2.06 | 35.61 | 6.51 | 4.69 | 2.13 | 1.64 | 49.6 |
+Non-GEMM stages at 16 rows: 14.9 ms (3K) / 17.4 ms (8K); per extra row (8->16): GDN 0.25 ms (the recurrence is sequential in tokens), mlp 0.09, attention 0.04 (3K) / 0.15 (8K), norm and quant 0.02 each.
+Extrapolated to 32 rows (not measurable: the engine limit is `XF_MAX_TOKENS = 16`): non-GEMM +6.7 ms (3K) / +8.4 ms (8K), i.e. GDN is the biggest non-GEMM growth (+4 ms).
+Main(32) estimate = 46.9 (measured 16-row) + 13.6 (GEMM, a8 kernels as they are) + 6.7 = **67 ms** today (a16 would cost more), ~**60 ms** if down and out_proj
+scaled like the wide shapes (+20%). Ratio to the 16-row pass 1.28-1.43 for twice the rows.
+
+### Y5. Acceptance of 32/64-row candidates (exact: replay of the measured greedy outputs, proposer = longest match + sticky alignment as in Part X, `scripts/edit_copy_oracle2.py`)
+edit_code|longest|K=15|passes 480|copy passes 330|tok/pass 9.81
+edit_code|longest|K=31|passes 343|copy passes 193|tok/pass 13.73
+edit_code|longest|K=63|passes 276|copy passes 126|tok/pass 17.06
+edit_code|sticky|K=15|passes 480|copy passes 330|tok/pass 9.81
+edit_code|sticky|K=31|passes 343|copy passes 193|tok/pass 13.73
+edit_code|sticky|K=63|passes 276|copy passes 126|tok/pass 17.06
+edit_jsonl|longest|K=15|passes 186|copy passes 181|tok/pass 15.34
+edit_jsonl|longest|K=31|passes 98|copy passes 93|tok/pass 29.12
+edit_jsonl|longest|K=63|passes 54|copy passes 49|tok/pass 52.85
+edit_jsonl|sticky|K=15|passes 186|copy passes 181|tok/pass 15.34
+edit_jsonl|sticky|K=31|passes 98|copy passes 93|tok/pass 29.12
+edit_jsonl|sticky|K=63|passes 54|copy passes 49|tok/pass 52.85
+edit_jsonl_long|longest|K=15|passes 579|copy passes 574|tok/pass 11.21
+edit_jsonl_long|longest|K=31|passes 280|copy passes 275|tok/pass 23.19
+edit_jsonl_long|longest|K=63|passes 168|copy passes 163|tok/pass 38.65
+edit_jsonl_long|sticky|K=15|passes 416|copy passes 411|tok/pass 15.61
+edit_jsonl_long|sticky|K=31|passes 215|copy passes 210|tok/pass 30.20
+edit_jsonl_long|sticky|K=63|passes 113|copy passes 108|tok/pass 57.46
+JSONL edits: 29-30 tokens/pass of a 32-row pass (91-94%), 53-57 of 64; code edit 13.7 of 32 (43%), 17.1 of 64: the candidates are long where the text is copied and
+the model's own deviations (code edit) cap it. So with 32 rows acceptance does not limit JSONL; the pass cost does.
+
+### Y6. What it would buy (estimate; `scripts/edit_width_oracle.py`, `m27/width_oracle.md`)
+Policy: copy candidate >= 16 tokens -> 32-row pass, shorter -> 16-row pass, no candidate -> bdraft2 16 rows (3.5 tokens/pass assumed); 32-row cost 67 / 60 ms;
+the replay of the current 16-row hybrid gives 250 / 313 / 315 against the measured 241 / 296 / 284 (model is 4-10% optimistic).
+edit_code|today(a8 cost)|16-row copy passes 5|32-row passes 188|fallback passes 43|est tok/s 302
+edit_code|narrow fixed|16-row copy passes 5|32-row passes 188|fallback passes 43|est tok/s 330
+edit_code|16-row only (model of m26)|est tok/s 250
+edit_jsonl|today(a8 cost)|16-row copy passes 0|32-row passes 93|fallback passes 1|est tok/s 439
+edit_jsonl|narrow fixed|16-row copy passes 0|32-row passes 93|fallback passes 1|est tok/s 490
+edit_jsonl|16-row only (model of m26)|est tok/s 313
+edit_jsonl_long|today(a8 cost)|16-row copy passes 0|32-row passes 210|fallback passes 1|est tok/s 446
+edit_jsonl_long|narrow fixed|16-row copy passes 0|32-row passes 210|fallback passes 1|est tok/s 497
+edit_jsonl_long|16-row only (model of m26)|est tok/s 315
+Scaled by the model's bias: code edit ~280-310, JSONL ~410-455, long JSONL ~415-460 tok/s (now 241 / 296 / 284). All of this assumes a 16-bit-activation 32-row GEMM at about the 8-bit cost;
+the current 8-bit kernel is not usable for verification (different activation precision than the greedy reference).
+
+### Y7. Conclusions and order of work
+1. 32 rows can come close to 16 rows on the wide shapes (+16-21% for 2x rows, latency bound, DRAM 74%); the gap is the **narrow shapes (down, out_proj)**, 66% of the extra GEMM time, idle machine (320 threads), not DPAS or registers.
+2. Cheap first step without a new kernel: segment rule for m=32 (down: -22%). Then a pipelined (PIPE=2-style, prefetching, 32-bit addresses) loop for 32 rows; expected GEMM(32) ~41 ms (a8) instead of 48.
+3. The blocking item is a **16-bit-activation 32-row kernel**: it does not fit 128 GRF (needs 256-GRF mode or a split such as two 16-token halves sharing each weight tile through registers/SLM); its cost is unknown, this is the main risk.
+4. The engine needs `MAX_TOKENS` 32, and GDN grows 0.25 ms/row (+4 ms at 32 rows): GDN's per-token recurrence is the next non-GEMM target.
+5. Payoff if all holds: JSONL ~410-460 tok/s (+40-55%), code edit ~+15-25%. 1000 tok/s still needs ~64 rows at Main <= ~65 ms, i.e. a different verification structure.

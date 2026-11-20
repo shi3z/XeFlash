@@ -1,0 +1,13 @@
+merged.gate_up_m16 0
+merged.gate_up_m32 0
+merged.gate_up_m64 0
+mlp.down_m16 0
+mlp.down_m32 0
+mlp.down_m64 0
+merged.attn_qkv_m16 0
+merged.attn_qkv_m32 0
+merged.attn_qkv_m64 0
+out_proj_m16 0
+out_proj_m32 0
+out_proj_m64 0
+done

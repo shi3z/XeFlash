@@ -156,6 +156,11 @@ inline size_t wg1_size() {
   static const size_t w = std::getenv("XF_GEMM_WG_M1") ? size_t(std::atoi(std::getenv("XF_GEMM_WG_M1"))) : size_t(0);
   return w;
 }
+// Experiment only: work-group size for the 32-rows-per-thread kernel (XF_GEMM_WG32, default 0 = plain launch, the runtime picks 32 threads).
+inline size_t wg32_size() {
+  static const size_t w = std::getenv("XF_GEMM_WG32") ? size_t(std::atoi(std::getenv("XF_GEMM_WG32"))) : size_t(0);
+  return w;
+}
 // PIPE: 0 = plain loop, 1 = software-pipelined loop with every tile address recomputed from the 64-bit tile index (the previous production loop),
 //       2 = software-pipelined loop with pointer-bumped addresses: all addresses are formed once before the loop and every tile load adds a constant
 //           (weights) or the activation stride to a running pointer; 32-bit loop counters and thread index (no 64-bit multiply, division or modulo in the loop).
@@ -471,7 +476,7 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0> sycl::event submi
     }
   };
   const size_t nthreads = rowblks * tgroups * segs;
-  const size_t wg = PIPE == 2 ? (TPT > 1 ? wg_size() : wg1_size()) : 0; // 1 row per thread: the plain launch is fastest (50 against 56 us for the out projection)
+  const size_t wg = PIPE == 2 ? (TPT > 1 ? wg_size() : wg1_size()) : (TPT >= 32 ? wg32_size() : 0); // 1 row per thread: the plain launch is fastest (50 against 56 us for the out projection)
   if (wg > 1 && nthreads % wg == 0)
     return q.parallel_for(sycl::nd_range<1>(nthreads, wg), [=](sycl::nd_item<1> it) SYCL_ESIMD_KERNEL { run(it.get_global_id(0)); });
   return q.parallel_for(sycl::range<1>(nthreads), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL { run(id[0]); });

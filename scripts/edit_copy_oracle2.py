@@ -42,8 +42,14 @@ def run(prompt, out, variant, K=15, minhit=4, maxocc=64):
             if len(seq) >= 3: occ[tuple(seq[-3:])].append(len(seq) - 1)
         i += take
     return passes, copied, L / passes
+import sys
+KS = [int(x) for x in (sys.argv[1] if len(sys.argv) > 1 else "15").split(",")]
 for name in meta:
     prompt, o = load(name)
     for v in ("latest5", "longest", "sticky"):
+        for K in KS:
+          p, c, tpp = run(prompt, o, v, K=K)
+          print(f"{name}|{v}|K={K}|passes {p}|copy passes {c}|tok/pass {tpp:.2f}")
+        continue
         p, c, tpp = run(prompt, o, v)
         print(f"{name}|{v}|passes {p}|copy passes {c}|tok/pass {tpp:.2f}")
