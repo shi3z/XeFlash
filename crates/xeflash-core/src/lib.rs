@@ -55,6 +55,8 @@ pub enum WeightFormat {
     /// Packed unsigned 3-bit codes, spread to u4 in registers before DPAS.
     /// Codes are offset binary (`u = q + 4`); the offset is a per-token scalar.
     S3 = 5,
+    /// 3-bit codes split into a u2 plane and a 1-bit plane, 768-byte super-tiles of 4 tiles (see xeflash-quant tile.rs).
+    S3P = 6,
 }
 
 impl WeightFormat {
@@ -70,7 +72,7 @@ impl WeightFormat {
         match self {
             WeightFormat::S4 | WeightFormat::S4Exp8 => 256,
             WeightFormat::S2 => 128,
-            WeightFormat::S3 => 192,
+            WeightFormat::S3 | WeightFormat::S3P => 192,
             WeightFormat::S8 | WeightFormat::Bf16 => 512,
         }
     }
@@ -83,7 +85,7 @@ impl WeightFormat {
         match self {
             WeightFormat::S4 | WeightFormat::S4Exp8 => (-8, 7),
             WeightFormat::S2 => (-2, 1),
-            WeightFormat::S3 => (0, 7),
+            WeightFormat::S3 | WeightFormat::S3P => (0, 7),
             _ => (-128, 127),
         }
     }
@@ -95,6 +97,7 @@ impl WeightFormat {
             WeightFormat::Bf16 => "bf16",
             WeightFormat::S4Exp8 => "s4>s8",
             WeightFormat::S3 => "s3",
+            WeightFormat::S3P => "s3p",
         }
     }
 }

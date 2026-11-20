@@ -3,7 +3,7 @@
 //!
 //!   xf-convert inspect <checkpoint_dir>
 //!   xf-convert analyze <checkpoint_dir> [--layers 0,31,63] [--json out.json]
-//!   xf-convert convert <checkpoint_dir> <out.xfm> [--bits 4|2|8] [--only substring] [--stats dir] [--merge]
+//!   xf-convert convert <checkpoint_dir> <out.xfm> [--bits 4|3|2|8] [--only substring] [--stats dir] [--merge] [--s3-for a,b] [--esc3 X]
 //!   xf-convert verify  <checkpoint_dir> <model.xfm>
 
 use std::collections::BTreeMap;
@@ -22,6 +22,7 @@ fn main() -> Result<()> {
         Some("analyze") if args.len() >= 2 => analyze(Path::new(&args[1]), &args[2..]),
         Some("convert") if args.len() >= 3 => convert(Path::new(&args[1]), Path::new(&args[2]), &args[3..]),
         Some("verify") if args.len() >= 3 => verify(Path::new(&args[1]), Path::new(&args[2])),
+        Some("repack") if args.len() >= 3 => repack(Path::new(&args[1]), Path::new(&args[2])),
         _ => Err(Error::Invalid(
             "usage: xf-convert inspect <dir> | analyze <dir> [--layers a,b,c] [--json out.json] | \
              convert <dir> <out.xfm> [--bits 4|2|8] [--only substring] | verify <dir> <model.xfm>"
@@ -175,13 +176,19 @@ fn plan_jobs(names: &[String], merge: bool) -> Vec<(String, Vec<String>)> {
 
 fn convert(dir: &Path, out: &Path, rest: &[String]) -> Result<()> {
     let opt = |k: &str| rest.iter().position(|a| a == k).and_then(|i| rest.get(i + 1)).cloned();
+    let s3fmt = if rest.iter().any(|a| a == "--s3p") { WeightFormat::S3P } else { WeightFormat::S3 }; // --s3p: split u2 + 1-bit layout with 768-byte super-tiles
     let bits: u32 = opt("--bits").map_or(Ok(4), |b| b.parse().map_err(|_| Error::Invalid("bad --bits".into())))?;
     let format = match bits {
         4 => WeightFormat::S4,
         2 => WeightFormat::S2,
+        3 => s3fmt,
         8 => WeightFormat::S8,
-        _ => return Err(Error::Invalid("--bits must be 4, 2 or 8 (formats DPAS consumes directly)".into())),
+        _ => return Err(Error::Invalid("--bits must be 4, 3, 2 or 8".into())),
     };
+    // --s3-for a,b+c: with --bits 4, matrices whose name contains one of the entries (all '+'-separated parts of an entry must occur) are stored at 3 bits (mixed 3/4-bit container)
+    let s3_for: Vec<String> = opt("--s3-for").map(|v| v.split(',').map(str::to_string).collect()).unwrap_or_default();
+    // --esc3 X: a 3-bit matrix whose weighted error exceeds X is stored at 4 bits instead (default: never)
+    let esc3: f64 = opt("--esc3").map_or(f64::INFINITY, |v| v.parse().unwrap_or(f64::INFINITY));
     let only = opt("--only");
     let stats_dir = opt("--stats");
     let merge = rest.iter().any(|a| a == "--merge");
@@ -229,12 +236,20 @@ fn convert(dir: &Path, out: &Path, rest: &[String]) -> Result<()> {
         if stats_dir.is_some() && act.is_none() {
             println!("      no activation statistics for {name}: data-free");
         }
+        let (bits, format) = if s3_for.iter().any(|k| k.split('+').all(|t| name.contains(t))) { (3, s3fmt) } else { (bits, format) };
         let mut z = quantize(&w, rows, cols, QuantSpec { bits, col_scale: true, iters: 3 }, act.as_deref())?;
         let mut format = format;
+        if bits == 3 && z.weighted_rel_err > esc3 {
+            let z4 = quantize(&w, rows, cols, QuantSpec { bits: 4, col_scale: true, iters: 3 }, act.as_deref())?;
+            println!("      {name}: relative error {:.3} at 3 bits -> 4 bits ({:.4})", z.weighted_rel_err, z4.weighted_rel_err);
+            z = z4;
+            format = WeightFormat::S4;
+        }
+        let bits = if format == WeightFormat::S4 { 4 } else { bits };
         // Sensitivity-driven precision: a matrix whose (activation-weighted)
         // error is far above the rest is stored at 8 bits, which DPAS also
         // consumes directly. This is where mixed precision comes from.
-        if bits < 8 && z.weighted_rel_err > ESCALATE_REL {
+        if bits < 8 && bits != 3 && z.weighted_rel_err > ESCALATE_REL {
             let z8 = quantize(&w, rows, cols, QuantSpec { bits: 8, col_scale: true, iters: 3 }, act.as_deref())?;
             println!("      {name}: relative error {:.3} at {bits} bits -> 8 bits ({:.4})", z.weighted_rel_err, z8.weighted_rel_err);
             z = z8;
@@ -243,7 +258,7 @@ fn convert(dir: &Path, out: &Path, rest: &[String]) -> Result<()> {
         // A matrix that is far from Gaussian (mtp.fc) cannot be carried by a
         // uniform grid. Such matrices are rare and small; keep the original
         // data and let the engine run them in floating point.
-        if z.weighted_rel_err > FALLBACK_REL {
+        if bits != 3 && z.weighted_rel_err > FALLBACK_REL {
             if parts.len() != 1 {
                 return Err(Error::Invalid(format!("merged matrix {name} is not quantisable")));
             }
@@ -270,7 +285,13 @@ fn convert(dir: &Path, out: &Path, rest: &[String]) -> Result<()> {
                 })
                 .collect()
         });
-        let tiles = pack_weights(format, rows, cols, &z.q)?;
+        let tiles = if matches!(format, WeightFormat::S3 | WeightFormat::S3P) {
+            // unsigned codes u = q + 4 (the kernel folds the offset into the per-token scalar)
+            let u: Vec<i8> = z.q.iter().map(|v| v + 4).collect();
+            pack_weights(format, rows, cols, &u)?
+        } else {
+            pack_weights(format, rows, cols, &z.q)?
+        };
         writer.add_matrix(name, format, rows, cols, &tiles, &z.row_scale, &z.col_scale, z.sqnr_db(), parts, bias.as_deref())?;
         n_mat += 1;
         weights += rows * cols;
@@ -298,6 +319,33 @@ fn convert(dir: &Path, out: &Path, rest: &[String]) -> Result<()> {
         min_db,
         t_all.elapsed().as_secs_f64()
     );
+    Ok(())
+}
+
+/// Copy a container, re-laying every s3 matrix out as s3p (same codes, same scales; dense tensors and other formats are copied unchanged).
+fn repack(inp: &Path, out: &Path) -> Result<()> {
+    let src = Container::open(inp)?;
+    let mut writer = ContainerWriter::create(out, src.meta().clone(), 1 << 20)?;
+    let entries: Vec<(String, String)> = src.names().map(|(n, k)| (n.to_string(), k.to_string())).collect();
+    let mut n = 0;
+    for (name, kind) in &entries {
+        if kind == "dense" {
+            let d = src.dense(name)?;
+            writer.add_dense(name, d.dtype, &d.shape, d.bytes)?;
+            continue;
+        }
+        let m = src.matrix(name)?;
+        let (format, tiles) = if m.format == WeightFormat::S3 {
+            n += 1;
+            let q = xeflash_quant::unpack_weights(WeightFormat::S3, m.rows, m.cols, m.tiles)?;
+            (WeightFormat::S3P, xeflash_quant::pack_weights(WeightFormat::S3P, m.rows, m.cols, &q)?)
+        } else {
+            (m.format, m.tiles.to_vec())
+        };
+        writer.add_matrix(name, format, m.rows, m.cols, &tiles, &m.row_scale, &m.col_scale, m.sqnr_db, &m.parts, m.bias.as_deref())?;
+    }
+    let bytes = writer.finish()?;
+    println!("repacked {n} s3 matrices -> s3p, wrote {} ({:.3} GiB)", out.display(), bytes as f64 / (1u64 << 30) as f64);
     Ok(())
 }
 
@@ -334,7 +382,7 @@ fn verify(dir: &Path, model: &Path) -> Result<()> {
             let r = m.row_scale[i];
             let (wr, qr) = (&w[i * m.cols..(i + 1) * m.cols], &q[i * m.cols..(i + 1) * m.cols]);
             for j in 0..m.cols {
-                let d = (wr[j] - r * (qr[j] as f32 + 0.5) * m.col_scale[j]) as f64;
+                let d = (wr[j] - r * (qr[j] as f32 + if matches!(m.format, WeightFormat::S3 | WeightFormat::S3P) { -3.5 } else { 0.5 }) * m.col_scale[j]) as f64;
                 err += d * d;
                 norm += (wr[j] as f64) * (wr[j] as f64);
             }

@@ -27,7 +27,8 @@
 use xeflash_core::{Error, Result, WeightFormat};
 
 fn check_shape(format: WeightFormat, rows: usize, cols: usize, len: usize) -> Result<()> {
-    if rows % 16 != 0 || cols % format.tile_cols() != 0 {
+    let unit = if format == WeightFormat::S3P { 4 * format.tile_cols() } else { format.tile_cols() };
+    if rows % 16 != 0 || cols % unit != 0 {
         return Err(Error::Invalid(format!(
             "{rows}x{cols} is not a whole number of 16x{} tiles",
             format.tile_cols()
@@ -44,7 +45,7 @@ fn storage_bits(format: WeightFormat) -> Result<usize> {
         WeightFormat::S4 | WeightFormat::S4Exp8 => Ok(4),
         WeightFormat::S2 => Ok(2),
         WeightFormat::S8 => Ok(8),
-        WeightFormat::S3 => Ok(3),
+        WeightFormat::S3 | WeightFormat::S3P => Ok(3),
         WeightFormat::Bf16 => Err(Error::Invalid("use pack_weights_bf16 for bf16".into())),
     }
 }
@@ -62,6 +63,27 @@ pub fn pack_weights(format: WeightFormat, rows: usize, cols: usize, w: &[i8]) ->
     let tiles = cols / tc;
     let mut out = vec![0u8; rows / 16 * tiles * format.tile_bytes()];
     let mut words = out.chunks_exact_mut(4);
+    if format == WeightFormat::S3P {
+        // Super-tile of 4 tiles (128 columns) per 16-row block: 768 bytes = 12 registers [tile][x = 0..2][lane]. Register x of a tile holds in nibble i the low
+        // 3 bits of the code of column 8x+i and, in bit 3 of the nibble, bit x of the code of column 24+i. The kernel gets the u4 operand registers 0..2 as
+        // `reg & 0x77777777` and register 3 (columns 24..31) from the three bit-3 planes: 9 instructions of 16 lanes per tile.
+        let cw = |rb: usize, n: usize, c: usize| w[(rb * 16 + n) * cols + c] as u32;
+        for rb in 0..rows / 16 {
+            for t in 0..tiles {
+                for x in 0..3 {
+                    for n in 0..16 {
+                        let mut word = 0u32;
+                        for i in 0..8 {
+                            word |= (cw(rb, n, t * 32 + 8 * x + i) & 7) << (4 * i);
+                            word |= ((cw(rb, n, t * 32 + 24 + i) >> x) & 1) << (4 * i + 3);
+                        }
+                        words.next().unwrap().copy_from_slice(&word.to_le_bytes());
+                    }
+                }
+            }
+        }
+        return Ok(out);
+    }
     if format == WeightFormat::S3 {
         for rb in 0..rows / 16 {
             for t in 0..tiles {
@@ -113,6 +135,22 @@ pub fn unpack_weights(format: WeightFormat, rows: usize, cols: usize, packed: &[
     }
     let mut out = vec![0i8; rows * cols];
     let mut words = packed.chunks_exact(4);
+    if format == WeightFormat::S3P {
+        for rb in 0..rows / 16 {
+            for t in 0..tiles {
+                for x in 0..3 {
+                    for n in 0..16 {
+                        let word = u32::from_le_bytes(words.next().unwrap().try_into().unwrap());
+                        for i in 0..8 {
+                            out[(rb * 16 + n) * cols + t * 32 + 8 * x + i] = ((word >> (4 * i)) & 7) as i8;
+                            out[(rb * 16 + n) * cols + t * 32 + 24 + i] |= (((word >> (4 * i + 3)) & 1) << x) as i8;
+                        }
+                    }
+                }
+            }
+        }
+        return Ok(out);
+    }
     if format == WeightFormat::S3 {
         for rb in 0..rows / 16 {
             for t in 0..tiles {
@@ -227,6 +265,16 @@ mod tests {
             assert_eq!(p.len(), rows * cols * f.bits() / 8);
             assert_eq!(unpack_weights(f, rows, cols, &p).unwrap(), w);
         }
+    }
+
+    #[test]
+    fn s3p_roundtrip() {
+        let (rows, cols) = (32, 256);
+        let mut rng = Rng::new(11);
+        let w: Vec<i8> = (0..rows * cols).map(|_| rng.range_i8(0, 7)).collect();
+        let p = pack_weights(WeightFormat::S3P, rows, cols, &w).unwrap();
+        assert_eq!(p.len(), rows * cols * 3 / 8);
+        assert_eq!(unpack_weights(WeightFormat::S3P, rows, cols, &p).unwrap(), w);
     }
 
     #[test]

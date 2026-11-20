@@ -1916,3 +1916,46 @@ Engine pass (ms): wg=2 37.71 / 41.26 / 46.20; wg=4 37.72 / 41.27 / 46.21; wg=8 3
 - Differences are at most 0.6% in the unit bench, within round-to-round noise, with no consistent direction (out_proj m=8 favours 2, m=16 favours 8).
 - Pass time: 2 and 4 are identical; 8 is 0.04 to 0.06 ms slower in all 3 repeats.
 - Conclusion: the default of 4 stays; there is nothing to gain from the work-group size any more. Remaining headroom for the out projection is load parallelism per thread (not started).
+
+## Part T. 3-bit weights again: bottleneck analysis, a new layout (`s3p`), and what it buys end to end (B60)
+3-bit work was resumed on request; the 4-bit production path is unchanged (logits of `qwen38-27b-s4-cal.xfm` on the held-out chat are bit-identical between the HEAD kernels and the new build; 4-bit unit times unchanged). Raw data: `benchmarks/results/m20/` (unit benchmarks, ISA), `m21/` (quality, generation, pass times).
+
+### T1. Why the old s3 kernel (192-byte tiles, generic 3-to-4-bit spread) did not reach the byte ratio
+Unit time s3 / s4 (cold, 16-bit activations, 1 segment; ideal 0.75): gate+up 0.86 / 0.85 / 1.02 at m = 1 / 8 / 16, lm_head 0.76 / 0.76 / 1.07, out proj 1.11 / 1.07 / 1.00, down 1.12 / 1.06 / 1.59. Static ISA (`isa_analyze.py`, m = 8, 16-bit act.): **187 instructions per 4-tile trip** (s4: 40), 128 integer ALU, **16 loads** (weights as 128 B + 64 B messages: a 192-byte tile is not one 256-byte block load), 8 DPAS, 128 GRF, no spill. On the narrow matrices (320 threads) s3 is per-thread latency bound; with segment counts 2 or 4 down m = 8 is 100 us and out proj m = 8 45.8 us (s4: 112 / 50), i.e. the s4-tuned segment rule is not right for s3.
+
+### T2. New layout `s3p` (format id 6; `XF_W_S3P`, `WeightFormat::S3P`; container name "s3p"; `xf-convert convert --s3p`, `xf-convert repack` turns an s3 container into s3p)
+- Super-tile of 4 tiles per 16-row block = **768 bytes = three 256-byte loads** ([tile][x][lane], 12 registers). Register x of a tile holds in nibble i the low 3 bits of the code of column 8x+i and, in bit 3 of the nibble, bit x of the code of column 24+i. The u4 operand is `r & 0x77777777` for r0..r2 and `((r0>>3)&0x11111111)|((r1>>2)&0x22222222)|((r2>>1)&0x44444444)` for the fourth register: **9 instructions of 16 lanes per tile** (the generic spread: about 32). Same number of DPAS as s4 (one u4 DPAS per plane and tile).
+- Weights are prefetched two super-tiles ahead (24 registers of buffers, the 3-bit thread holds only 768 B per super-tile, so a one-ahead prefetch keeps 25% fewer bytes in flight than the 4-bit loop); activations one stage ahead as before.
+- Per-token offset: codes are unsigned (u = q + 4), the kernel multiplies the per-token offset by -7 (`sum(q x) + 0.5 sum(x) = sum(u x) - 3.5 sum(x)`), in the main kernel and in the segment combiner; the benchmark reference does the same. Bit-exact against the CPU reference for all shapes, m = 1 / 8 / 16 (24 of 24 cases `exact`); the whole model gives bit-identical logits to the s3 container with the old kernel.
+- ISA (gate+up, m = 8, 16-bit act.): see `m20/isa_s3p.jsonl`; the first version (u2 plane + 1-bit plane, two DPAS per tile) had 79 instructions per trip, 11 loads of 256 B, 16 DPAS; the final nibble-carry version is the one measured below. GRF 128, no spill.
+- A first variant (u2 DPAS for the low bits + a u4 DPAS carrying bit 2, no ALU spread) was as fast at m = 8 (gate+up 189 us) and slower at m = 16, so the DPAS count is not what limits m = 8.
+
+### T3. Unit benchmark, us, cold weights, 16-bit activations, 1 segment (`m20/unit2_*.txt`, `unit4_s3p.txt`)
+| shape | m | s4 | s3 (old) | s3p | s3p / s4 |
+|---|---:|---:|---:|---:|---:|
+| gate+up 34816x5120 | 1 / 8 / 16 | 207.7 / 216.2 / 228.1 | 177.6 / 184.0 / 232.3 | 176.5 / 189.0 / 203.5 | 0.85 / 0.87 / 0.89 |
+| qkvz 16384x5120 | 1 / 8 / 16 | 100.4 / 101.9 / 104.1 | 83.0 / 88.3 / 114.1 | 82.1 / 88.4 / 97.1 | 0.82 / 0.87 / 0.93 |
+| attn qkv 14336x5120 | 1 / 8 / 16 | 92.1 / 89.5 / 92.2 | 73.3 / 77.9 / 101.3 | 75.1 / 78.2 / 86.9 | 0.82 / 0.87 / 0.94 |
+| down 5120x17408 | 1 / 8 / 16 | 105.7 / 112.3 / 133.6 | 118.8 / 118.7 / 212.8 | 86.4 / 126.7 / 160.2 | 0.82 / 1.13 / 1.20 |
+| out proj 5120x6144 | 1 / 8 / 16 | 49.4 / 50.0 / 56.3 | 54.5 / 53.6 / 56.4 | 41.2 / 36.8 / 41.7 | 0.83 / 0.74 / 0.74 |
+| lm_head 248320x5120 | 1 / 8 / 16 | 1442.6 / 1501.2 / 1560.3 | 1094.6 / 1142.9 / 1675.4 | 1102.7 / 1151.3 / 1221.9 | 0.76 / 0.77 / 0.78 |
+Ideal 0.75. m = 1 and the lm_head reach 0.76 to 0.85; at m = 8 the wide shapes stop at 0.87: with 3 KB per trip through the load pipe of which 2 KB are activation re-reads the load pipe (about 1.2 TB/s, Part R) limits, not the bytes of the weights (s4 gate+up 8 rows reads 1.18 TB/s through the load-store cache; s3p at 189 us would need 1.23 TB/s). Narrow shapes with 1 segment (down) are worse than s4 (320 threads, deeper prefetch needs more registers); not tuned (segment rule for s3p not done).
+
+### T4. End to end (xf-run, B60, XF_KV=xmx; containers: `s3mixp` = gate+up, qkvz, attn qkv and lm_head at 3 bits (calibrated, centred-variance statistics as s4-cal, bias-corrected), all else s4; `s3allp` = every body matrix and lm_head at 3 bits; MTP block s4)
+Main pass (unprofiled, ms, 1 / 8 / 16 tokens per pass, `m21/pass_times.txt`, 2 repeats within 0.03 ms): s4-cal 37.72 / 41.30 / 46.20; s3mixp 33.90 / 37.65 / 42.77 (-10.1 / -8.8 / -7.4%); s3allp 32.03 / 35.85 / 42.24 (-15.1 / -13.2 / -8.6%).
+Quality against the BF16 reference (teacher-forced logits, 160-token held-out chat): s4-cal KL mean 0.125, median 0.024, top-1 88.1%; s3mix(p) KL 0.226, median 0.061, top-1 86.9%; s3allp KL 0.335, top-1 81.3%.
+Generation, bdraft2 fixed-16, 7 code prompts x 768 tokens, 1024 context (`m21/gen_*.json`, graded with `tools/code_eval/code_eval.py`, solution-only pass count):
+| container | tok/s (mean of prompts) | tokens / pass | 1st-draft accept | Main ms / pass | code tasks passed (solution only) |
+|---|---:|---:|---:|---:|---:|
+| s4-cal | 131.9 | 7.57 | 87.6% | 47.1 | 5 / 7 |
+| s3mixp | 126.0 | 6.61 | 82.9% | 43.0 | 3 / 7 |
+| s3allp | 81.6 | 4.18 | 70.3% | 42.5 | 0 / 7 |
+(s3mix with the old kernel: 112.6 tok/s, same tokens / pass as s3mixp: the new layout is worth +12% over the old s3 kernel at equal output.)
+- **Result: 3-bit scalar weights are not a gain.** The mixed container makes a pass 8.8% shorter but loses 12.7% of the tokens per pass: net -4.5% tok/s and fewer code tasks solved (3 of 7 against 5 of 7, small sample, 768-token cut-offs). The all-3-bit container collapses (accept 70%, 0 of 7).
+- The break-even for the mixed container is 6.9 tokens per pass (it has 6.61); for all-3-bit about 6.6 (it has 4.18). Quality is what is missing, not kernel speed.
+- Weight-space error explains it (relative 0.20 at 3 bits against 0.11 at 4 bits, Part QUANTIZATION; YASAKANI's trellis 3 bpw is 0.176); a GPTQ-like (activation-aware, full covariance) rounding on the same grid or a trellis format would be the way to make 3 bits worth its speed. Not done.
+
+### T5. Not done / status
+- RB = 2 (32 rows per thread to halve the activation re-reads, the limit at m = 8 above) was not implemented: it helps the 4-bit kernel as much as the 3-bit one and needs a register budget study; separate item.
+- s3p-specific segment / work-group rules for down and out projection were not applied in the engine (not worth it while no 3-bit container is usable).
+- Production default is unchanged (s4-cal). `s3p` support stays in the tree (kernel path chosen only by the container's format); `scripts/s3_quality.sh`, `scripts/s3_gen.sh` reproduce the quality and generation numbers.

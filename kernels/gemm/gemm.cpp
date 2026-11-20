@@ -56,6 +56,23 @@ template <> struct Fmt<XF_W_S3> {
   static constexpr bool is_float = false;
 };
 
+// S3P: 3-bit codes in 4-bit nibble registers that carry their own fourth register: per tile three registers r0..r2 [lane] where nibble i of rx holds the low 3 bits of the
+// code of column 8x+i and bit 3 holds bit x of the code of column 24+i. The u4 operand is r0 & 0x77777777, r1 & ..., r2 & ..., and
+// r3 = ((r0 >> 3) & 0x11111111) | ((r1 >> 2) & 0x22222222) | ((r2 >> 1) & 0x44444444): 9 instructions of 16 lanes per tile (the generic spread needs about 32) and the same
+// number of DPAS as the 4-bit format. Memory: per 16-row block super-tiles of 4 tiles, 768 bytes = three 256-byte loads, [tile][x][lane].
+template <> struct Fmt<XF_W_S3P> {
+  static constexpr int tile_cols = 32, stored_dw = 48, opnd_dw = 64;
+  static constexpr bool is_float = false;
+};
+ESIMD_INLINE simd<int32_t, 64> expand_s3p(simd<int32_t, 48> p) SYCL_ESIMD_FUNCTION {
+  simd<uint32_t, 48> v = p.template bit_cast_view<uint32_t>();
+  simd<uint32_t, 64> o;
+  o.template select<48, 1>(0) = v & 0x77777777u;
+  simd<uint32_t, 16> r0 = v.template select<16, 1>(0), r1 = v.template select<16, 1>(16), r2 = v.template select<16, 1>(32);
+  o.template select<16, 1>(48) = ((r0 >> 3) & 0x11111111u) | ((r1 >> 2) & 0x22222222u) | ((r2 >> 1) & 0x44444444u);
+  return o.template bit_cast_view<int32_t>();
+}
+
 // Packed 3-bit tile (3 registers: per lane a 96-bit stream of 32 unsigned
 // codes) -> u4 tile (4 registers), entirely in GRF. Codes are offset binary,
 // so no sign extension is needed; the offset is folded into the token offset.
@@ -110,7 +127,7 @@ ESIMD_INLINE simd<int32_t, Fmt<WF>::opnd_dw> operand(simd<int32_t, Fmt<WF>::stor
 template <int WF, int R>
 ESIMD_INLINE simd<int32_t, 16 * R> mac(simd<int32_t, 16 * R> acc, simd<int32_t, Fmt<WF>::opnd_dw> w,
                                        simd<int32_t, 8 * R> a, bool a_unsigned) SYCL_ESIMD_FUNCTION {
-  constexpr PT WP = WF == XF_W_S4 ? PT::s4 : WF == XF_W_S2 ? PT::s2 : WF == XF_W_S3 ? PT::u4 : PT::s8;
+  constexpr PT WP = WF == XF_W_S4 ? PT::s4 : WF == XF_W_S2 ? PT::s2 : (WF == XF_W_S3 || WF == XF_W_S3P) ? PT::u4 : PT::s8;
   if (a_unsigned) return xmx::dpas<8, R, int32_t, int32_t, int32_t, int32_t, WP, PT::u8>(acc, w, a);
   return xmx::dpas<8, R, int32_t, int32_t, int32_t, int32_t, WP, PT::s8>(acc, w, a);
 }
@@ -154,6 +171,7 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0> sycl::event submi
   const int32_t *XL = static_cast<const int32_t *>(d.xlo);
   const float *RS = d.rs;
   const float *TS = d.ts;
+  constexpr float OFFMUL = (WF == XF_W_S3 || WF == XF_W_S3P) ? -7.0f : 1.0f; // see combine_int
   const float *TO = d.toff;
   const float *RB = d.bias;
   const size_t rows = d.rows;
@@ -242,7 +260,87 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0> sycl::event submi
           accl[u][g] = 0;
         }
 
-      if constexpr (PIPE == 2) {
+      if constexpr (PIPE == 2 && WF == XF_W_S3P) {
+        // Super-tiles of 4 tiles, NS = 4 / U stages of U tiles. Weights are prefetched two super-tiles ahead (buffers 0 / 1, 12 registers each, three 256-byte loads per
+        // super-tile): a 3-bit thread holds only 768 bytes per super-tile, so with a one-super-tile prefetch it keeps 25% fewer bytes in flight than the 4-bit loop and the
+        // memory latency, not the bandwidth, limits it. Activations (served from the cache) are prefetched one stage ahead as in the other loops.
+        static_assert(U == 1 || U == 2, "S3P: one or two tiles per stage");
+        constexpr int NS = 4 / U;
+        simd<int32_t, 64> pw[2][3]; // the 192 dwords of a super-tile in three 256-byte loads: tile j = dwords 48 j .. 48 j + 47
+        simd<int32_t, XDW> xs[2][U], xls[2][U];
+        const int32_t *wq = wp, *xq = X + xoff, *xlq = XL + xoff;
+#define XF_S3P_W(B)                                                                   \
+  pw[B][0].copy_from(wq);                                                             \
+  pw[B][1].copy_from(wq + 64);                                                        \
+  pw[B][2].copy_from(wq + 128);                                                       \
+  wq += 192;
+#define XF_S3P_ACT(PAR)                                                               \
+  _Pragma("unroll") for (int u = 0; u < U; u++) {                                    \
+    xs[PAR][u].copy_from(xq);                                                         \
+    xq += xstride;                                                                    \
+    if constexpr (A16) {                                                              \
+      xls[PAR][u].copy_from(xlq);                                                     \
+      xlq += xstride;                                                                 \
+    }                                                                                 \
+  }
+        // tile j = dwords 48 j .. 48 j + 47 of the super-tile = pieces of the three load registers (j = 0: p0[0,48); 1: p0[48,64)+p1[0,32); 2: p1[32,64)+p2[0,16); 3: p2[16,64))
+#define XF_S3P_TILE(B, J)                                                             \
+  if ((J) == 0) tj = pw[B][0].template select<48, 1>(0);                              \
+  else if ((J) == 1) {                                                                \
+    tj.template select<16, 1>(0) = pw[B][0].template select<16, 1>(48);               \
+    tj.template select<32, 1>(16) = pw[B][1].template select<32, 1>(0);              \
+  } else if ((J) == 2) {                                                              \
+    tj.template select<32, 1>(0) = pw[B][1].template select<32, 1>(32);              \
+    tj.template select<16, 1>(32) = pw[B][2].template select<16, 1>(0);              \
+  } else tj = pw[B][2].template select<48, 1>(16);
+        // one super-tile out of buffer B; NEXT: whether a following super-tile exists (its first activation stage is requested during the last stage)
+#define XF_S3P_SUPER(B, NEXT)                                                         \
+  _Pragma("unroll") for (int k = 0; k < NS; k++) {                                   \
+    if (k + 1 < NS) {                                                                 \
+      XF_S3P_ACT((k + 1) & 1)                                                         \
+    } else if (NEXT) {                                                                \
+      XF_S3P_ACT(0)                                                                   \
+    }                                                                                 \
+    _Pragma("unroll") for (int u = 0; u < U; u++) {                                  \
+      const int j = k * U + u;                                                        \
+      simd<int32_t, 48> tj;                                                           \
+      XF_S3P_TILE(B, j)                                                               \
+      simd<int32_t, 64> hj = expand_s3p(tj);                                          \
+      _Pragma("unroll") for (int g = 0; g < G; g++) {                                \
+        simd<int32_t, 8 * R> a = xs[k & 1][u].template select<8 * R, 1>(g * 8 * R);  \
+        acc[u][g] = mac<WF, R>(acc[u][g], hj, a, false);                         \
+      }                                                                               \
+      if constexpr (A16) {                                                            \
+        _Pragma("unroll") for (int g = 0; g < G; g++) {                              \
+          simd<int32_t, 8 * R> a = xls[k & 1][u].template select<8 * R, 1>(g * 8 * R); \
+          accl[u][g] = mac<WF, R>(accl[u][g], hj, a, true);                      \
+        }                                                                             \
+      }                                                                               \
+    }                                                                                 \
+  }
+        const uint32_t nst = uint32_t(tps) / 4;
+        XF_S3P_W(0)
+        if (nst > 1) {
+          XF_S3P_W(1)
+        }
+        XF_S3P_ACT(0)
+        for (uint32_t st = 0; st < nst; st += 2) {
+          XF_S3P_SUPER(0, st + 1 < nst)
+          if (st + 2 < nst) {
+            XF_S3P_W(0)
+          }
+          if (st + 1 < nst) {
+            XF_S3P_SUPER(1, st + 2 < nst)
+            if (st + 3 < nst) {
+              XF_S3P_W(1)
+            }
+          }
+        }
+#undef XF_S3P_W
+#undef XF_S3P_ACT
+#undef XF_S3P_SUPER
+#undef XF_S3P_TILE
+      } else if constexpr (PIPE == 2) {
         simd<int32_t, WDW> wa[U], wb[U];
         simd<int32_t, XDW> xa[U], xb[U], xla[U], xlb[U];
         const int32_t *wq = wp, *xq = X + xoff, *xlq = XL + xoff;
@@ -361,7 +459,7 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0> sycl::event submi
           simd<int32_t, 16> li = sl.template select<16, 1>(16 * m);
           const size_t tok = tg * TPT + g * R + m;
           if (segs == 1) {
-            simd<float, 16> f = finish<A16>(si, li, rsv, float(tsv[g * R + m]), float(tov[g * R + m]), rbv);
+            simd<float, 16> f = finish<A16>(si, li, rsv, float(tsv[g * R + m]), float(tov[g * R + m]) * OFFMUL, rbv);
             f.copy_to(Y + tok * rows + rb * 16);
           } else {
             // Exact integer partial sums; the combiner converts and scales.
@@ -397,6 +495,7 @@ sycl::event combine_float(sycl::queue &q, const float *ypart, float *y, size_t n
 // Integer formats: sum the int32 partials of all segments, then convert and
 // scale exactly like the direct path.
 template <bool A16> sycl::event combine_int(sycl::queue &q, const xf_gemm_desc &d, size_t mpad) {
+  const float offmul = (d.wfmt == XF_W_S3 || d.wfmt == XF_W_S3P) ? -7.0f : 1.0f; // unsigned codes u = q + 4: sum(q x) + 0.5 sum(x) = sum(u x) - 3.5 sum(x), and toff holds 0.5 sum(x)
   const int32_t *YI = static_cast<const int32_t *>(d.ypart);
   float *Y = d.y;
   const float *RS = d.rs;
@@ -425,7 +524,7 @@ template <bool A16> sycl::event combine_int(sycl::queue &q, const xf_gemm_desc &
     if (TO) to.copy_from(TO + tok);
     simd<float, 16> rbv(0.0f);
     if (RB) rbv.copy_from(RB + rb * 16);
-    simd<float, 16> f = finish<A16>(si, li, rsv, float(ts[0]), float(to[0]), rbv);
+    simd<float, 16> f = finish<A16>(si, li, rsv, float(ts[0]), float(to[0]) * offmul, rbv);
     f.copy_to(Y + tok * rows + rb * 16);
   });
 }
@@ -579,6 +678,20 @@ int pipe_kind(const xf_gemm_desc &d, int tpt) {
 }
 
 template <int WF, bool A16> int dispatch(sycl::queue &q, const xf_gemm_desc &d) {
+  if constexpr (WF == XF_W_S3P) {
+    // only the pointer-bumped pipelined loop exists for this format (4 tiles per super-tile; U tiles per stage)
+    if (pipe_kind(d, d.tokens_per_thread) != 2) {
+      xf_set_error("xf_gemm: s3p needs the pipelined 32-bit-address loop");
+      return XF_ERR_INVALID;
+    }
+    switch (d.tokens_per_thread) {
+    case 1: submit<WF, 1, 1, 2, A16, 2>(q, d); return XF_OK;
+    case 8: submit<WF, 8, 1, 2, A16, 2>(q, d); return XF_OK;
+    case 16: submit<WF, 8, 2, 1, A16, 2>(q, d); return XF_OK;
+    }
+    xf_set_error("xf_gemm: s3p supports 1, 8 or 16 tokens per thread");
+    return XF_ERR_INVALID;
+  } else
   switch (d.tokens_per_thread) {
   case 1: {
     // s8 with 16-bit activations and four tiles per trip (32 weight registers
@@ -616,7 +729,8 @@ template <int WF, bool A16> int dispatch(sycl::queue &q, const xf_gemm_desc &d) 
   return XF_ERR_INVALID;
 }
 
-int unroll_of(int tpt) {
+int unroll_of(int tpt, int wfmt = 0) {
+  if (wfmt == XF_W_S3P) return 4; // one super-tile per trip
   if (pipe_mode()) return tpt == 8 ? 2 * pipe_u() : tpt == 16 ? 2 : tpt == 1 ? 4 : 1; // the pipelined loop handles 2 * U tiles per trip
   return tpt == 1 ? 4 : tpt == 8 ? 2 : 1;
 }
@@ -632,7 +746,7 @@ extern "C" int xf_gemm(xf_ctx *ctx, const xf_gemm_desc *dp) {
     xf_set_error("xf_gemm: invalid descriptor");
     return XF_ERR_INVALID;
   }
-  if (d.cols % (tc * unroll_of(d.tokens_per_thread) * d.segs) != 0) {
+  if (d.cols % (tc * unroll_of(d.tokens_per_thread, d.wfmt) * d.segs) != 0) {
     xf_set_error("xf_gemm: cols must be a multiple of tile_cols * unroll * segs");
     return XF_ERR_INVALID;
   }
@@ -658,6 +772,7 @@ extern "C" int xf_gemm(xf_ctx *ctx, const xf_gemm_desc *dp) {
     case XF_W_S8: st = d.a16 ? dispatch<XF_W_S8, true>(ctx->q, d) : dispatch<XF_W_S8, false>(ctx->q, d); break;
     case XF_W_BF16: st = dispatch<XF_W_BF16, false>(ctx->q, d); break;
     case XF_W_S4_EXP8: st = dispatch<XF_W_S4_EXP8, false>(ctx->q, d); break;
+    case XF_W_S3P: st = d.a16 ? dispatch<XF_W_S3P, true>(ctx->q, d) : dispatch<XF_W_S3P, false>(ctx->q, d); break;
     case XF_W_S3: st = d.a16 ? dispatch<XF_W_S3, true>(ctx->q, d) : dispatch<XF_W_S3, false>(ctx->q, d); break;
     default: xf_set_error("xf_gemm: weight format not implemented"); return XF_ERR_INVALID;
     }

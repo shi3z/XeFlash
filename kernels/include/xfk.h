@@ -88,7 +88,8 @@ typedef enum {
   XF_W_S8 = 2,       /* signed 8-bit, DPAS s8 x s8 (uncompressed reference) */
   XF_W_BF16 = 3,     /* bfloat16 weights and activations (float reference) */
   XF_W_S4_EXP8 = 4,  /* packed s4 expanded to s8 in registers, then s8 x s8 */
-  XF_W_S3 = 5        /* packed unsigned 3-bit codes spread to u4 in registers */
+  XF_W_S3 = 5,       /* packed unsigned 3-bit codes spread to u4 in registers */
+  XF_W_S3P = 6       /* unsigned 3-bit codes as a u2 plane + a 1-bit plane, 768-byte super-tiles of 4 tiles; two DPAS (u2, u4 with bit 2 only) per tile */
 } xf_wfmt;
 
 typedef struct {

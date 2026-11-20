@@ -35,6 +35,8 @@ fn format_name(f: WeightFormat) -> &'static str {
         WeightFormat::S4 => "s4",
         WeightFormat::S2 => "s2",
         WeightFormat::S8 => "s8",
+        WeightFormat::S3 => "s3",
+        WeightFormat::S3P => "s3p",
         _ => "unsupported",
     }
 }
@@ -44,6 +46,8 @@ fn format_from(name: &str) -> Result<WeightFormat> {
         "s4" => Ok(WeightFormat::S4),
         "s2" => Ok(WeightFormat::S2),
         "s8" => Ok(WeightFormat::S8),
+        "s3" => Ok(WeightFormat::S3),
+        "s3p" => Ok(WeightFormat::S3P),
         other => Err(invalid(format!("unknown weight format {other} in container"))),
     }
 }

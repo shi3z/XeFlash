@@ -86,7 +86,7 @@ impl Loader<'_> {
 
     fn matrix(&mut self, name: &str, category: &'static str) -> Result<ffi::xf_mat> {
         let m = self.xfm.matrix(name)?;
-        if m.format != WeightFormat::S4 && m.format != WeightFormat::S8 && m.format != WeightFormat::S2 {
+        if m.format != WeightFormat::S4 && m.format != WeightFormat::S8 && m.format != WeightFormat::S2 && m.format != WeightFormat::S3 && m.format != WeightFormat::S3P {
             return Err(Error::Invalid(format!("{name}: unsupported matrix format")));
         }
         let w = self.dev.upload(m.tiles)?;

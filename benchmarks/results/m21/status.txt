@@ -1,0 +1,4 @@
+s4cal exit=0
+s3mix exit=0
+s3mixp exit=0
+s3allp exit=0

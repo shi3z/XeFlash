@@ -30,6 +30,9 @@ def disasm(spv, tag):
     shutil.rmtree(od, ignore_errors=True)
     subprocess.run(['ocloc', 'compile', '-spirv_input', '-file', spv, '-device', 'bmg', '-out_dir', od], capture_output=True)
     b = glob.glob(od + '/*.bin')
+    if not b:  # some modules (e.g. the 3-bit kernels) only build with the ESIMD front end
+        subprocess.run(['ocloc', 'compile', '-spirv_input', '-file', spv, '-device', 'bmg', '-out_dir', od, '-options', '-vc-codegen'], capture_output=True)
+        b = glob.glob(od + '/*.bin')
     if not b:
         return None
     st = sh(['strings', '-n', '3', b[0]])

@@ -169,7 +169,8 @@ fn run_case(dev: &Device, w: &Weights, c: &Case, min_time: f64) -> Result<Outcom
                     hi = hi.wrapping_add(wv * (xv >> 8));
                     lo = lo.wrapping_add(wv * (xv & 0xFF));
                 }
-                let f = hi as f32 * 256.0 + lo as f32 + token_offset[i];
+                let offm = if matches!(c.format, WeightFormat::S3 | WeightFormat::S3P) { -7.0f32 } else { 1.0 }; // unsigned codes: the kernel scales the offset
+                let f = hi as f32 * 256.0 + lo as f32 + token_offset[i] * offm;
                 want = f * w.row_scale[row] * token_scale[i];
                 tol_ref = want.abs() as f64;
             } else {
@@ -177,7 +178,8 @@ fn run_case(dev: &Device, w: &Weights, c: &Case, min_time: f64) -> Result<Outcom
                 for col in 0..cols {
                     acc = acc.wrapping_add(w.int[row * cols + col] as i32 * x_i16[i * cols + col] as i32);
                 }
-                want = (acc as f32 + token_offset[i]) * w.row_scale[row] * token_scale[i];
+                let offm = if matches!(c.format, WeightFormat::S3 | WeightFormat::S3P) { -7.0f32 } else { 1.0 };
+                want = (acc as f32 + token_offset[i] * offm) * w.row_scale[row] * token_scale[i];
                 tol_ref = want.abs() as f64;
             }
             if got.to_bits() != want.to_bits() {
@@ -283,7 +285,7 @@ fn main() -> Result<()> {
     let seg_list: Option<Vec<usize>> = args.iter().position(|a| a == "--segs").and_then(|i| args.get(i + 1)).map(|v| v.split(',').filter_map(|x| x.parse().ok()).collect());
     let tok_list: Option<Vec<usize>> = args.iter().position(|a| a == "--tokens").and_then(|i| args.get(i + 1)).map(|v| v.split(',').filter_map(|x| x.parse().ok()).collect());
     let formats =
-        [WeightFormat::Bf16, WeightFormat::S8, WeightFormat::S4Exp8, WeightFormat::S4, WeightFormat::S3, WeightFormat::S2];
+        [WeightFormat::Bf16, WeightFormat::S8, WeightFormat::S4Exp8, WeightFormat::S4, WeightFormat::S3, WeightFormat::S3P, WeightFormat::S2];
     let token_counts_vec: Vec<usize> = tok_list.clone().unwrap_or_else(|| if quick { vec![1, 8, 64] } else { vec![1, 8, 16, 64, 256] });
     let token_counts: &[usize] = &token_counts_vec;
     let min_time = if quick { 0.1 } else { 0.4 };
@@ -313,7 +315,7 @@ fn main() -> Result<()> {
                 if tokens <= 16 && shape.rows < 8192 {
                     variants.push((4, false)); // few row blocks: add column workers
                 }
-                if matches!(format, WeightFormat::S4 | WeightFormat::S3 | WeightFormat::S8 | WeightFormat::S4Exp8) && tokens <= 16 {
+                if matches!(format, WeightFormat::S4 | WeightFormat::S3 | WeightFormat::S3P | WeightFormat::S8 | WeightFormat::S4Exp8) && tokens <= 16 {
                     variants.push((1, true)); // 16-bit activations
                     if shape.rows < 8192 {
                         variants.push((4, true));
@@ -323,13 +325,13 @@ fn main() -> Result<()> {
                     variants.clear();
                     for &sg in sl {
                         variants.push((sg, false));
-                        if matches!(format, WeightFormat::S4 | WeightFormat::S3 | WeightFormat::S8 | WeightFormat::S4Exp8) && tokens <= 16 {
+                        if matches!(format, WeightFormat::S4 | WeightFormat::S3 | WeightFormat::S3P | WeightFormat::S8 | WeightFormat::S4Exp8) && tokens <= 16 {
                             variants.push((sg, true));
                         }
                     }
                 }
                 let tcol = if format == WeightFormat::Bf16 { 16 } else { 32 };
-                let unroll = match tpt { 1 => 4, 8 => 2, _ => 1 };
+                let unroll = if format == WeightFormat::S3P { 4 } else { match tpt { 1 => 4, 8 => 2, _ => 1 } };
                 for (segs, a16) in variants {
                     if shape.cols % (tcol * unroll * segs) != 0 {
                         continue; // this segment count does not divide the columns
