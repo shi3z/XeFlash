@@ -1,0 +1,5 @@
+[
+  {"prompt":"edit_edit_jsonl","drafter":"bd2:fixed8","block":8,"tok_per_s":157.110,"tokens_per_pass":7.9499,"cycle_ms":50.601,"main_ms":42.287,"draft_ms":6.099,"taps_ms":0.000,"same_tokens":true,"same_state":true,"passes":359,"passes16":0,"emitted":2854,"new_tokens":2854,"accept1":1.0000,"prefill_tok_s":311.0},
+  {"prompt":"edit_edit_jsonl","drafter":"bd2:fixed16","block":8,"tok_per_s":261.599,"tokens_per_pass":15.2620,"cycle_ms":58.341,"main_ms":48.111,"draft_ms":7.372,"taps_ms":0.000,"same_tokens":true,"same_state":true,"passes":187,"passes16":187,"emitted":2854,"new_tokens":2854,"accept1":1.0000,"prefill_tok_s":311.3},
+  {"prompt":"edit_edit_jsonl","drafter":"bd2:adapt-cost","block":8,"tok_per_s":262.088,"tokens_per_pass":15.2620,"cycle_ms":58.232,"main_ms":48.024,"draft_ms":7.349,"taps_ms":0.000,"same_tokens":true,"same_state":true,"passes":187,"passes16":184,"emitted":2854,"new_tokens":2854,"accept1":1.0000,"prefill_tok_s":311.3}
+]

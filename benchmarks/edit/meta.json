@@ -1,0 +1,20 @@
+{
+ "edit_code": {
+  "prompt_tokens": 4769,
+  "expected_tokens": 4708,
+  "max_tokens": 8192,
+  "expected_sha256": "85833f18518f87ad6a8064df5a98522dbe24b278eec743d9491f3d9c726c969b"
+ },
+ "edit_jsonl": {
+  "prompt_tokens": 2927,
+  "expected_tokens": 2854,
+  "max_tokens": 8192,
+  "expected_sha256": "53389e0aa10d55edc7ca921d3e29f190633a25f5fea66505203aaf073a5502f1"
+ },
+ "edit_jsonl_long": {
+  "prompt_tokens": 6576,
+  "expected_tokens": 6493,
+  "max_tokens": 12000,
+  "expected_sha256": "d6d74f8ba5055ee88dcec157d0be78c67d38a79c645ba2c99f2b51dc8c25c8d5"
+ }
+}

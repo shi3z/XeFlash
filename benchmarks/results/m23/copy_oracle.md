@@ -1,0 +1,19 @@
+task|n|K|passes|tok/pass (copy only)|est tok/s copy-only (slope .75 / 1.5)|hybrid est tok/s
+edit_code|3|15|592|7.95|169 / 169|191
+edit_code|3|31|399|11.80|220 / 193|259
+edit_code|3|63|299|15.75|250 / 195|302
+edit_code|5|15|568|8.29|181 / 181|229
+edit_code|5|31|416|11.32|227 / 205|306
+edit_code|5|63|339|13.89|252 / 208|354
+edit_jsonl|3|15|668|4.27|87 / 87|88
+edit_jsonl|3|31|581|4.91|83 / 70|83
+edit_jsonl|3|63|546|5.23|66 / 48|66
+edit_jsonl|5|15|383|7.45|152 / 152|154
+edit_jsonl|5|31|275|10.38|171 / 144|173
+edit_jsonl|5|63|128|22.30|278 / 200|284
+edit_jsonl_long|3|15|1667|3.90|80 / 80|80
+edit_jsonl_long|3|31|1663|3.90|65 / 55|66
+edit_jsonl_long|3|63|1653|3.93|51 / 37|51
+edit_jsonl_long|5|15|860|7.55|154 / 154|155
+edit_jsonl_long|5|31|400|16.23|268 / 224|271
+edit_jsonl_long|5|63|401|16.19|200 / 143|201

@@ -1986,3 +1986,82 @@ Code bench (2048 tokens, 7 prompts): fixed16 reaches 140.9 (py_csv) and 142.0 (c
 Correctness: all 3 configs give identical tokens/state to greedy on every prompt. Solution grading (`eval_C_code.json`): 3/7 pass (cpp_merge, py_lru, rs_merge) identically for greedy and all configs; the 4 failures are also failures of greedy (compile errors cpp_fib, rs_balanced; wrong py_csv, py_merge), i.e. model/quantization, not speculation.
 
 Conclusions: ~140 tok/s reproduces only for highly predictable code (tok/pass >= 7.8, accept1 ~0.89) at short context with fixed16 (or adaptive, 140-142). Typical sustained speed: 40-95 tok/s on code, 74-79 at 8K prose, 56 at 30K, 45 at 60K. Fastest quality-preserving setting overall: adaptive (cost-ratio) — within 1% of the best everywhere (fixed8 is best at long ctx, fixed16 only wins on easy code); quality is identical to greedy in all configs.
+
+
+## Part V — YASAKANI v0.1.6 `bench --edit` port: edit tasks on XeFlash (2026-11-20)
+
+**Reference.** YASAKANI v0.1.6 (github.com/yasakani-dev/yasakani, tag v0.1.6, Apache-2.0) `yasakani bench --edit`
+(`python/yasakani/editbench.py`) runs three tasks from the package file `edit_tasks.json`: `edit_code` (rename local `margin` ->
+`common_margin` inside `dedent` of CPython `textwrap.py`, return the whole file, limit 8192), `edit_jsonl` (60 JSONL records, change
+status of ORD-0042, limit 8192) and `edit_jsonl_long` (160 records, change 3 records, limit 12000). Greedy, thinking off, until the
+model ends; speed = (tokens-1)/seconds of the generation only; the answer is compared with the expected text (whitespace/one code fence
+ignored). Tasks, expected answers and their SHA-256 are used **unchanged** (`benchmarks/edit/edit_tasks.json`, copy with licence).
+The local YASAKANI tree is v0.1.1 and has no `--edit`; the tag was downloaded to /tmp only.
+
+**XeFlash port.** `scripts/edit_prepare.py` (Qwen3.8 chat template, thinking off -> token ids, `benchmarks/prompts/edit_*.json`, prompt
+4769 / 2927 / 6576 tokens), `scripts/edit_bench_suite.sh`, `scripts/edit_bench_agg.py`. Production s4-cal container, XF_KV=xmx, WG local=4,
+`xf-run cmp ... --only-bd --configs 8,16,0c` (greedy baseline "none" + bdraft2 fixed8/fixed16/adaptive), 5 repeats = 5 processes per task
+(kernels warmed inside the process by cmp; run-to-run spread < 1%). **Difference:** `xf-run cmp` has no end-token stop, so `n_new` is the
+token count of the expected answer + `<|im_end|>` (4708 / 2854 / 6493); the speed covers the same span the official bench measures when the
+model answers as expected. Time excludes load/prefill/hash. Results: `benchmarks/results/m23/` (`*.json`, `*.log`, `tok_*`, `summary.md`).
+
+task|config|tok/s mean (min-max)|tokens/pass|accept1|Main ms/pass|Draft ms/pass|answer = expected|same tokens+state as greedy
+edit_code|greedy|24.8 (24.8-24.8)|1.00|-|40.34|-|0/5|-
+edit_code|bd2:fixed8|100.4 (100.0-100.6)|5.17|0.977|43.34|6.16|0/5|5/5
+edit_code|bd2:fixed16|96.2 (96.2-96.3)|5.65|0.976|49.32|7.34|0/5|5/5
+edit_code|bd2:adapt-cost|101.4 (101.4-101.5)|5.42|0.976|45.00|6.44|0/5|5/5
+edit_jsonl|greedy|25.1 (25.1-25.1)|1.00|-|39.88|-|5/5|-
+edit_jsonl|bd2:fixed8|157.0 (156.4-157.1)|7.95|1.000|42.28|6.15|5/5|5/5
+edit_jsonl|bd2:fixed16|261.4 (260.8-261.6)|15.26|1.000|48.11|7.41|5/5|5/5
+edit_jsonl|bd2:adapt-cost|262.0 (261.9-262.1)|15.26|1.000|48.02|7.36|5/5|5/5
+edit_jsonl_long|greedy|24.5 (24.5-24.5)|1.00|-|40.83|-|5/5|-
+edit_jsonl_long|bd2:fixed8|151.2 (151.1-151.3)|7.96|1.000|44.26|6.12|5/5|5/5
+edit_jsonl_long|bd2:fixed16|247.1 (247.0-247.1)|15.06|1.000|50.70|7.40|5/5|5/5
+edit_jsonl_long|bd2:adapt-cost|248.0 (247.9-248.1)|15.10|1.000|50.63|7.38|5/5|5/5
+
+(answer = expected: the greedy and speculative outputs, cut at `<|im_end|>`, compared with the official expected text; same tokens+state =
+speculative output identical to greedy, token and state hash.)
+
+**Findings.**
+* JSONL tasks: exact answers (5/5, all configs), accept1 = 1.000. fixed16 / adaptive reach 247-262 tok/s (about 10x greedy 25 tok/s,
+  15 tokens/pass of the 16 maximum); fixed8 is capped at 151-157 (8 tokens/pass). On these tasks fixed16/adaptive is clearly better than fixed8.
+* Code edit: **0/5 exact**, for greedy too: the 4-bit model rewrites `behaviour`->`behavior` and changes regex placeholders
+  (`%(wp)s` -> `%s`, 42 chars shorter). That is a model/quantization deviation, not a speculation error (all configs reproduce greedy
+  bit-exactly). YASAKANI's speed model returns this task exactly (README logs: speed model exact, quality model differs by 2 lines),
+  so this is a quality gap of our 4-bit container on copy fidelity. After each deviation the drafter loses sync: tokens/pass 5.2-5.7,
+  100 tok/s with fixed8/adaptive (fixed16 is slower, 96).
+* For reference, YASAKANI's README logs (RTX 5090, different hardware/model, not comparable one-to-one) show 1221 tok/s for edit_code.
+
+### Copy/edit-specialised drafter: headroom (offline estimate, not implemented)
+`scripts/edit_copy_oracle.py`: replays the measured greedy outputs and simulates prompt lookup (propose up to K tokens that followed the
+latest earlier occurrence of the last n tokens in prompt+output; verifier accepts the longest correct prefix; no future information used).
+tok/pass is exact for that rule; tok/s is an **estimate** (measured cost m=1 40.3 ms, m=8 43.3, m=16 49.3; beyond 16 rows
+extrapolated +0.75 or +1.5 ms/row; a verify pass above 16 rows is not implemented in the kernels today; hybrid assumes fallback to bdraft2 at 3.5 tok/pass).
+
+task|n|K|passes|tok/pass (copy only)|est tok/s copy-only (slope .75 / 1.5)|hybrid est tok/s
+edit_code|3|15|592|7.95|169 / 169|191
+edit_code|3|31|399|11.80|220 / 193|259
+edit_code|3|63|299|15.75|250 / 195|302
+edit_code|5|15|568|8.29|181 / 181|229
+edit_code|5|31|416|11.32|227 / 205|306
+edit_code|5|63|339|13.89|252 / 208|354
+edit_jsonl|3|15|668|4.27|87 / 87|88
+edit_jsonl|3|31|581|4.91|83 / 70|83
+edit_jsonl|3|63|546|5.23|66 / 48|66
+edit_jsonl|5|15|383|7.45|152 / 152|154
+edit_jsonl|5|31|275|10.38|171 / 144|173
+edit_jsonl|5|63|128|22.30|278 / 200|284
+edit_jsonl_long|3|15|1667|3.90|80 / 80|80
+edit_jsonl_long|3|31|1663|3.90|65 / 55|66
+edit_jsonl_long|3|63|1653|3.93|51 / 37|51
+edit_jsonl_long|5|15|860|7.55|154 / 154|155
+edit_jsonl_long|5|31|400|16.23|268 / 224|271
+edit_jsonl_long|5|63|401|16.19|200 / 143|201
+
+Reading (n=5 suffix): at today's 16-row width a copy drafter alone gives edit_code 8.3 tok/pass (est. 181 tok/s vs 101 measured with
+bdraft2), but only 7.5 tok/pass on the JSONL tasks (est. 152-154 vs 248-262 measured): bdraft2 already copies near-perfectly there.
+Gains on JSONL need wide verification: K=63 -> 16-22 tok/pass, est. 200-278 tok/s (+0-10%, depends on the extra row cost; the ceiling is
+bounded by pass cost, not acceptance). The real headroom is edit_code: 2.2-3.5x (est. 230-350 tok/s) from a copy proposer that
+re-syncs after each deviation, combined with bdraft2 as fallback (hybrid column, upper-bound assumptions). Risks/costs: wide
+(32-64 row) verify kernels (activation re-reads make m=8 already ~3x weight traffic through the load pipe), longer n-gram ambiguity in
+repetitive JSONL (n=3 selects the wrong line: 3.9 tok/pass; n>=5 needed), and exactness remains guaranteed by greedy verification.
