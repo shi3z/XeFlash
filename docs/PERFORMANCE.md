@@ -2065,3 +2065,93 @@ bounded by pass cost, not acceptance). The real headroom is edit_code: 2.2-3.5x 
 re-syncs after each deviation, combined with bdraft2 as fallback (hybrid column, upper-bound assumptions). Risks/costs: wide
 (32-64 row) verify kernels (activation re-reads make m=8 already ~3x weight traffic through the load pipe), longer n-gram ambiguity in
 repetitive JSONL (n=3 selects the wrong line: 3.9 tok/pass; n>=5 needed), and exactness remains guaranteed by greedy verification.
+
+## Part W — Main-pass cost at 32/64 verify rows, and the updated copy-drafter estimate (2026-11-20)
+
+No production code changed. `xf-bench --format s4 --tokens 1,8,16,32,64` (`benchmarks/results/m24/unit_s4_m1_64.{txt,json}`).
+Above 16 rows only the 8-bit-activation kernel exists (tokens_per_thread 32; m=64 runs two 32-row groups that each re-read the weights);
+the production 16-bit-activation path (two planes) exists for m<=16 only, and the model (attention, GDN, drafter) has no >16-row pass.
+Unit times, ms (s4, exact vs CPU reference):
+
+| shape | m=1 a16 | m=8 a16 | m=16 a16 | m=32 a8 | m=64 a8 |
+|---|---|---|---|---|---|
+| gate_up 34816x5120 | 0.207 | 0.217 | 0.229 | 0.268 | 0.531 |
+| down 5120x17408 | see json | | 0.133 | 0.242 | 0.235 |
+| qkvz 16384x5120 | 0.096 | 0.099 | 0.104 | 0.124 | 0.225 |
+| attn_qkv 14336x5120 | 0.086 | 0.086 | 0.091 | 0.111 | 0.195 |
+| out_proj 5120x6144 | 0.014 | 0.015 | 0.026 | 0.070 | 0.077 |
+| lm_head | 1.442 | 1.501 | 1.561 | 1.849 | 3.647 |
+
+Weighted by layer counts (48 qkvz, 16 attn_qkv, 64 out_proj/gate_up/down, 1 lm_head) the GEMM part of a Main pass is
+28.3 / 29.5 / 32.9 ms at m=1/8/16 (a16) and 46.7 / 71.5 ms at m=32/64 (a8 only): per extra row 0.5 ms (m 16->32) and 0.8 ms (32->64), i.e.
+the weight-streaming efficiency falls from ~410 GB/s (m=16) to ~340 (m=32) and ~170 GB/s at m=64 (second weight pass).
+Non-GEMM part of the pass (attention, GDN, norms; Main minus GEMM) is 9.5 ms at m=1 and 13.3 ms at m=16 (extrapolated +0.25 ms/row; not measured above 16).
+Estimated Main pass (ms): A (a8 GEMM as measured) 64 at 32 rows, 97 at 64 rows; B (a16 proxy = a8 GEMM of 2m rows) 89 at 32, 168 at 64; measured 49.3 at 16.
+
+Updated copy-oracle (n=5, `scripts/edit_copy_oracle.py`, `m24/copy_oracle_v2.md`; tok/pass exact, tok/s estimated):
+
+| task | K+1 rows | tok/pass | est tok/s copy-only A / B | hybrid with bdraft2 fallback A / B | measured bdraft2 |
+|---|---|---|---|---|---|
+| edit_code | 16 | 8.29 | 181 / 181 | 229 / 229 | 101 |
+| edit_code | 32 | 11.32 | 222 / 182 | 297 / 229 | |
+| edit_code | 64 | 13.89 | 236 / 169 | 323 / 209 | |
+| edit_jsonl | 16 | 7.45 | 152 / 152 | 154 | 262 |
+| edit_jsonl | 32 | 10.38 | 164 / 119 | 166 / 120 | |
+| edit_jsonl | 64 | 22.30 | 247 / 146 | 252 / 147 | |
+| edit_jsonl_long | 16 | 7.55 | 154 | 155 | 248 |
+| edit_jsonl_long | 32 | 16.23 | 256 / 186 | 259 / 187 | |
+| edit_jsonl_long | 64 | 16.19 | 177 / 104 | 179 / 105 | |
+
+Conclusions (estimates, not measurements of an implemented drafter):
+* With the real GEMM costs the earlier 200-280 tok/s JSONL estimate for wide verification shrinks to 105-256 tok/s: no wide setting beats the
+  measured 16-row bdraft2 on JSONL (248-262). The remaining headroom is edit_code (101 -> ~230-320 est. with a hybrid), where acceptance is the limit.
+* Ceiling at 64 rows: 64 tokens per 97 ms pass (model A) = 660 tok/s even with 100% acceptance; model B 380 tok/s. 1000 tok/s is therefore not reachable
+  by wider verification of this kernel family; it would need ~64 tokens per <=64 ms (m=64 at the m=16 efficiency would be ~60 ms, about 1.6x better than measured),
+  i.e. a new wide-verify path (weights read once per pass for all 64 rows, not per 32-row group), or fewer verified positions (e.g. sparse/tree checks).
+* The bottleneck has moved from acceptance to "tokens verified per pass and their cost", as stated; measuring a real 32/64-row pass would
+  additionally need a16 >16-row GEMM, >16-row attention/GDN passes and a >16-row drafter interface (not implemented).
+
+
+## Part X — copy + bdraft2 hybrid at 16 rows, measured (2026-11-20)
+
+Implementation (experimental, `xf-run cmp` only; configs without `hy` behave exactly as before, bd2 numbers below reproduce Part V):
+`--configs hy<min>/<blk>` (e.g. `hy4/8`, `hy4/0c`, `hy4/16`). Per cycle a copy candidate is built from the committed text (prompt + output):
+a 3-gram index, the occurrence whose backward match with the current context is longest (<=64, ties latest, 64 latest occurrences compared),
+or "sticky": the continuation of the source the previous copy pass was aligned with while the frontier token equals the source token.
+If the candidate holds >= `min` tokens (up to 15) it is verified instead of the drafter's block (`ids = [next] + candidate`, <= 16 rows) and bdraft2
+is only caught up with the committed tap rows (`read_taps` + `ctx`); otherwise bdraft2 drafts with block `<blk>`. Greedy verification, so the output
+is bit-identical to greedy (checked: same tokens and state hash in every run). Code: `tools/run/src/ext.rs` (`CopyIndex`), `tools/run/src/main.rs`
+(`run_ext_mode`, parameter `hy`). Proposer variants were chosen offline first (`scripts/edit_copy_oracle2.py`: latest-5-gram = 7.5 tok/pass on
+JSONL, longest match + sticky = 15.3-15.6).
+Suite `scripts/edit_hybrid_suite.sh` (same conditions as Part V: s4-cal, XF_KV=xmx, 5 repeats = 5 processes, n_new = expected answer length), `benchmarks/results/m26/`.
+
+task|config|tok/s mean (min-max)|tokens/pass|accept1|Main ms/pass|Draft ms/pass|answer = expected|same tokens+state as greedy
+edit_code|greedy|24.8 (24.8-24.8)|1.00|-|40.33|-|0/5|-
+edit_code|bd2:fixed16|96.2 (96.2-96.3)|5.65|0.976|49.32|7.34|0/5|5/5
+edit_code|bd2:adapt-cost|101.4 (101.4-101.4)|5.42|0.976|45.00|6.44|0/5|5/5
+edit_code|hy4+bd2:fixed8|241.5 (241.4-241.5)|12.90|0.806|48.32|2.46|0/5|5/5
+edit_code|hy4+bd2:adapt-cost|240.3 (240.3-240.4)|12.90|0.806|48.54|2.50|0/5|5/5
+edit_code|hy4+bd2:fixed16|236.7 (236.7-236.7)|12.94|0.806|49.34|2.67|0/5|5/5
+edit_jsonl|greedy|25.1 (25.1-25.1)|1.00|-|39.88|-|5/5|-
+edit_jsonl|bd2:fixed16|261.5 (261.4-261.6)|15.26|1.000|48.10|7.39|5/5|5/5
+edit_jsonl|bd2:adapt-cost|262.0 (261.9-262.1)|15.26|1.000|48.02|7.36|5/5|5/5
+edit_jsonl|hy4+bd2:fixed8|295.9 (295.8-295.9)|15.60|1.000|48.06|1.77|5/5|5/5
+edit_jsonl|hy4+bd2:adapt-cost|295.9 (295.9-295.9)|15.60|1.000|48.05|1.77|5/5|5/5
+edit_jsonl|hy4+bd2:fixed16|298.6 (298.6-298.7)|15.77|1.000|48.12|1.79|5/5|5/5
+edit_jsonl_long|greedy|24.5 (24.5-24.5)|1.00|-|40.83|-|5/5|-
+edit_jsonl_long|bd2:fixed16|247.1 (247.0-247.1)|15.06|1.000|50.70|7.40|5/5|5/5
+edit_jsonl_long|bd2:adapt-cost|247.9 (247.5-248.1)|15.09|1.000|50.63|7.38|5/5|5/5
+edit_jsonl_long|hy4+bd2:fixed8|284.2 (284.1-284.2)|15.72|1.000|50.68|1.74|5/5|5/5
+edit_jsonl_long|hy4+bd2:adapt-cost|284.2 (284.0-284.3)|15.72|1.000|50.68|1.74|5/5|5/5
+edit_jsonl_long|hy4+bd2:fixed16|284.6 (284.5-284.7)|15.76|1.000|50.71|1.74|5/5|5/5
+
+Share of passes that verified a copy candidate: edit_code 83%, edit_jsonl 98.9%, edit_jsonl_long 99.5%.
+
+Result vs bdraft2 only (adaptive): code edit 101.4 -> 240-242 tok/s (2.4x, 5.4 -> 12.9 tokens/pass), JSONL edit 262.0 -> 295.9-298.6 (+13-14%),
+long JSONL 247.9 -> 284.2-284.6 (+15%). Greedy baseline 24.5-25.1 tok/s, so JSONL is now ~12x greedy. The fallback block matters little
+(fixed16 best on JSONL, fixed8/adaptive best on code by 0.5-2%).
+The copy cycle costs 1.7-2.5 ms of "draft" time (host tap read + ring catch-up of bdraft2), versus 6.1-7.4 ms for a bdraft2 draft; the
+Main pass (48.1-50.7 ms at 16 rows) is now 96-97% of the cycle. Ceiling of this scheme at 16 rows: 16 tokens / (48.1 + ~0.2 ms) = 331 tok/s
+(JSONL), reached 90%. Correctness caveat unchanged: the code-edit answer is still not equal to the official expected text (0/5, also for greedy; a
+4-bit model deviation), so that speedup is for the model's own output.
+Next limits: Main pass cost per row count (Part W), a device-side ring catch-up to remove the 1.7 ms, and copy proposals longer than 16 rows.

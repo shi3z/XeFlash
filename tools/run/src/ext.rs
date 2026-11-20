@@ -102,6 +102,70 @@ impl Lookup {
     }
 }
 
+
+/// Copy candidates for the hybrid mode. 3-gram -> positions of its last token over the committed text (prompt + output). A candidate is
+/// the text after the occurrence whose backward match with the current context (committed text + the frontier token) is longest
+/// (ties: latest; at most `MAXOCC` latest occurrences are compared, match length capped at 64), or - "sticky" - the continuation of the
+/// source the previous copy pass was aligned with, as long as the frontier token equals the source token it was predicted from.
+pub struct CopyIndex {
+    seq: Vec<u32>,
+    grams: HashMap<[u32; 3], Vec<usize>>,
+}
+
+impl CopyIndex {
+    const MAXOCC: usize = 64;
+
+    pub fn new(_n: usize) -> Self {
+        CopyIndex { seq: Vec::new(), grams: HashMap::new() }
+    }
+
+    pub fn push(&mut self, tok: u32) {
+        self.seq.push(tok);
+        let l = self.seq.len();
+        if l >= 3 {
+            self.grams.entry([self.seq[l - 3], self.seq[l - 2], self.seq[l - 1]]).or_default().push(l - 1);
+        }
+    }
+
+    /// (candidate tokens, index in the text of the first candidate token). `sticky` = source position following the one aligned with `next`.
+    pub fn propose(&self, next: u32, k: usize, sticky: Option<usize>) -> (Vec<u32>, usize) {
+        let l = self.seq.len();
+        if let Some(p) = sticky {
+            if p >= 1 && p < l && self.seq[p - 1] == next {
+                return (self.seq[p..l.min(p + k)].to_vec(), p);
+            }
+        }
+        if l < 2 {
+            return (Vec::new(), 0);
+        }
+        let key = [self.seq[l - 2], self.seq[l - 1], next];
+        let occ = match self.grams.get(&key) {
+            Some(o) => o,
+            None => return (Vec::new(), 0),
+        };
+        // virtual context v = seq + [next]; v[l - j] for j = 0.. is next, seq[l-1], ...
+        let (mut best, mut best_len) = (usize::MAX, 0usize);
+        for &p in occ.iter().rev().take(Self::MAXOCC) {
+            let mut m = 0usize;
+            while m < 64 && p >= m && l >= m {
+                let c = if m == 0 { next } else { self.seq[l - m] };
+                if self.seq[p - m] != c {
+                    break;
+                }
+                m += 1;
+            }
+            if m > best_len {
+                best = p;
+                best_len = m;
+            }
+        }
+        if best == usize::MAX || best + 1 >= l {
+            return (Vec::new(), 0);
+        }
+        (self.seq[best + 1..l.min(best + 1 + k)].to_vec(), best + 1)
+    }
+}
+
 #[cfg(feature = "bdraft2")]
 pub mod bdraft2 {
     use std::ffi::{CStr, CString, c_char, c_void};

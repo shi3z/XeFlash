@@ -1,0 +1,33 @@
+loaded /data/B60special/models/xfm/qwen38-27b-s4-cal.xfm in 6.5s, context capacity 14336 tokens
+device allocations      count          GiB
+  DeltaNet state           48       0.2168
+  KV cache                 16       0.8750
+  MTP                       5       0.3687
+  MTP KV cache              1       0.0547
+  RoPE table                2       0.0034
+  body matrices           256      11.3428
+  embedding (bf16)          1       2.3682
+  head sketch               4       0.1291
+  lm_head                   1       0.5920
+  matrix scales           779       0.0393
+  small tensors           408       0.0978
+  workspace                 1       0.0530
+  TOTAL requested        1522      16.1408
+driver free VRAM: 22.4843 GiB before, 6.3114 GiB after, difference 16.1729 GiB
+bdraft2 backend loaded: +2.801 GiB device memory (driver)
+edit_edit_jsonl_long none        24.48 tok/s | 1.00 tok/pass | main  40.85 ms/pass
+          taps device-to-device
+edit_edit_jsonl_long bd2:fixed16  246.97 tok/s | 15.06 tok/pass | cycle  61.00 ms | main  50.71, draft   7.42 (of which taps 0.00) ms/pass | accept% [100 100 100 100 99 99 100 99 98 99 99 99 95 95 85] | same tokens, same state
+          cost probe at position 6576: 8 rows 42.4 ms, 16 rows 48.4 ms -> c16 = 1.123
+          adaptive block: 425 of 430 passes used 16 rows; taps device-to-device
+edit_edit_jsonl_long bd2:adapt-cost  247.89 tok/s | 15.10 tok/pass | cycle  60.91 ms | main  50.64, draft   7.40 (of which taps 0.00) ms/pass | accept% [100 100 100 100 99 99 100 100 99 99 99 99 95 95 85] | same tokens, same state
+          hybrid: 411 of 413 passes verified a copied candidate (min 4 tokens)
+          taps device-to-device
+edit_edit_jsonl_long hy4+bd2:fixed8  284.06 tok/s | 15.72 tok/pass | cycle  55.35 ms | main  50.69, draft   1.75 (of which taps 0.00) ms/pass | accept% [100 100 100 100 100 50 100] | same tokens, same state
+          cost probe at position 6576: 8 rows 42.4 ms, 16 rows 48.5 ms -> c16 = 1.124
+          hybrid: 411 of 413 passes verified a copied candidate (min 4 tokens)
+          adaptive block: 0 of 413 passes used 16 rows; taps device-to-device
+edit_edit_jsonl_long hy4+bd2:adapt-cost  284.04 tok/s | 15.72 tok/pass | cycle  55.36 ms | main  50.68, draft   1.75 (of which taps 0.00) ms/pass | accept% [100 100 100 100 100 50 100 0 0 0 0 0 0 0 0] | same tokens, same state
+          hybrid: 410 of 412 passes verified a copied candidate (min 4 tokens)
+          taps device-to-device
+edit_edit_jsonl_long hy4+bd2:fixed16  284.49 tok/s | 15.76 tok/pass | cycle  55.41 ms | main  50.72, draft   1.76 (of which taps 0.00) ms/pass | accept% [100 100 100 100 100 50 100 100 100 100 100 100 100 100 100] | same tokens, same state
