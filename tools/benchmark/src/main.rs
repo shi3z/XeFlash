@@ -312,10 +312,10 @@ fn main() -> Result<()> {
                     _ => 32,
                 };
                 let mut variants = vec![(1usize, false)];
-                if tokens <= 16 && shape.rows < 8192 {
+                if tokens <= 64 && shape.rows < 8192 {
                     variants.push((4, false)); // few row blocks: add column workers
                 }
-                if matches!(format, WeightFormat::S4 | WeightFormat::S3 | WeightFormat::S3P | WeightFormat::S8 | WeightFormat::S4Exp8) && tokens <= 16 {
+                if matches!(format, WeightFormat::S4 | WeightFormat::S3 | WeightFormat::S3P | WeightFormat::S8 | WeightFormat::S4Exp8) && tokens <= 64 {
                     variants.push((1, true)); // 16-bit activations
                     if shape.rows < 8192 {
                         variants.push((4, true));
@@ -325,7 +325,7 @@ fn main() -> Result<()> {
                     variants.clear();
                     for &sg in sl {
                         variants.push((sg, false));
-                        if matches!(format, WeightFormat::S4 | WeightFormat::S3 | WeightFormat::S3P | WeightFormat::S8 | WeightFormat::S4Exp8) && tokens <= 16 {
+                        if matches!(format, WeightFormat::S4 | WeightFormat::S3 | WeightFormat::S3P | WeightFormat::S8 | WeightFormat::S4Exp8) && tokens <= 64 {
                             variants.push((sg, true));
                         }
                     }

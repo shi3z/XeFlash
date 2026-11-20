@@ -202,8 +202,9 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0> sycl::event submi
         seg = 0;
       } else { // 32-bit index arithmetic (the thread count is below 2^31, checked by addr32_ok)
         const uint32_t i32 = uint32_t(gid), rq = uint32_t(rowblks), tq = uint32_t(tgroups);
-        rb = i32 % rq;
-        tg = (i32 / rq) % tq;
+        // token groups of one row block are adjacent threads: they read the same weight tiles at about the same time (cache hits); for one group (every shape up to 16 rows) this is the old order
+        tg = i32 % tq;
+        rb = (i32 / tq) % rq;
         seg = i32 / (rq * tq);
       }
     } else {
@@ -664,6 +665,15 @@ int pipe_u() {
   static const int u = std::getenv("XF_GEMM_PU") ? std::atoi(std::getenv("XF_GEMM_PU")) : 2;
   return u == 1 ? 1 : 2;
 }
+// How 16-bit-activation passes of 32 rows run (default "split"): "old" = plain 4-group loop, "pipe" = pipelined 4-group loop, "split" = the 16-row pipelined kernel for two token groups with the groups adjacent (XF_GEMM_A16_32).
+int a16_32_mode() {
+  static const int m = [] { const char *e = std::getenv("XF_GEMM_A16_32"); return !e ? 2 : !std::strcmp(e, "pipe") ? 1 : !std::strcmp(e, "old") ? 0 : 2; }();
+  return m;
+}
+bool p32_on() {
+  static const bool on = !(std::getenv("XF_GEMM_P32") && std::getenv("XF_GEMM_P32")[0] == '0');
+  return on;
+}
 constexpr bool F_IS_FLOAT(int wf) { return wf == XF_W_BF16; }
 
 // The 32-bit quantities of the pointer-bumped loop: the thread index (rowblks * tgroups * segs), the tile counters (tiles) and the per-trip tile count.
@@ -728,7 +738,15 @@ template <int WF, bool A16> int dispatch(sycl::queue &q, const xf_gemm_desc &d) 
     else submit<WF, 8, 2, 1, A16>(q, d);
     return XF_OK;
   }
-  case 32: submit<WF, 8, 4, 1, A16>(q, d); return XF_OK;
+  case 32: {
+    // 32 rows per thread: the software-pipelined, pointer-bumped loop (XF_GEMM_P32=0 restores the plain loop)
+    const int pk = F_IS_FLOAT(WF) ? 0 : pipe_kind(d, 32);
+    if (pk == 2 && p32_on() && !A16) submit<WF, 8, 4, 1, A16, 2>(q, d);
+    else if (pk == 2 && p32_on() && A16 && a16_32_mode() == 1) submit<WF, 8, 4, 1, A16, 2>(q, d);
+    else if (pk == 2 && p32_on() && A16 && a16_32_mode() == 2) submit<WF, 8, 2, 1, A16, 2>(q, d);
+    else submit<WF, 8, 4, 1, A16>(q, d);
+    return XF_OK;
+  }
   }
   xf_set_error("xf_gemm: tokens_per_thread must be 1, 8, 16 or 32");
   return XF_ERR_INVALID;
@@ -736,7 +754,7 @@ template <int WF, bool A16> int dispatch(sycl::queue &q, const xf_gemm_desc &d) 
 
 int unroll_of(int tpt, int wfmt = 0) {
   if (wfmt == XF_W_S3P) return 4; // one super-tile per trip
-  if (pipe_mode()) return tpt == 8 ? 2 * pipe_u() : tpt == 16 ? 2 : tpt == 1 ? 4 : 1; // the pipelined loop handles 2 * U tiles per trip
+  if (pipe_mode()) return tpt == 8 ? 2 * pipe_u() : tpt == 16 ? 2 : tpt == 1 ? 4 : (tpt == 32 && p32_on()) ? 2 : 1; // the pipelined loop handles 2 * U tiles per trip
   return tpt == 1 ? 4 : tpt == 8 ? 2 : 1;
 }
 

@@ -2268,3 +2268,46 @@ the current 8-bit kernel is not usable for verification (different activation pr
 3. The blocking item is a **16-bit-activation 32-row kernel**: it does not fit 128 GRF (needs 256-GRF mode or a split such as two 16-token halves sharing each weight tile through registers/SLM); its cost is unknown, this is the main risk.
 4. The engine needs `MAX_TOKENS` 32, and GDN grows 0.25 ms/row (+4 ms at 32 rows): GDN's per-token recurrence is the next non-GEMM target.
 5. Payoff if all holds: JSONL ~410-460 tok/s (+40-55%), code edit ~+15-25%. 1000 tok/s still needs ~64 rows at Main <= ~65 ms, i.e. a different verification structure.
+
+
+## Part Z — 32-row GEMM: segment rule and pipelined loop (adopted; engine still limited to 16 rows) (2026-11-20)
+
+Done: items 1 and 2 of Part Y7, in `kernels/gemm/gemm.cpp`, `kernels/model/model.cpp`, `tools/benchmark/src/main.rs`. The 16-row and shorter paths are unchanged
+(unit times identical to the old build, 34.90 vs 34.93 ms GEMM sum; end-to-end hybrid JSONL edit 298.4 tok/s, Main 48.13 ms = Part X; `m28/regress2_jsonl.log`).
+1. **Segment rule for more than 16 rows** (`model.cpp`): `down` (cols > 8192) uses 4 segments when m > 16 (-22% at 32 rows in Part Y, `segs_narrow_m32.txt`). Not reachable from the engine yet.
+2. **Pipelined loop for 32 rows**. Three variants were measured (`m28/`, `xf-bench --cold --format s4 --tokens 16,32,64`, all results exact against the CPU reference, also s8/s3/s2/bf16 at 32/64 rows, `other_formats_exact.txt`):
+   * 8-bit activations, 4 token groups per thread, software-pipelined pointer-bumped loop: GEMM sum 45.1 -> **36.1 ms** (16 rows: 33.8); every narrow shape drops to 16-row cost +17-25% (`unit_p32_*.txt`). Not used by the engine (activations are 16-bit there).
+   * 16-bit activations, the same kernel: **79.8 ms**, slower than the old loop (49.3): two planes x 4 groups x 2 stages do not fit 128 GRF (spills). Kept as `XF_GEMM_A16_32=pipe` for study only.
+   * **16-bit activations, "split" (default now)**: the 16-row pipelined kernel runs for two token groups and the two groups of a row block are **adjacent threads** (`tg = gid % groups`), so
+     the second group reads the weight tile from cache instead of DRAM. With the groups far apart (`XF_GEMM_TGFAST=0` experiment, since removed: order is now always group-fastest; it equals the old order for one group) the same kernel is much slower (gate_up 0.447 vs 0.268 ms, qkvz 0.192 vs 0.129).
+     Needs no extra registers (128 GRF, no spill), no new loop. `XF_GEMM_P32=0` or `XF_GEMM_A16_32=old` restore the old plain loop.
+   Final cold unit table, ms, 16-bit activations (best segment count per shape, all exact):
+
+| shape | 16 rows (unchanged) | 32 rows (old -> new) | 64 rows (old -> new) |
+|---|---|---|---|
+|gate_up (64)|0.229|0.284 -> 0.256|0.589 -> 0.369|
+|qkvz (48)|0.104|0.134 -> 0.129|0.250 -> 0.206|
+|attn_qkv (16)|0.092|0.125 -> 0.123|0.227 -> 0.159|
+|down (64)|0.135|0.214 -> 0.179|0.296 -> 0.198|
+|out_proj (64)|0.056|0.110 -> 0.066|0.108 -> 0.087|
+|lm_head (1)|1.561|2.043 -> 1.706|3.986 -> 2.961|
+|**GEMM sum per pass**|**34.93**|**49.31 -> 41.93**|**83.21 -> 57.20**|
+
+   Main-pass GEMM at 32 rows: **41.9 ms (was 49.3)**, i.e. +7.0 ms over 16 rows instead of +14.4; 64 rows: **57.2 ms (was 83.2)**, +22.3 ms over 16 rows: two sequential 32-row passes no longer re-read the weights from DRAM.
+   The narrow shapes: down 0.243 -> 0.180 (32 rows), out_proj 0.099 -> 0.068, i.e. about 1.2-1.3x the 16-row time.
+
+Updated estimate of the hybrid with a width policy (`scripts/edit_width_oracle2.py`, `m28/width_oracle2.md`; candidate acceptance exact, pass cost modelled:
+Main(32) = 48.1 + 7.0 GEMM + 6.7 non-GEMM = 61.8 ms, Main(64) = 48.1 + 22.3 + ~20 = 90.4 ms; the non-GEMM growth is extrapolated from the 1/8/16-row profile and is the
+least certain part; the model overstates the measured 16-row hybrid by 4-10%):
+edit_code|widths (16,)|est tok/s 250|passes {16: 330, 32: 0, 64: 0, 'fb': 150}
+edit_code|widths (16, 32)|est tok/s 323|passes {16: 5, 32: 188, 64: 0, 'fb': 150}
+edit_code|widths (16, 32, 64)|est tok/s 346|passes {16: 5, 32: 6, 64: 115, 'fb': 150}
+edit_jsonl|widths (16,)|est tok/s 313|passes {16: 181, 32: 0, 64: 0, 'fb': 5}
+edit_jsonl|widths (16, 32)|est tok/s 476|passes {16: 0, 32: 93, 64: 0, 'fb': 5}
+edit_jsonl|widths (16, 32, 64)|est tok/s 625|passes {16: 0, 32: 1, 64: 48, 'fb': 5}
+edit_jsonl_long|widths (16,)|est tok/s 315|passes {16: 411, 32: 0, 64: 0, 'fb': 5}
+edit_jsonl_long|widths (16, 32)|est tok/s 483|passes {16: 0, 32: 210, 64: 0, 'fb': 5}
+edit_jsonl_long|widths (16, 32, 64)|est tok/s 649|passes {16: 0, 32: 1, 64: 107, 'fb': 5}
+Scaled by that bias: JSONL edits ~440-450 tok/s with 32 rows (now 296 / 284 measured), ~580-600 with 64 rows; code edit ~300 / ~320 (now 241).
+Still to do before any of this is real: the engine at 32 / 64 rows (`XF_MAX_TOKENS`, scratch buffers, GDN recurrence of 32+ tokens, attention for 32+ query rows), the bdraft2 interface for longer blocks, and
+the verification-side candidate policy; none of it is implemented here.

@@ -1951,6 +1951,8 @@ struct Pass {
       static const bool wg_on = !(std::getenv("XF_GEMM_WG") && std::atoi(std::getenv("XF_GEMM_WG")) <= 1);
       if (pipe_on && !seg_old) d.segs = (mat.cols <= 8192 || wg_on) ? 1 : 2;
       else if (!seg_old && mat.cols <= 8192) d.segs = m <= 8 ? 2 : 1;
+      // More than 16 rows (not reachable yet: the engine limit is 16): at 32 rows down (5120 x 17408) is 22% faster with 4 segments (benchmarks/results/m27/segs_narrow_m32.txt).
+      if (m > 16 && mat.cols > 8192) d.segs = 4;
     }
     d.a16 = 1;
     d.w = mat.w;
