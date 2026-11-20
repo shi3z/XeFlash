@@ -2311,3 +2311,46 @@ edit_jsonl_long|widths (16, 32, 64)|est tok/s 649|passes {16: 0, 32: 1, 64: 107,
 Scaled by that bias: JSONL edits ~440-450 tok/s with 32 rows (now 296 / 284 measured), ~580-600 with 64 rows; code edit ~300 / ~320 (now 241).
 Still to do before any of this is real: the engine at 32 / 64 rows (`XF_MAX_TOKENS`, scratch buffers, GDN recurrence of 32+ tokens, attention for 32+ query rows), the bdraft2 interface for longer blocks, and
 the verification-side candidate policy; none of it is implemented here.
+
+
+## Part AA — the engine runs 32-row passes (2026-11-20)
+
+`XF_MAX_TOKENS` / `MAXM` / `MAX_TOKENS` 16 -> 32 (`kernels/include/xfk.h`, `kernels/model/model.cpp`, `crates/xeflash-runtime/src/engine.rs`). Changes:
+the workspace scales with MAXM (logits, activations, partial sums; attention row groups 6 -> 12 for `q16`, `pseg`, `psm`, `psd`); the id/io block is 4 x MAXM words
+(pass ids [0,32), verify ids [32,64), greedy ids [64,96), greedy logits [96,128)); passes of 17..32 rows use 32 tokens per thread in the GEMM (the split 16-bit-activation kernel of Part Z);
+the tap capture keeps `[5][16][5120]` for rows 0..15 (the layout the external drafter reads, unchanged) and a second block for rows 16..31
+(`Engine::read_taps_hi`, `taps_device_ptr_hi`); the 32-row segment rule added in Part Z was removed again (with the split kernel one segment is fastest for every shape: down 0.179 vs 0.198 ms).
+No other kernel needed a change: GDN, attention (all KV modes), norm, quantisation, MLP and argmax were already written for m rows.
+
+### AA1. Exactness: one wide pass against passes of at most 16 rows (`xf-run wide`, `scripts/wide_check.sh`, `benchmarks/results/m29/wide_*.log`)
+The last `rows` tokens of a real prompt are run (a) as passes of <= 16 rows with commit, (b) as one pass of `rows` tokens with commit, from the same prefilled state. Compared:
+greedy token and the bit pattern of its logit for every row, the GDN state matrices + convolution history of each of the 48 DeltaNet layers, the KV cache of each of the 16 attention layers
+(per-layer hashes, XF_KV = fp32 / bf16 / fp16 / xmx), and the whole-state hash.
+
+| case | KV | rows | position | output tokens + logit bits | GDN state (48 layers) | KV cache (16 layers) | whole state |
+|---|---|---|---|---|---|---|---|
+| JSONL edit | fp32 | 32 | 2895 | 0 of 32 differ | 0 differ | 0 differ | identical |
+| JSONL edit | fp32 | 17 | 2910 | 0 of 17 | 0 | 0 | identical |
+| code edit | fp32 | 24 | 4745 | 0 of 24 | 0 | 0 | identical |
+| JSONL edit | xmx | 32 / 31 / 20 | 2895 / 2896 / 2907 | 0 | 0 | 0 | identical |
+| long 8K | xmx | 32 | 7968 | 0 of 32 | 0 | 0 | identical |
+| code edit | xmx | 32 | 4737 | 0 of 32 | 0 | 0 | identical |
+| JSONL edit | fp16 / bf16 | 32 | 2895 | 0 of 32 | 0 | 0 | identical |
+(rows cross a 64-position block boundary in the JSONL cases). Bit-identical in all 11 cases.
+16-row path unchanged: hybrid JSONL edit 298.1 tok/s, Main 48.2 ms (Part X: 298.4 / 48.1), same tokens and state as greedy; the MTP path gives identical tokens for K=0 and K=7.
+Memory: workspace at 60K context 0.123 -> 0.245 GiB; 60K + bdraft2 still loads (0.15 GiB free, `m29/fit60k_bdraft2.log`).
+
+### AA2. Measured Main pass at 32 rows (`xf-run gen --profile`, XF_KV=xmx; unprofiled = real time; stages synchronised)
+| ctx | rows | norm | quant | GEMM | GDN | attn | mlp | head | **unprofiled pass** |
+|---|---|---|---|---|---|---|---|---|---|
+| ~3K | 16 | 2.00 | 2.00 | 35.50 | 6.50 | 2.02 | 2.10 | 1.64 | **47.0 ms** |
+| ~3K | 24 | 2.35 | 2.42 | 44.47* | 8.00 | 2.87 | 2.87 | 1.82 | 59.7* |
+| ~3K | 32 | 2.32 | 2.51 | 41.52 | 10.16 | 3.14 | 3.38 | 1.86 | **59.8 ms** |
+| ~8K | 16 | 2.07 | 2.08 | 35.66 | 6.51 | 4.70 | 2.12 | 1.65 | **49.7 ms** |
+| ~8K | 32 | 2.33 | 2.52 | 41.57 | 10.17 | 7.24 | 3.41 | 1.85 | **64.0 ms** |
+(* 24 rows was measured before the segment rule was removed; every pass of 17..32 rows runs as 32.) 32 rows cost 1.27x (3K) / 1.29x (8K) of 16 rows. 16 -> 32 rows (3K): GEMM +6.0 ms, GDN +3.7, attention +1.1 (+2.5 at 8K), mlp +1.3, norm + quant +0.8.
+The estimate of Part Z was 61.8 ms (3K): measured 59.8. The extrapolation of the non-GEMM stages (GDN 0.25 ms/row) held.
+
+### AA3. Consequence
+With a 32-row Main pass of 60-64 ms the width-adaptive hybrid (Part Z estimate, JSONL candidates of 29-30 tokens per pass) is estimated at ~440 tok/s after the model's bias correction (measured 16-row hybrid: 296 / 284).
+Not done yet: the hybrid itself at 32 rows in `xf-run cmp` (candidate longer than 15 tokens -> 32-row verify; bdraft2 tap catch-up of up to 32 rows through the two tap blocks), and its end-to-end measurement.

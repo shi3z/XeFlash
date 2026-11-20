@@ -1,0 +1,3 @@
+  workspace                 1       0.2449
+  TOTAL requested        1518      19.3403
+driver free VRAM: 22.4843 GiB before, 3.1050 GiB after, difference 19.3793 GiB

@@ -30,7 +30,9 @@ using es::simd;
 
 namespace {
 
-constexpr int MAXM = 16;
+constexpr int MAXM = 32;
+constexpr int IDV = MAXM, IDG = 2 * MAXM, IDL = 3 * MAXM; // io block: pass ids [0,MAXM), verify ids [IDV,..), greedy ids [IDG,..), greedy logits (f32) [IDL,..)
+constexpr int GMAX = (6 * MAXM + 15) / 16;              // attention row groups of 16 (token, head) rows
 constexpr int D = 5120, FF = 17408, QKV = 10240, VD = 6144, QP = 12288, KVD = 1024, VOCAB = 248320;
 constexpr int KH = 16, VH = 48, HD = 128;      // DeltaNet heads
 constexpr int AH = 24, AKH = 4, AD = 256;      // attention heads
@@ -77,9 +79,9 @@ ESIMD_INLINE void storef(float *p, float x) SYCL_ESIMD_FUNCTION {
 
 // ---------------------------------------------------------------- memory map
 struct WS {
-  int32_t *ids; // io block: [0,16) pass ids, [16,32) verify ids (next + drafts), [32,48) greedy ids, [48,64) greedy logits (f32)
+  int32_t *ids; // io block (4 x MAXM words): pass ids, verify ids (next + drafts), greedy ids, greedy logits (f32)
   float *sk_z, *sk_s, *candv;
-  float *cap; // residual stream after layers 5, 19, 33, 47, 61: [5][MAXM][D]
+  float *cap; // residual stream after layers 5, 19, 33, 47, 61: rows 0..15 as [5][16][D], then rows 16..31 as a second [5][16][D] block
   int32_t *cand, *candi;
   float *inv, *ts, *toff, *pmax, *psum, *h, *xn, *y;
   int8_t *xhi;
@@ -110,7 +112,7 @@ WS carve_ws(void *base, int ctx) {
   Bump b{static_cast<char *>(base)};
   const size_t nb = size_t(ctx) / 64 + 1;
   WS w;
-  w.ids = b.take<int32_t>(64);
+  w.ids = b.take<int32_t>(4 * MAXM);
   w.inv = b.take<float>(MAXM);
   w.ts = b.take<float>(MAXM);
   w.toff = b.take<float>(MAXM);
@@ -149,10 +151,10 @@ WS carve_ws(void *base, int ctx) {
   w.cand = b.take<int32_t>(4096);
   w.candi = b.take<int32_t>(4096);
   w.candv = b.take<float>(4096);
-  w.q16 = b.take<uint16_t>(size_t(AKH) * 6 * 16 * 256);
-  w.pseg = b.take<float>(size_t(AKH) * 6 * (nb / 4 + 2) * 4096);
-  w.psm = b.take<float>(size_t(AKH) * 6 * (nb / 4 + 2) * 16);
-  w.psd = b.take<float>(size_t(AKH) * 6 * (nb / 4 + 2) * 16);
+  w.q16 = b.take<uint16_t>(size_t(AKH) * GMAX * 16 * 256);
+  w.pseg = b.take<float>(size_t(AKH) * GMAX * (nb / 4 + 2) * 4096);
+  w.psm = b.take<float>(size_t(AKH) * GMAX * (nb / 4 + 2) * 16);
+  w.psd = b.take<float>(size_t(AKH) * GMAX * (nb / 4 + 2) * 16);
   w.total = b.off;
   return w;
 }
@@ -509,8 +511,10 @@ void k_mtp_cat(Q &q, const float *emb, const float *inv_e, const float *ge, cons
 }
 
 // dst = h (+ y): a copy of the residual stream for an external consumer.
-void k_capture(Q &q, const float *h, const float *y, float *dst, int m) {
+// Rows 0..15 go to dst (the [5][16][D] block an external drafter reads), rows 16..31 to dst_hi (a second block of the same shape).
+void k_capture(Q &q, const float *h, const float *y, float *dst, float *dst_hi, int m) {
   q.parallel_for(sycl::range<1>(size_t(m) * (D / 64)), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    float *const o = id[0] < size_t(16) * (D / 64) ? dst + id[0] * 64 : dst_hi + (id[0] - size_t(16) * (D / 64)) * 64;
     simd<float, 64> a;
     a.copy_from(h + id[0] * 64);
     if (y) {
@@ -518,7 +522,7 @@ void k_capture(Q &q, const float *h, const float *y, float *dst, int m) {
       b.copy_from(y + id[0] * 64);
       a += b;
     }
-    a.copy_to(dst + id[0] * 64);
+    a.copy_to(o);
   });
 }
 
@@ -1951,8 +1955,7 @@ struct Pass {
       static const bool wg_on = !(std::getenv("XF_GEMM_WG") && std::atoi(std::getenv("XF_GEMM_WG")) <= 1);
       if (pipe_on && !seg_old) d.segs = (mat.cols <= 8192 || wg_on) ? 1 : 2;
       else if (!seg_old && mat.cols <= 8192) d.segs = m <= 8 ? 2 : 1;
-      // More than 16 rows (not reachable yet: the engine limit is 16): at 32 rows down (5120 x 17408) is 22% faster with 4 segments (benchmarks/results/m27/segs_narrow_m32.txt).
-      if (m > 16 && mat.cols > 8192) d.segs = 4;
+      // More than 16 rows: with the split 16-bit-activation kernel (adjacent token groups) one segment is fastest for every shape (xf-bench --cold, benchmarks/results/m28/unit_final2.json: down 0.179 ms with 1 segment, 0.198 with 4).
     }
     d.a16 = 1;
     d.w = mat.w;
@@ -2272,13 +2275,13 @@ size_t xf_ws_offset(int which, int ctx) {
 }
 
 int xf_forward(xf_ctx *ctx, const xf_model *md, int m, int pos0, int l0, int l1, int flags, double *prof) {
-  const int slot = (flags & XF_FWD_IDS_SLOT1) ? 16 : 0;
+  const int slot = (flags & XF_FWD_IDS_SLOT1) ? IDV : 0;
   if (!ctx || !md || m < 1 || m > MAXM || pos0 < 0 || pos0 + m > md->ctx || l0 < 0 || l1 > md->nlayers) {
     xf_set_error("xf_forward: invalid arguments (token count, position or layer range)");
     return XF_ERR_INVALID;
   }
   return xf_guard("xf_forward", [&]() -> int {
-    const int tpt = m == 1 ? 1 : m <= 8 ? 8 : 16;
+    const int tpt = m == 1 ? 1 : m <= 8 ? 8 : m <= 16 ? 16 : 32;
     Pass p{ctx, md, carve_ws(md->ws, md->ctx), m, tpt, tpt, Timer(ctx->q, prof)};
     p.tm.mrows = p.m;
     Q &q = ctx->q;
@@ -2297,7 +2300,7 @@ int xf_forward(xf_ctx *ctx, const xf_model *md, int m, int pos0, int l0, int l1,
       const int st = L.kind == XF_LAYER_GDN ? p.gdn(L) : p.attn(L, pos0);
       if (st != XF_OK) return st;
       if ((flags & XF_FWD_CAPTURE) && l % 14 == 5) // hidden_states[l + 1] for l = 5, 19, 33, 47, 61
-        k_capture(q, p.ws.h, p.pending ? p.ws.y : nullptr, p.ws.cap + size_t(l / 14) * MAXM * D, m);
+        k_capture(q, p.ws.h, p.pending ? p.ws.y : nullptr, p.ws.cap + size_t(l / 14) * 16 * D, p.ws.cap + size_t(5) * 16 * D + size_t(l / 14) * 16 * D, m);
       if (sync_every > 0 && (l + 1) % sync_every == 0) q.wait_and_throw();
     }
     if (flags & XF_FWD_HEAD) {
@@ -2305,7 +2308,7 @@ int xf_forward(xf_ctx *ctx, const xf_model *md, int m, int pos0, int l0, int l1,
       p.gemm_cat = P_HEAD;
       if (int st = p.gemm(md->head, p.ws.xn, p.ws.logits)) return st;
       k_argmax(q, p.ws.logits, p.ws.amv, p.ws.ami, m);
-      k_amax_final(q, p.ws.amv, p.ws.ami, m, p.ws.ids + 32, reinterpret_cast<float *>(p.ws.ids + 48), nullptr, nullptr);
+      k_amax_final(q, p.ws.amv, p.ws.ami, m, p.ws.ids + IDG, reinterpret_cast<float *>(p.ws.ids + IDL), nullptr, nullptr);
       p.tm.tick(P_HEAD, "head:argmax");
     }
     p.flush();
@@ -2346,7 +2349,7 @@ int mtp_step(Pass &p, const xf_mtp *mtp, const xf_sketch *sk, int pos0, int src_
   if (!sk) {
     if (int st = p.gemm(md->head, hv, w.logits, 0, true, hpm)) return st;
     k_argmax(q, w.logits, w.amv, w.ami, 1);
-    k_amax_final(q, w.amv, w.ami, 1, w.ids + 32, reinterpret_cast<float *>(w.ids + 48), dst0, dst1);
+    k_amax_final(q, w.amv, w.ami, 1, w.ids + IDG, reinterpret_cast<float *>(w.ids + IDL), dst0, dst1);
   } else {
     // 1. sketch scores for the whole vocabulary: A (B h)
     k_gemv_dense(q, sk->b, hv, w.sk_z, sk->rank, D, 1);
@@ -2358,7 +2361,7 @@ int mtp_step(Pass &p, const xf_mtp *mtp, const xf_sketch *sk, int pos0, int src_
     // 3. exact logits of the candidates' row blocks, with the head's own quantised input
     k_quant(q, hv, D, D, md->head.cs, md->head.cmax, hpm, 1, 1, w.xhi, w.xlo, w.ts, w.toff);
     k_rescore(q, md->head, w.xhi, w.xlo, w.ts, w.toff, w.cand, npad, npad, w.candv, w.candi);
-    k_pick(q, w.candv, w.candi, npad, w.ids + 32, dst0, dst1);
+    k_pick(q, w.candv, w.candi, npad, w.ids + IDG, dst0, dst1);
   }
   p.gemm_cat = P_GEMM;
   p.tm.tick(P_HEAD);
@@ -2375,7 +2378,7 @@ int xf_mtp_step(xf_ctx *ctx, const xf_model *md, const xf_mtp *mtp, int m, int p
     return XF_ERR_INVALID;
   }
   return xf_guard("xf_mtp_step", [&]() -> int {
-    const int tpt = m == 1 ? 1 : m <= 8 ? 8 : 16;
+    const int tpt = m == 1 ? 1 : m <= 8 ? 8 : m <= 16 ? 16 : 32;
     Pass p{ctx, md, carve_ws(md->ws, md->ctx), m, tpt, tpt, Timer(ctx->q, prof)};
     p.tm.mrows = p.m;
     return mtp_step(p, mtp, nullptr, pos0, src_row, m - 1, nullptr, nullptr);
@@ -2386,9 +2389,9 @@ int xf_mtp_step(xf_ctx *ctx, const xf_model *md, const xf_mtp *mtp, int m, int p
 //   n      rows committed by the last trunk pass; their final-norm hidden
 //          states are still in the workspace, ids[0..n) hold the token that
 //          follows each row (the last one is the certain next token, which the
-//          host also put in the verify slot ids[16]).
+//          host also put in the verify slot ids[IDV]).
 //   pos0   MTP position of the first of those rows.
-//   k      drafts to produce; draft j (1-based) is written to ids[16 + j].
+//   k      drafts to produce; draft j (1-based) is written to ids[IDV + j].
 // Step 1 rewrites the MTP cache entries of the n committed rows from trunk
 // hidden states and drafts d1 from the last one; steps 2..k chain on the MTP's
 // own output with the token ids staying on the device.
@@ -2409,13 +2412,13 @@ int xf_spec_draft(xf_ctx *ctx, const xf_model *md, const xf_mtp *mtp, const xf_s
       const int tpt = n == 1 ? 1 : n <= 8 ? 8 : 16;
       Pass p{ctx, md, w, n, tpt, tpt, Timer(ctx->q, prof)};
     p.tm.mrows = p.m;
-      if (int st = mtp_step(p, mtp, sk, pos0, 0, n - 1, w.ids, w.ids + 16 + 1)) return st;
+      if (int st = mtp_step(p, mtp, sk, pos0, 0, n - 1, w.ids, w.ids + IDV + 1)) return st;
     }
     for (int j = 2; j <= k; j++) {
       Pass p{ctx, md, w, 1, 1, 1, Timer(ctx->q, prof)};
     p.tm.mrows = p.m;
       // input: token d_{j-1} (in ids[0]) and the MTP hidden state that produced it
-      if (int st = mtp_step(p, mtp, sk, pos0 + n - 1 + (j - 1), j == 2 ? n - 1 : 0, 0, w.ids, w.ids + 16 + j)) return st;
+      if (int st = mtp_step(p, mtp, sk, pos0 + n - 1 + (j - 1), j == 2 ? n - 1 : 0, 0, w.ids, w.ids + IDV + j)) return st;
     }
     return XF_OK;
   });

@@ -1,0 +1,19 @@
+loaded /data/B60special/models/xfm/qwen38-27b-s4-cal.xfm in 6.2s, context capacity 1024 tokens
+device allocations      count          GiB
+  DeltaNet state           48       0.2875
+  KV cache                 16       0.1250
+  MTP                       5       0.3687
+  MTP KV cache              1       0.0078
+  RoPE table                2       0.0002
+  body matrices           256      11.3428
+  embedding (bf16)          1       2.3682
+  lm_head                   1       0.5920
+  matrix scales           779       0.0393
+  small tensors           408       0.0978
+  workspace                 1       0.0778
+  TOTAL requested        1518      15.3071
+driver free VRAM: 22.4843 GiB before, 7.1384 GiB after, difference 15.3459 GiB
+code     K=0    24.63 tok/s | 1.00 tok/pass | trunk  40.59 ms/pass, MTP   0.00 ms/pass | prefill 293 tok/s | accept []
+[71093, 12305, 198, 727, 10562, 87682, 1494, 40798, 25, 1103, 65342, 18078, 28649, 1411, 1103, 65342, 18078, 4891, 25, 198, 262, 4071, 198, 262, 380, 2298, 287, 48142, 26126, 13, 198, 1031, 262, 17167, 25, 198, 285, 26126, 25, 357, 1103, 314, 26126, 11, 1332, 1754, 9581, 369, 264, 1103, 314, 1330, 24959, 498, 2388, 11, 809, 906, 198, 1726, 262, 5019, 25, 198, 285, 357, 1103, 314, 25170, 26126, 440, 874, 73406, 13, 198, 262, 4071, 198, 262, 413, 524, 26126, 25, 198, 285, 460, 2958, 198, 1031, 262, 653, 15495, 26126, 539, 1151, 854]
+code     K=7    84.77 tok/s | 5.26 tok/pass | trunk  62.09 ms/pass, MTP   0.00 ms/pass | prefill 267 tok/s | accept [89% 94% 88% 86% 75% 78% 86%]  same tokens, same state at +65
+outputs identical across draft lengths: true

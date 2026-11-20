@@ -159,7 +159,7 @@ typedef struct {
 enum { XF_FWD_EMBED = 1, XF_FWD_HEAD = 2, XF_FWD_IDS_SLOT1 = 4 /* token ids from the verify slot ids[16..] */,
        XF_FWD_CAPTURE = 8 /* copy the residual stream after layers 5/19/33/47/61 to XF_WS_CAP, [5][16][5120] */ };
 enum { XF_WS_IDS = 0, XF_WS_H, XF_WS_XN, XF_WS_LOGITS, XF_WS_AMAX_V, XF_WS_AMAX_I, XF_WS_MTP_H, XF_WS_CAP };
-enum { XF_MAX_TOKENS = 16, XF_PROF_COUNT = 7, XF_AMAX_PER_TOKEN = 97 * 64 };
+enum { XF_MAX_TOKENS = 32, XF_PROF_COUNT = 7, XF_AMAX_PER_TOKEN = 97 * 64 };
 
 size_t xf_ws_bytes(int ctx);
 size_t xf_state_bytes(int kind, int ctx);
@@ -191,7 +191,7 @@ typedef struct {
   int32_t rank, groups; /* candidates = groups * 64; groups divides 3880 */
 } xf_sketch;
 /* All MTP steps of one speculative cycle, token ids chained on the device.
- * The workspace id block (XF_WS_IDS, 64 x int32) is: [0,16) pass ids,
+ * The workspace id block (XF_WS_IDS, 128 x int32; 4 x XF_MAX_TOKENS) is: [0,32) pass ids,
  * [16,32) verify ids (certain next token, then the drafts), [32,48) greedy
  * token per row of the last pass, [48,64) its logit (f32). */
 int xf_spec_draft(xf_ctx *ctx, const xf_model *md, const xf_mtp *mtp, const xf_sketch *sk, int n, int pos0, int k,

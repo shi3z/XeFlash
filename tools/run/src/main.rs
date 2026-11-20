@@ -108,6 +108,7 @@ fn main() -> Result<()> {
         Some("dump") if args.len() >= 4 => dump(&dev, &args),
         Some("gen") if args.len() >= 4 => generate(&dev, &args),
         Some("cmp") if args.len() >= 4 => compare(&dev, &args),
+        Some("wide") if args.len() >= 3 => wide_check(&dev, &args),
         Some("collect") if args.len() >= 5 => collect(&dev, &args),
         Some("mtp-tf") if args.len() >= 3 => mtp_teacher_forced(&dev, &args),
         _ => Err(Error::Invalid("usage: xf-run mem|dump|gen ... (see the source header)".into())),
@@ -505,7 +506,7 @@ fn generate(dev: &Device, args: &[String]) -> Result<()> {
             }
         }
         // Separate profiled passes: they synchronise after every stage, so their sum is above the real pass time.
-        for m in [1usize, 8, 16] {
+        for m in [1usize, 8, 16, 24, 32] {
             let mut prof = [0f64; 7];
             let reps = 6;
             let toks: Vec<u32> = (0..m as u32).map(|i| 1000 + i).collect();
@@ -840,6 +841,72 @@ impl Adapt {
         };
         self.g16 = 0.85 * self.g16 + 0.15 * gobs;
     }
+}
+
+
+/// wide: one pass of `--rows` (17..=32) tokens against passes of at most 16 over the same tokens: greedy token and logit bits of every row and the
+/// committed-state hash must be identical. The last `rows` tokens of the prompt are the pass.
+fn wide_check(dev: &Device, args: &[String]) -> Result<()> {
+    let rows = opt_usize(args, "--rows", 32)?;
+    let prompt = read_ids(&args[2])?;
+    if rows < 2 || rows > xeflash_runtime::engine::MAX_TOKENS || prompt.len() < rows + 16 {
+        return Err(Error::Invalid("--rows must be 2..=32 and the prompt longer than rows + 16".into()));
+    }
+    let mut e = load_opts(dev, &args[1], opt_usize(args, "--ctx", 8192)?, args)?;
+    let head = &prompt[..prompt.len() - rows];
+    let tail = &prompt[prompt.len() - rows..];
+    let prefill = |e: &mut Engine| -> Result<()> {
+        e.reset()?;
+        for c in head.chunks(16) {
+            e.forward(c, None)?;
+            e.commit(c.len())?;
+        }
+        Ok(())
+    };
+    // reference: passes of at most 16 rows
+    prefill(&mut e)?;
+    let mut refr: Vec<(u32, f32)> = Vec::new();
+    for c in tail.chunks(16) {
+        refr.extend(e.forward(c, None)?);
+        e.commit(c.len())?;
+    }
+    let href = e.state_hash()?;
+    let lref: Vec<u64> = (0..LAYERS).map(|l| e.state_hash_of(|x| x == l)).collect::<Result<_>>()?;
+    // one wide pass
+    prefill(&mut e)?;
+    let wide = e.forward(tail, None)?;
+    e.commit(rows)?;
+    let hw = e.state_hash()?;
+    let lw: Vec<u64> = (0..LAYERS).map(|l| e.state_hash_of(|x| x == l)).collect::<Result<_>>()?;
+    let gdn_bad: Vec<usize> = (0..LAYERS).filter(|l| l % 4 != 3 && lref[*l] != lw[*l]).collect();
+    let kv_bad: Vec<usize> = (0..LAYERS).filter(|l| l % 4 == 3 && lref[*l] != lw[*l]).collect();
+    let mut bad = 0;
+    for (i, (a, b)) in refr.iter().zip(&wide).enumerate() {
+        if a.0 != b.0 || a.1.to_bits() != b.1.to_bits() {
+            bad += 1;
+            if bad <= 8 {
+                eprintln!("row {i}: 16-row passes {:?} / {:#x}, wide pass {:?} / {:#x}", a.0, a.1.to_bits(), b.0, b.1.to_bits());
+            }
+        }
+    }
+    eprintln!("wide {rows} rows vs passes of <= 16: output tokens + logit bits: {} of {} rows differ", bad, rows);
+    eprintln!("  GDN state + conv history: {} of {} layers differ {:?}", gdn_bad.len(), LAYERS - LAYERS / 4, gdn_bad);
+    eprintln!("  KV cache: {} of {} attention layers differ {:?}", kv_bad.len(), LAYERS / 4, kv_bad);
+    eprintln!("  whole-state hash: {}", if href == hw { "identical" } else { "DIFFERENT" });
+    // timing of a wide pass at this position (no commit)
+    for m in [16usize, rows] {
+        let ids = &tail[..m];
+        e.forward(ids, None)?;
+        let t = Instant::now();
+        for _ in 0..8 {
+            e.forward(ids, None)?;
+        }
+        eprintln!("  {m:>2} rows: {:.2} ms per pass at position {}", t.elapsed().as_secs_f64() / 8.0 * 1e3, e.position());
+    }
+    if bad > 0 || href != hw || !gdn_bad.is_empty() || !kv_bad.is_empty() {
+        return Err(Error::Invalid("wide pass differs from passes of at most 16 rows".into()));
+    }
+    Ok(())
 }
 
 /// cmp: the same main model, prompts and verify block, three draft sources.

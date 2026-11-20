@@ -14,7 +14,11 @@ use xeflash_model::Container;
 
 use crate::{Device, DeviceBuf, check, ffi};
 
-pub const MAX_TOKENS: usize = 16;
+pub const MAX_TOKENS: usize = 32;
+/// Word offsets in the workspace id block (4 x MAX_TOKENS words): verify ids, greedy ids, greedy logits (f32 bits).
+const IO_VERIFY: usize = MAX_TOKENS;
+const IO_GREEDY: usize = 2 * MAX_TOKENS;
+const IO_LOGIT: usize = 3 * MAX_TOKENS;
 pub const HIDDEN: usize = 5120;
 pub const VOCAB: usize = 248320;
 pub const LAYERS: usize = 64;
@@ -424,7 +428,7 @@ impl Engine {
         })?;
         // The draft head runs on the last row only.
         let io = self.read_io()?;
-        Ok(vec![(io[32] as u32, f32::from_bits(io[48] as u32))])
+        Ok(vec![(io[IO_GREEDY] as u32, f32::from_bits(io[IO_LOGIT] as u32))])
     }
 
     /// Greedy token and logit of every row of the last pass. The argmax is
@@ -432,11 +436,11 @@ impl Engine {
     /// 64 words.
     pub fn argmax(&self) -> Result<Vec<(u32, f32)>> {
         let io = self.read_io()?;
-        Ok((0..self.last_m).map(|i| (io[32 + i] as u32, f32::from_bits(io[48 + i] as u32))).collect())
+        Ok((0..self.last_m).map(|i| (io[IO_GREEDY + i] as u32, f32::from_bits(io[IO_LOGIT + i] as u32))).collect())
     }
 
-    fn read_io(&self) -> Result<[i32; 64]> {
-        let mut io = [0i32; 64];
+    fn read_io(&self) -> Result<[i32; 4 * MAX_TOKENS]> {
+        let mut io = [0i32; 4 * MAX_TOKENS];
         self.ws.read(self.ws_off(ffi::XF_WS_IDS), &mut io)?;
         Ok(io)
     }
@@ -446,6 +450,12 @@ impl Engine {
     /// Two runs that committed the same tokens must give the same value,
     /// whatever pass sizes and draft lengths they used.
     pub fn state_hash(&self) -> Result<u64> {
+        self.state_hash_of(|_| true)
+    }
+
+    /// The same hash restricted to the layers for which `keep(layer)` is true (the position is always included): DeltaNet state and
+    /// convolution history are the layers with `l % 4 != 3`, the KV cache those with `l % 4 == 3`.
+    pub fn state_hash_of(&self, keep: impl Fn(usize) -> bool) -> Result<u64> {
         self.dev.wait()?;
         let mut h = 0xcbf29ce484222325u64;
         let mut eat = |v: &[u32]| {
@@ -454,6 +464,9 @@ impl Engine {
             }
         };
         for (l, st) in self.states.iter().take(LAYERS).enumerate() {
+            if !keep(l) {
+                continue;
+            }
             if l % 4 == 3 {
                 let rows = self.pos * 4 * 256;
                 if std::env::var("XF_KV").as_deref() == Ok("int8") {
@@ -565,13 +578,26 @@ impl Engine {
     /// The captured states of the last pass, `[5 taps][16 rows][5120]`; rows
     /// beyond the pass size are stale.
     pub fn read_taps(&self, out: &mut [f32]) -> Result<()> {
-        if out.len() != 5 * MAX_TOKENS * HIDDEN {
+        if out.len() != 5 * 16 * HIDDEN {
             return Err(Error::Invalid("tap buffer must hold 5 x 16 x 5120 values".into()));
         }
         self.ws.read(self.ws_off(ffi::XF_WS_CAP), out)
     }
 
-    /// Device address of the tap block (`[5][16][5120]` f32), for a consumer
+    /// Rows 16..31 of the captured states of the last pass (passes of more than 16 rows), `[5 taps][16 rows][5120]` as well.
+    pub fn read_taps_hi(&self, out: &mut [f32]) -> Result<()> {
+        if out.len() != 5 * 16 * HIDDEN {
+            return Err(Error::Invalid("tap buffer must hold 5 x 16 x 5120 values".into()));
+        }
+        self.ws.read(self.ws_off(ffi::XF_WS_CAP) + 5 * 16 * HIDDEN * 4, out)
+    }
+
+    /// Device address of the second tap block (rows 16..31 of a longer pass), same shape as the first.
+    pub fn taps_device_ptr_hi(&self) -> *const f32 {
+        unsafe { self.ws.ptr.cast::<u8>().add(self.ws_off(ffi::XF_WS_CAP) + 5 * 16 * HIDDEN * 4).cast() }
+    }
+
+    /// Device address of the tap block (`[5][16][5120]` f32, rows 0..15), for a consumer
     /// that shares this engine's SYCL context. Only meaningful after
     /// [`Device::wait`] or a read-back, when the pass that wrote it is done.
     pub fn taps_device_ptr(&self) -> *const f32 {
@@ -628,11 +654,11 @@ impl Engine {
         if n == 0 || n > MAX_TOKENS || k == 0 || k >= MAX_TOKENS || n > self.pos {
             return Err(Error::Invalid("bad speculative draft shape".into()));
         }
-        let mut io = [0i32; 32];
+        let mut io = [0i32; 2 * MAX_TOKENS];
         for (d, t) in io.iter_mut().zip(fill) {
             *d = *t as i32;
         }
-        io[16] = next as i32;
+        io[IO_VERIFY] = next as i32;
         self.ws.write(self.ws_off(ffi::XF_WS_IDS), &io)?;
         let sk = self.sketch.as_ref().map_or(std::ptr::null(), |s| &**s as *const ffi::xf_sketch);
         let prof = prof.map_or(std::ptr::null_mut(), |p| p.as_mut_ptr());
@@ -656,8 +682,8 @@ impl Engine {
             ffi::xf_forward(self.dev.ctx.0, &*self.model, (k + 1) as i32, self.pos as i32, 0, LAYERS as i32, flags, std::ptr::null_mut())
         })?;
         let io = self.read_io()?;
-        let drafts = (0..=k).map(|j| io[16 + j] as u32).collect();
-        let greedy = (0..=k).map(|i| (io[32 + i] as u32, f32::from_bits(io[48 + i] as u32))).collect();
+        let drafts = (0..=k).map(|j| io[IO_VERIFY + j] as u32).collect();
+        let greedy = (0..=k).map(|i| (io[IO_GREEDY + i] as u32, f32::from_bits(io[IO_LOGIT + i] as u32))).collect();
         Ok((drafts, greedy))
     }
 
