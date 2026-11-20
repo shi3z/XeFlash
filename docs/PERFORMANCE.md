@@ -1959,3 +1959,30 @@ Generation, bdraft2 fixed-16, 7 code prompts x 768 tokens, 1024 context (`m21/ge
 - RB = 2 (32 rows per thread to halve the activation re-reads, the limit at m = 8 above) was not implemented: it helps the 4-bit kernel as much as the 3-bit one and needs a register budget study; separate item.
 - s3p-specific segment / work-group rules for down and out projection were not applied in the engine (not worth it while no 3-bit container is usable).
 - Production default is unchanged (s4-cal). `s3p` support stays in the tree (kernel path chosen only by the container's format); `scripts/s3_quality.sh`, `scripts/s3_gen.sh` reproduce the quality and generation numbers.
+
+## Part U — s4-cal generation speed, fixed container (2026-11-20)
+
+Container `qwen38-27b-s4-cal.xfm`, bdraft2 drafter, `XF_KV=xmx`, WG local=4 (default), no code changes.
+Suite: `scripts/gen_speed_suite.sh` (results `benchmarks/results/m22/`, aggregation `scripts/gen_speed_agg.py`, table `m22/summary.md`).
+Command per run: `XF_KV=xmx scripts/b60run timeout T ./target/release/xf-run cmp <xfm> <prompts.json> <n_new> --only-bd --configs 8,16,0c --ctx <ctx> <bdraft flags> --json ... --save-tokens ...`.
+A: 5 repeats (separate process each; a short code prompt is a discarded warm-up), 256 new tokens, ctx 8K/30K/60K.
+B: 2048 tokens at 8K. C: 7 code prompts x 2048 tokens. Every row: same tokens and same state hash as the greedy baseline.
+
+| ctx | config | tok/s mean (min-max) | Main ms | draft ms | tok/pass | accept1 |
+|---|---|---|---|---|---|---|
+| 8K | fixed8 | 67.9 (67.0-68.2) | 43.9 | 6.3 | 3.53 | 0.77 |
+| 8K | fixed16 | 61.3 (61.0-61.4) | 50.0 | 7.4 | 3.62 | 0.76 |
+| 8K | adaptive | 65.8 (65.7-65.9) | 45.4 | 6.4 | 3.53 | 0.76 |
+| 30K | fixed8 | 56.0 (55.6-56.1) | 51.1 | 6.3 | 3.31 | 0.82 |
+| 30K | fixed16 | 51.2 (51.1-51.3) | 60.2 | 7.4 | 3.55 | 0.85 |
+| 30K | adaptive | 55.8 (55.7-55.8) | 51.4 | 6.2 | 3.31 | 0.82 |
+| 60K | fixed8 | 44.9 (44.5-45.0) | 60.7 | 6.3 | 3.08 | 0.77 |
+| 60K | fixed16 | 36.4 (36.3-36.4) | 74.0 | 7.4 | 3.02 | 0.75 |
+| 60K | adaptive | 45.0 (45.0-45.0) | 60.7 | 6.1 | 3.08 | 0.77 |
+
+VRAM (driver free 22.48 GiB before load; model+KV+bdraft2, bdraft2 +2.8 GiB): 8K 15.8 GiB used, 30K 17.3, 60K 19.3 (3.2 GiB free).
+Sustained, 8K ctx, 2048 tokens: fixed8 76.4, fixed16 74.0, adaptive 79.4 tok/s.
+Code bench (2048 tokens, 7 prompts): fixed16 reaches 140.9 (py_csv) and 142.0 (cpp_fib) tok/s; these two are the only prompts near 140, because tok/pass ~7.9. Other prompts 39-92 tok/s (rs_merge 39-43 lowest). Mean over 7 prompts: see `m22/summary.md`.
+Correctness: all 3 configs give identical tokens/state to greedy on every prompt. Solution grading (`eval_C_code.json`): 3/7 pass (cpp_merge, py_lru, rs_merge) identically for greedy and all configs; the 4 failures are also failures of greedy (compile errors cpp_fib, rs_balanced; wrong py_csv, py_merge), i.e. model/quantization, not speculation.
+
+Conclusions: ~140 tok/s reproduces only for highly predictable code (tok/pass >= 7.8, accept1 ~0.89) at short context with fixed16 (or adaptive, 140-142). Typical sustained speed: 40-95 tok/s on code, 74-79 at 8K prose, 56 at 30K, 45 at 60K. Fastest quality-preserving setting overall: adaptive (cost-ratio) — within 1% of the best everywhere (fixed8 is best at long ctx, fixed16 only wins on easy code); quality is identical to greedy in all configs.

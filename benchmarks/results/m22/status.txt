@@ -1,0 +1,18 @@
+A_8k_r1 exit=0
+A_8k_r2 exit=0
+A_8k_r3 exit=0
+A_8k_r4 exit=0
+A_8k_r5 exit=0
+A_30k_r1 exit=0
+A_30k_r2 exit=0
+A_30k_r3 exit=0
+A_30k_r4 exit=0
+A_30k_r5 exit=0
+A_60k_r1 exit=0
+A_60k_r2 exit=0
+A_60k_r3 exit=0
+A_60k_r4 exit=0
+A_60k_r5 exit=0
+B_sustained_8k exit=0
+C_code exit=0
+done
