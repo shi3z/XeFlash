@@ -1,0 +1,13 @@
+split_merged.gate_up 0
+split_mlp.down 0
+split_merged.qkvz 0
+lgrf_merged.gate_up 0
+lgrf_mlp.down 0
+lgrf_merged.qkvz 0
+rb2_merged.gate_up 0
+rb2_mlp.down 0
+rb2_merged.qkvz 0
+rb2s_merged.gate_up 0
+rb2s_mlp.down 0
+rb2s_merged.qkvz 0
+done

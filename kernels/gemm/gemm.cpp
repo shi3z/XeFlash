@@ -165,7 +165,7 @@ inline size_t wg32_size() {
 //       2 = software-pipelined loop with pointer-bumped addresses: all addresses are formed once before the loop and every tile load adds a constant
 //           (weights) or the activation stride to a running pointer; 32-bit loop counters and thread index (no 64-bit multiply, division or modulo in the loop).
 //           The caller guarantees the 32-bit ranges (addr32_ok); the pointers themselves stay 64-bit.
-template <int WF, int R, int G, int U, bool A16, int PIPE = 0> sycl::event submit(sycl::queue &q, const xf_gemm_desc &d) {
+template <int WF, int R, int G, int U, bool A16, int PIPE = 0, bool LGRF = false, int RBK = 1> sycl::event submit(sycl::queue &q, const xf_gemm_desc &d) {
   using F = Fmt<WF>;
   constexpr int TPT = R * G;
   constexpr int WDW = F::stored_dw;
@@ -195,16 +195,16 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0> sycl::event submi
   // threads (the 5,120-row matrices) filled only about half of the 20 cores. PIPE == 2 launches small work-groups (XF_GEMM_WG threads, default 4) which the dispatcher spreads over all cores.
   const auto run = [=](const size_t gid) SYCL_ESIMD_FUNCTION {
     size_t rb, tg, seg;
-    if constexpr (PIPE == 2) {
+    if constexpr (PIPE >= 2) {
       if (segs == 1 && tgroups == 1) { // every engine shape at 1 / 8 / 16 tokens: the thread index is the row block
-        rb = uint32_t(gid);
+        rb = uint32_t(gid) * RBK;
         tg = 0;
         seg = 0;
       } else { // 32-bit index arithmetic (the thread count is below 2^31, checked by addr32_ok)
-        const uint32_t i32 = uint32_t(gid), rq = uint32_t(rowblks), tq = uint32_t(tgroups);
-        // token groups of one row block are adjacent threads: they read the same weight tiles at about the same time (cache hits); for one group (every shape up to 16 rows) this is the old order
+        const uint32_t i32 = uint32_t(gid), rq = uint32_t(rowblks) / RBK, tq = uint32_t(tgroups);
+        // token groups of one row block (pair) are adjacent threads: they read the same weight tiles at about the same time (cache hits); for one group (every shape up to 16 rows) this is the old order
         tg = i32 % tq;
-        rb = (i32 / tq) % rq;
+        rb = ((i32 / tq) % rq) * RBK;
         seg = i32 / (rq * tq);
       }
     } else {
@@ -258,12 +258,16 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0> sycl::event submi
     } else {
       simd<int32_t, 16 * R> acc[U][G];
       simd<int32_t, 16 * R> accl[U][G];
+      simd<int32_t, 16 * R> acc2[U][G]; // second row block (RBK == 2)
+      simd<int32_t, 16 * R> accl2[U][G];
 #pragma unroll
       for (int u = 0; u < U; u++)
 #pragma unroll
         for (int g = 0; g < G; g++) {
           acc[u][g] = 0;
           accl[u][g] = 0;
+          acc2[u][g] = 0;
+          accl2[u][g] = 0;
         }
 
       if constexpr (PIPE == 2 && WF == XF_W_S3P) {
@@ -348,12 +352,17 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0> sycl::event submi
 #undef XF_S3P_TILE
       } else if constexpr (PIPE == 2) {
         simd<int32_t, WDW> wa[U], wb[U];
+        simd<int32_t, WDW> wa1[U], wb1[U]; // second row block (RBK == 2): the activation tiles are shared by both
         simd<int32_t, XDW> xa[U], xb[U], xla[U], xlb[U];
-        const int32_t *wq = wp, *xq = X + xoff, *xlq = XL + xoff;
-#define XF_PL3(WV, XV, XLV)                                                           \
+        const int32_t *wq = wp, *wq1 = wp + tiles * WDW, *xq = X + xoff, *xlq = XL + xoff;
+#define XF_PL3(WV, WV1, XV, XLV)                                                      \
   _Pragma("unroll") for (int u = 0; u < U; u++) {                                    \
     WV[u].copy_from(wq);                                                              \
     wq += WDW;                                                                        \
+    if constexpr (RBK == 2) {                                                         \
+      WV1[u].copy_from(wq1);                                                          \
+      wq1 += WDW;                                                                     \
+    }                                                                                 \
     XV[u].copy_from(xq);                                                              \
     xq += xstride;                                                                    \
     if constexpr (A16) {                                                              \
@@ -361,7 +370,7 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0> sycl::event submi
       xlq += xstride;                                                                 \
     }                                                                                 \
   }
-#define XF_PC3(WV, XV, XLV)                                                           \
+#define XF_PC3(WV, WV1, XV, XLV)                                                      \
   _Pragma("unroll") for (int u = 0; u < U; u++) {                                    \
     simd<int32_t, F::opnd_dw> w = operand<WF>(WV[u]);                                \
     _Pragma("unroll") for (int g = 0; g < G; g++) {                                  \
@@ -374,17 +383,74 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0> sycl::event submi
         accl[u][g] = mac<WF, R>(accl[u][g], w, a, true);                             \
       }                                                                               \
     }                                                                                 \
+    if constexpr (RBK == 2) {                                                         \
+      simd<int32_t, F::opnd_dw> w1 = operand<WF>(WV1[u]);                            \
+      _Pragma("unroll") for (int g = 0; g < G; g++) {                                \
+        simd<int32_t, 8 * R> a = XV[u].template select<8 * R, 1>(g * 8 * R);        \
+        acc2[u][g] = mac<WF, R>(acc2[u][g], w1, a, false);                           \
+      }                                                                               \
+      if constexpr (A16) {                                                            \
+        _Pragma("unroll") for (int g = 0; g < G; g++) {                              \
+          simd<int32_t, 8 * R> a = XLV[u].template select<8 * R, 1>(g * 8 * R);     \
+          accl2[u][g] = mac<WF, R>(accl2[u][g], w1, a, true);                        \
+        }                                                                             \
+      }                                                                               \
+    }                                                                                 \
   }
         const uint32_t tps32 = uint32_t(tps);
-        XF_PL3(wa, xa, xla)
+        XF_PL3(wa, wa1, xa, xla)
         for (uint32_t t32 = 0; t32 < tps32; t32 += 2 * U) {
-          XF_PL3(wb, xb, xlb)
-          XF_PC3(wa, xa, xla)
-          if (t32 + 2 * U < tps32) XF_PL3(wa, xa, xla)
-          XF_PC3(wb, xb, xlb)
+          XF_PL3(wb, wb1, xb, xlb)
+          XF_PC3(wa, wa1, xa, xla)
+          if (t32 + 2 * U < tps32) XF_PL3(wa, wa1, xa, xla)
+          XF_PC3(wb, wb1, xb, xlb)
         }
 #undef XF_PL3
 #undef XF_PC3
+      } else if constexpr (PIPE == 3) {
+        // Prefetch distance 2: four rotating buffers, the loads of tile t + 2 are issued before the DPAS of tile t (distance 1 in PIPE 2). One tile per buffer, 4 tiles per trip.
+        static_assert(U == 1, "PIPE 3: one tile per stage");
+        simd<int32_t, WDW> wbuf[4];
+        simd<int32_t, XDW> xbuf[4], xlbuf[4];
+        const int32_t *wq = wp, *xq = X + xoff, *xlq = XL + xoff;
+#define XF_PL4(B)                                                                     \
+  wbuf[B].copy_from(wq);                                                              \
+  wq += WDW;                                                                          \
+  xbuf[B].copy_from(xq);                                                              \
+  xq += xstride;                                                                      \
+  if constexpr (A16) {                                                                \
+    xlbuf[B].copy_from(xlq);                                                          \
+    xlq += xstride;                                                                   \
+  }
+#define XF_PC4(B)                                                                     \
+  {                                                                                   \
+    simd<int32_t, F::opnd_dw> w = operand<WF>(wbuf[B]);                              \
+    _Pragma("unroll") for (int g = 0; g < G; g++) {                                  \
+      simd<int32_t, 8 * R> a = xbuf[B].template select<8 * R, 1>(g * 8 * R);        \
+      acc[0][g] = mac<WF, R>(acc[0][g], w, a, false);                                \
+    }                                                                                 \
+    if constexpr (A16) {                                                              \
+      _Pragma("unroll") for (int g = 0; g < G; g++) {                                \
+        simd<int32_t, 8 * R> a = xlbuf[B].template select<8 * R, 1>(g * 8 * R);     \
+        accl[0][g] = mac<WF, R>(accl[0][g], w, a, true);                             \
+      }                                                                               \
+    }                                                                                 \
+  }
+        const uint32_t tps32 = uint32_t(tps);
+        XF_PL4(0)
+        XF_PL4(1)
+        for (uint32_t t32 = 0; t32 < tps32; t32 += 4) {
+          XF_PL4(2)
+          XF_PC4(0)
+          XF_PL4(3)
+          XF_PC4(1)
+          if (t32 + 4 < tps32) XF_PL4(0)
+          XF_PC4(2)
+          if (t32 + 4 < tps32) XF_PL4(1)
+          XF_PC4(3)
+        }
+#undef XF_PL4
+#undef XF_PC4
       } else if constexpr (PIPE == 1) {
         simd<int32_t, WDW> wa[U], wb[U];
         simd<int32_t, XDW> xa[U], xb[U], xla[U], xlb[U];
@@ -442,22 +508,27 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0> sycl::event submi
           }
         }
       }
+#pragma unroll
+      for (int rbi = 0; rbi < RBK; rbi++) {
+      const size_t rbx = rb + rbi;
+      auto &Aq = rbi ? acc2 : acc;
+      auto &Al = rbi ? accl2 : accl;
       simd<float, 16> rsv;
-      rsv.copy_from(RS + rb * 16);
+      rsv.copy_from(RS + rbx * 16);
       simd<float, TPT> tsv;
       tsv.copy_from(TS + tg * TPT);
       simd<float, TPT> tov(0.0f);
       if (TO) tov.copy_from(TO + tg * TPT);
       simd<float, 16> rbv(0.0f);
-      if (RB) rbv.copy_from(RB + rb * 16);
+      if (RB) rbv.copy_from(RB + rbx * 16);
 #pragma unroll
       for (int g = 0; g < G; g++) {
-        simd<int32_t, 16 * R> s = acc[0][g];
-        simd<int32_t, 16 * R> sl = accl[0][g];
+        simd<int32_t, 16 * R> s = Aq[0][g];
+        simd<int32_t, 16 * R> sl = Al[0][g];
 #pragma unroll
         for (int u = 1; u < U; u++) {
-          s += acc[u][g];
-          sl += accl[u][g];
+          s += Aq[u][g];
+          sl += Al[u][g];
         }
 #pragma unroll
         for (int m = 0; m < R; m++) {
@@ -466,18 +537,27 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0> sycl::event submi
           const size_t tok = tg * TPT + g * R + m;
           if (segs == 1) {
             simd<float, 16> f = finish<A16>(si, li, rsv, float(tsv[g * R + m]), float(tov[g * R + m]) * OFFMUL, rbv);
-            f.copy_to(Y + tok * rows + rb * 16);
+            f.copy_to(Y + tok * rows + rbx * 16);
           } else {
             // Exact integer partial sums; the combiner converts and scales.
-            si.copy_to(YI + ((seg * PLANES) * mpad + tok) * rows + rb * 16);
-            if constexpr (A16) li.copy_to(YI + ((seg * PLANES + 1) * mpad + tok) * rows + rb * 16);
+            si.copy_to(YI + ((seg * PLANES) * mpad + tok) * rows + rbx * 16);
+            if constexpr (A16) li.copy_to(YI + ((seg * PLANES + 1) * mpad + tok) * rows + rbx * 16);
           }
         }
       }
+      }
     }
   };
-  const size_t nthreads = rowblks * tgroups * segs;
-  const size_t wg = PIPE == 2 ? (TPT > 1 ? wg_size() : wg1_size()) : (TPT >= 32 ? wg32_size() : 0); // 1 row per thread: the plain launch is fastest (50 against 56 us for the out projection)
+  const size_t nthreads = rowblks / RBK * tgroups * segs;
+  const size_t wg = PIPE >= 2 ? (TPT > 1 ? wg_size() : wg1_size()) : (TPT >= 32 ? wg32_size() : 0); // 1 row per thread: the plain launch is fastest (50 against 56 us for the out projection)
+  if constexpr (LGRF) {
+    // large register file: 256 GRF per thread (4 threads per EU instead of 8), for the 32-tokens-per-thread loop with 16-bit activations (does not fit 128 GRF)
+    sycl::ext::oneapi::experimental::properties props{sycl::ext::intel::experimental::grf_size<256>};
+    const size_t w = wg > 1 ? wg : 4;
+    return q.parallel_for(sycl::nd_range<1>(nthreads / w * w + (nthreads % w ? w : 0), w), props, [=](sycl::nd_item<1> it) SYCL_ESIMD_KERNEL {
+      if (it.get_global_id(0) < nthreads) run(it.get_global_id(0));
+    });
+  }
   if (wg > 1 && nthreads % wg == 0)
     return q.parallel_for(sycl::nd_range<1>(nthreads, wg), [=](sycl::nd_item<1> it) SYCL_ESIMD_KERNEL { run(it.get_global_id(0)); });
   return q.parallel_for(sycl::range<1>(nthreads), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL { run(id[0]); });
@@ -665,9 +745,9 @@ int pipe_u() {
   static const int u = std::getenv("XF_GEMM_PU") ? std::atoi(std::getenv("XF_GEMM_PU")) : 2;
   return u == 1 ? 1 : 2;
 }
-// How 16-bit-activation passes of 32 rows run (default "split"): "old" = plain 4-group loop, "pipe" = pipelined 4-group loop, "split" = the 16-row pipelined kernel for two token groups with the groups adjacent (XF_GEMM_A16_32).
+// How 16-bit-activation passes of more than 16 rows run (default 2 = auto: "lgrf" for 33..96 rows on the matrices with K <= 8192, "split" otherwise; "split" forces the split kernel): "old" = plain 4-group loop, "pipe" = pipelined 4-group loop, "split" = the 16-row pipelined kernel for two token groups with the groups adjacent (XF_GEMM_A16_32).
 int a16_32_mode() {
-  static const int m = [] { const char *e = std::getenv("XF_GEMM_A16_32"); return !e ? 2 : !std::strcmp(e, "pipe") ? 1 : !std::strcmp(e, "old") ? 0 : 2; }();
+  static const int m = [] { const char *e = std::getenv("XF_GEMM_A16_32"); return !e ? 2 : !std::strcmp(e, "split") ? 8 : !std::strcmp(e, "pipe") ? 1 : !std::strcmp(e, "old") ? 0 : !std::strcmp(e, "lgrf") ? 3 : !std::strcmp(e, "rb2") ? 4 : !std::strcmp(e, "rb2s") ? 5 : !std::strcmp(e, "pd2") ? 6 : !std::strcmp(e, "pd2l") ? 7 : 2; }();
   return m;
 }
 bool p32_on() {
@@ -743,7 +823,21 @@ template <int WF, bool A16> int dispatch(sycl::queue &q, const xf_gemm_desc &d) 
     const int pk = F_IS_FLOAT(WF) ? 0 : pipe_kind(d, 32);
     if (pk == 2 && p32_on() && !A16) submit<WF, 8, 4, 1, A16, 2>(q, d);
     else if (pk == 2 && p32_on() && A16 && a16_32_mode() == 1) submit<WF, 8, 4, 1, A16, 2>(q, d);
-    else if (pk == 2 && p32_on() && A16 && a16_32_mode() == 2) {
+    else if (pk == 2 && p32_on() && A16 && a16_32_mode() == 6 && (d.cols / 32) % 4 == 0) {
+      xf_gemm_desc d2 = d;
+      d2.m = (d.m + 31) / 32 * 32;
+      submit<WF, 8, 2, 1, A16, 3>(q, d2); // prefetch distance 2, 16 tokens per thread, 128 GRF
+    }
+    else if (pk == 2 && p32_on() && A16 && a16_32_mode() == 7 && (d.cols / 32) % 4 == 0) submit<WF, 8, 4, 1, A16, 3, true>(q, d); // prefetch distance 2, 32 tokens per thread, 256 GRF
+    else if (pk == 2 && p32_on() && A16 && a16_32_mode() == 3) submit<WF, 8, 4, 1, A16, 2, true>(q, d);
+    else if (pk == 2 && p32_on() && A16 && (a16_32_mode() == 4 || a16_32_mode() == 5) && (d.rows / 16) % 2 == 0) {
+      xf_gemm_desc d2 = d;
+      d2.m = (d.m + 31) / 32 * 32;
+      if (a16_32_mode() == 4) submit<WF, 8, 2, 1, A16, 2, true, 2>(q, d2); // two row blocks per thread, 256 GRF
+      else submit<WF, 8, 2, 1, A16, 2, false, 2>(q, d2);                   // same with 128 GRF (spills: for the ISA comparison)
+    }
+    else if (pk == 2 && p32_on() && A16 && a16_32_mode() == 2 && d.m > 32 && d.m <= 96 && d.cols <= 8192) submit<WF, 8, 4, 1, A16, 2, true>(q, d); // auto: 256 GRF, 32 tokens per thread (benchmarks/results/m38)
+    else if (pk == 2 && p32_on() && A16 && (a16_32_mode() == 2 || a16_32_mode() == 8)) {
       // The activation tiles are laid out for a pad of 32 tokens (tokens_per_thread == 32), the 16-token kernel pads to 16: give it the padded count (rows 33..48 would otherwise stride wrongly)
       xf_gemm_desc d2 = d;
       d2.m = (d.m + 31) / 32 * 32;

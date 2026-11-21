@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XeFlash — 16bit活性化GEMM VTune レポート（Arc Pro B60）</title>
+<style>
+:root{
+  color-scheme: light;
+  --page:#f9f9f7; --surface:#fcfcfb; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --ring:rgba(11,11,11,.10);
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300; --s7:#6250d6;
+  --fill-ink:#fff;
+}
+@media (prefers-color-scheme: dark){
+  :root:where(:not([data-theme="light"])){
+    color-scheme: dark;
+    --page:#0d0d0d; --surface:#1a1a19; --ink:#f0efec; --ink2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#0ca30c; --s7:#9085e9;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--ink);font:14px/1.5 system-ui,-apple-system,"Segoe UI","Noto Sans JP",sans-serif}
+main{max-width:1180px;margin:0 auto;padding:28px 20px 56px}
+h1{font-size:22px;margin:0 0 4px;font-weight:650}
+.sub{color:var(--ink2);margin:0 0 20px;max-width:900px}
+.hero{display:flex;gap:28px;flex-wrap:wrap;margin:0 0 22px}
+.stat{background:var(--surface);border:1px solid var(--ring);border-radius:10px;padding:14px 18px;min-width:190px}
+.stat .l{color:var(--ink2);font-size:12px}
+.stat .v{font-size:30px;font-weight:650;letter-spacing:-.01em}
+.stat .d{color:var(--ink2);font-size:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(520px,1fr));gap:16px}
+@media (max-width:620px){.grid{grid-template-columns:1fr}}
+figure{margin:0;background:var(--surface);border:1px solid var(--ring);border-radius:12px;padding:16px 16px 12px}
+figcaption h2{font-size:15px;margin:0 0 2px;font-weight:650}
+figcaption p{margin:0 0 8px;color:var(--ink2);font-size:12.5px}
+svg{display:block;width:100%;height:auto;overflow:visible}
+#c7 svg{max-width:720px;margin:0 auto}
+svg text{font-family:inherit;fill:var(--ink2);font-size:11px}
+svg .val{fill:var(--ink);font-weight:600}
+svg .axis{stroke:var(--axis);stroke-width:1}
+svg .gridl{stroke:var(--grid);stroke-width:1}
+svg .ref{stroke:var(--ink2);stroke-width:1}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin:4px 0 2px;font-size:12px;color:var(--ink2)}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+details{margin-top:8px;font-size:12px}
+summary{cursor:pointer;color:var(--ink2)}
+table{border-collapse:collapse;width:100%;margin-top:6px;font-variant-numeric:tabular-nums}
+th,td{padding:3px 8px;border-bottom:1px solid var(--grid);text-align:right;font-weight:400}
+th:first-child,td:first-child{text-align:left}
+th{color:var(--ink2);font-weight:600}
+.note{color:var(--ink2);font-size:12px;margin-top:6px}
+#tip{position:fixed;pointer-events:none;background:var(--surface);color:var(--ink);border:1px solid var(--ring);box-shadow:0 4px 14px rgba(0,0,0,.18);border-radius:8px;padding:7px 10px;font-size:12px;display:none;z-index:10;max-width:260px}
+#tip b{font-size:14px;font-variant-numeric:tabular-nums}
+#tip .k{display:inline-block;width:12px;height:2px;margin-right:6px;vertical-align:middle}
+.bar:hover,.bar:focus{filter:brightness(1.12);outline:none}
+.foot{color:var(--muted);font-size:12px;margin-top:22px}
+</style>
+</head>
+<body>
+<main>
+<h1>16bit活性化 s4 GEMM — VTune ハードウェアカウンタ</h1>
+<p class="sub">Intel Arc Pro B60、Qwen3.8-27B の全 GEMM 形状（4 ビット重み × 16 ビット活性化＝ int8 の 2 プレーン）。16 / 64 / 128 行を同一条件（cold weights、1 セグメント、<code>XF_KV=xmx</code>）で比較。VTune gpu-hotspots（overview）。「64 行の GEMM は XMX ピークの約 6 割で、残りは<b>ロード待ち</b>」というのが結論です。</p>
+
+<div class="hero" id="hero"></div>
+
+<div class="grid">
+  <figure id="c1"><figcaption><h2>XMX パイプ稼働率（%）</h2><p>行数を増やすと上がるが、128 行でも 70% に届かない。</p></figcaption></figure>
+  <figure id="c2"><figcaption><h2>達成 TOPS と XMX ピーク（int8, 196.5 TOPS）</h2><p>16bit 活性化は 2 プレーンぶんの演算（重み × 2 × 行数 × 2）で換算。</p></figcaption></figure>
+  <figure id="c3"><figcaption><h2>ストール原因（XVE ストール時間に占める %）</h2><p>SBID＝ロード結果待ち、Send＝ロードを発行できない（メモリキュー満杯）。</p></figcaption></figure>
+  <figure id="c4"><figcaption><h2>DRAM 読み出し帯域（GB/s）</h2><p>64 行以上は帯域律速ではない（持続読み出し 約 440 GB/s の半分）。重みはキャッシュから再利用されている。</p></figcaption></figure>
+  <figure id="c5"><figcaption><h2>1 パスの GEMM 合計時間と XMX ピーク下限（ms）</h2><p>下限＝全重み × 2 演算 × 行数 × 2 プレーン ÷ 196.5 TOPS。実測は下限の 1.7〜2.1 倍。</p></figcaption></figure>
+  <figure id="c6"><figcaption><h2>Main パスの内訳（ms, ステージ同期プロファイル, 位置約 3K）</h2><p>64 行では GEMM が約 6 割。GEMM 以外（GDN・attention・mlp・norm・quant）が約 3 割。</p></figcaption></figure>
+  <figure id="c7" style="grid-column:1/-1"><figcaption><h2>1000 tok/s に必要なサイクル時間（ms）</h2><p>1 サイクル＝ Main ＋ draft ＋ commit。必要時間＝平均確定トークン数 ÷ 1000 tok/s。128 行の現状値は GEMM 実測＋GEMM 以外を 2 倍とした<b>推定</b>。</p></figcaption></figure>
+</div>
+<p class="foot">データ: <code>benchmarks/results/m37/</code>（vtune/*.csv, unit_128.json, detail_3k.log）・<code>docs/PERFORMANCE.md</code>。VTune の GB/s はサンプリング窓の平均で、bytes/time より低く出る（比較用）。</p>
+</main>
+<div id="tip" role="tooltip"></div>
+<script>
+const D = {"vt": [{"shape": "merged.gate_up", "m": 16, "us": 228.0, "xmx": 24.1, "sbid": 69.5, "send": 64.5, "occ": 78.5, "act": 15.4, "stall": 73.1, "idle": 11.5, "dram": 374.0, "l3": 94.6}, {"shape": "merged.gate_up", "m": 64, "us": 369.0, "xmx": 60.9, "sbid": 38.0, "send": 39.7, "occ": 92.3, "act": 38.3, "stall": 55.3, "idle": 6.4, "dram": 235.0, "l3": 44.0}, {"shape": "merged.gate_up", "m": 128, "us": 670.0, "xmx": 68.0, "sbid": 32.8, "send": 34.7, "occ": 94.6, "act": 42.7, "stall": 52.5, "idle": 4.9, "dram": 131.0, "l3": 25.4}, {"shape": "mlp.down", "m": 16, "us": 132.0, "xmx": 20.1, "sbid": 78.3, "send": 0.0, "occ": 22.4, "act": 12.5, "stall": 77.4, "idle": 10.1, "dram": 312.0, "l3": 99.2}, {"shape": "mlp.down", "m": 64, "us": 196.0, "xmx": 55.8, "sbid": 39.5, "send": 47.7, "occ": 93.1, "act": 33.5, "stall": 59.9, "idle": 6.6, "dram": 226.0, "l3": 78.0}, {"shape": "mlp.down", "m": 128, "us": 372.0, "xmx": 60.3, "sbid": 34.8, "send": 47.0, "occ": 96.5, "act": 36.2, "stall": 60.3, "idle": 3.5, "dram": 136.0, "l3": 69.4}, {"shape": "merged.qkvz", "m": 16, "us": 104.0, "xmx": 23.3, "sbid": 68.8, "send": 68.3, "occ": 68.9, "act": 14.9, "stall": 71.8, "idle": 13.3, "dram": 364.0, "l3": 97.2}, {"shape": "merged.qkvz", "m": 64, "us": 206.0, "xmx": 49.9, "sbid": 32.1, "send": 32.4, "occ": 75.6, "act": 31.4, "stall": 46.7, "idle": 21.9, "dram": 193.0, "l3": 47.5}, {"shape": "merged.qkvz", "m": 128, "us": 331.0, "xmx": 63.6, "sbid": 30.1, "send": 31.2, "occ": 87.4, "act": 39.9, "stall": 48.3, "idle": 11.7, "dram": 123.0, "l3": 30.3}, {"shape": "out_proj", "m": 16, "us": 57.0, "xmx": 14.8, "sbid": 68.6, "send": 0.0, "occ": 19.0, "act": 9.6, "stall": 68.5, "idle": 21.9, "dram": 234.0, "l3": 81.8}, {"shape": "out_proj", "m": 64, "us": 90.0, "xmx": 40.1, "sbid": 42.6, "send": 50.6, "occ": 84.1, "act": 25.1, "stall": 59.6, "idle": 15.3, "dram": 160.0, "l3": 51.8}, {"shape": "out_proj", "m": 128, "us": 125.0, "xmx": 59.7, "sbid": 34.0, "send": 36.4, "occ": 88.4, "act": 37.1, "stall": 51.8, "idle": 11.2, "dram": 116.0, "l3": 35.9}], "tops": {"merged.qkvz": {"16": 51.595, "64": 104.658, "128": 129.634}, "merged.attn_qkv": {"16": 50.899, "64": 117.892, "128": 131.797}, "out_proj": {"16": 34.24, "64": 89.153, "128": 129.591}, "merged.gate_up": {"16": 49.875, "64": 123.685, "128": 136.007}, "mlp.down": {"16": 43.611, "64": 115.068, "128": 123.017}, "lm_head": {"16": 52.154, "64": 109.04, "128": 102.665}}, "peak": 196.5, "gemm": {"16": 34.805181, "64": 57.468998, "128": 101.44880500000001, "32": 41.929302}, "floor": {"16": 8.337379859541985, "32": 16.67475971908397, "64": 33.34951943816794, "128": 66.69903887633588}, "stages": {"16": {"norm": 2.08, "quant": 2.05, "gemm": 35.51, "gdn": 6.68, "attn": 2.61, "mlp": 2.14, "head": 1.64}, "32": {"norm": 2.45, "quant": 2.58, "gemm": 41.73, "gdn": 9.16, "attn": 3.7, "mlp": 3.48, "head": 1.85}, "64": {"norm": 3.08, "quant": 3.4, "gemm": 56.93, "gdn": 14.18, "attn": 6.45, "mlp": 6.11, "head": 3.23}}, "cycle": {"cur64": 92.3, "need64": 59.5, "est128": 164.0, "need128": 89.2, "tpp64": 59.48, "tpp128": 89.2}};
+const SH = [["merged.gate_up","gate+up"],["mlp.down","down"],["merged.qkvz","qkvz"],["merged.attn_qkv","attn qkv"],["out_proj","out proj"],["lm_head","lm_head"]];
+const NS = "http://www.w3.org/2000/svg";
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const tip = document.getElementById("tip");
+function el(tag, attrs, parent, text){ const e=document.createElementNS(NS,tag); for(const k in attrs) e.setAttribute(k,attrs[k]); if(text!==undefined) e.textContent=text; if(parent) parent.appendChild(e); return e; }
+function showTip(ev, title, rows){
+  tip.replaceChildren();
+  const t=document.createElement("div"); t.textContent=title; t.style.color="var(--ink2)"; tip.appendChild(t);
+  for(const r of rows){ const d=document.createElement("div"); const k=document.createElement("span"); k.className="k"; k.style.background=r.color; d.appendChild(k);
+    const b=document.createElement("b"); b.textContent=r.value; d.appendChild(b); const s=document.createElement("span"); s.textContent="  "+r.label; s.style.color="var(--ink2)"; d.appendChild(s); tip.appendChild(d); }
+  tip.style.display="block"; const x=Math.min(ev.clientX+14, innerWidth-280); tip.style.left=x+"px"; tip.style.top=(ev.clientY+14)+"px";
+}
+function hideTip(){ tip.style.display="none"; }
+// bar with 4px rounded data end (top), square baseline
+function barPath(x,y,w,h,r){ r=Math.min(r,w/2,h); return `M${x},${y+h}V${y+r}Q${x},${y} ${x+r},${y}H${x+w-r}Q${x+w},${y} ${x+w},${y+r}V${y+h}Z`; }
+function ticks(max,n){ const raw=max/n; const p=Math.pow(10,Math.floor(Math.log10(raw))); const s=[1,2,2.5,5,10].map(f=>f*p).find(v=>v>=raw); const t=[]; for(let v=0; v<=max+1e-9; v+=s) t.push(v); return t; }
+function legend(fig, items){ const d=document.createElement("div"); d.className="legend"; for(const it of items){ const s=document.createElement("span"); const i=document.createElement("i"); i.style.background=it.color; s.appendChild(i); s.appendChild(document.createTextNode(it.label)); d.appendChild(s);} fig.appendChild(d); }
+function tableView(fig, head, body){
+  const det=document.createElement("details"); const sm=document.createElement("summary"); sm.textContent="表で見る"; det.appendChild(sm);
+  const t=document.createElement("table"); const th=document.createElement("tr"); for(const h of head){ const c=document.createElement("th"); c.textContent=h; th.appendChild(c);} t.appendChild(th);
+  for(const r of body){ const tr=document.createElement("tr"); for(const v of r){ const c=document.createElement("td"); c.textContent=v; tr.appendChild(c);} t.appendChild(tr);} det.appendChild(t); fig.appendChild(det);
+}
+// grouped bars: groups[] of {name, vals[]}, series[] {label,color,labelBars}, options {max, unit, ref:{v,label}}
+function grouped(fig, groups, series, o){
+  const W=560,H=250,L=44,R=10,T=14,B=34; const svg=el("svg",{viewBox:`0 0 ${W} ${H}`,role:"img","aria-label":o.aria||""},fig);
+  const ymax=o.max, tk=ticks(ymax,5), pw=W-L-R, ph=H-T-B;
+  const y=v=>T+ph*(1-v/ymax);
+  for(const v of tk){ el("line",{x1:L,x2:W-R,y1:y(v),y2:y(v),class:"gridl"},svg); el("text",{x:L-6,y:y(v)+4,"text-anchor":"end"},svg,String(v)); }
+  el("line",{x1:L,x2:W-R,y1:y(0),y2:y(0),class:"axis"},svg);
+  const gw=pw/groups.length, bw=Math.min(22,(gw-18)/series.length-2);
+  groups.forEach((g,gi)=>{
+    const gx=L+gi*gw+gw/2, total=series.length*bw+(series.length-1)*2;
+    g.vals.forEach((v,si)=>{
+      const x=gx-total/2+si*(bw+2), h=Math.max(0,ph*v/ymax);
+      const p=el("path",{d:barPath(x,y(v),bw,h,4),fill:series[si].color,class:"bar",tabindex:0,"aria-label":`${g.name} ${series[si].label} ${v}${o.unit}`},svg);
+      const hit=el("rect",{x:x-1,y:T,width:bw+2,height:ph,fill:"transparent"},svg);
+      const show=ev=>{ showTip(ev,g.name,series.map((s,k)=>({color:s.color,label:s.label,value:g.vals[k].toFixed(o.dec??0)+o.unit}))); };
+      hit.addEventListener("pointermove",show); hit.addEventListener("pointerleave",hideTip); p.addEventListener("focus",ev=>{const r=p.getBoundingClientRect(); show({clientX:r.x,clientY:r.y});}); p.addEventListener("blur",hideTip);
+      if(series[si].labelBars) el("text",{x:x+bw/2,y:y(v)-4,"text-anchor":"middle",class:"val"},svg,v.toFixed(o.dec??0));
+    });
+    el("text",{x:gx,y:H-14,"text-anchor":"middle"},svg,g.name);
+  });
+  if(o.ref){ el("line",{x1:L,x2:W-R,y1:y(o.ref.v),y2:y(o.ref.v),class:"ref"},svg); el("text",{x:W-R,y:y(o.ref.v)-5,"text-anchor":"end"},svg,o.ref.label); }
+}
+function lab(m){ return m+" 行"; }
+const ROWS=[16,64,128], COL={16:"var(--s1)",64:"var(--s2)",128:"var(--s3)"};
+const rowsLegend=ROWS.map(m=>({label:lab(m),color:COL[m]}));
+const vt=(s,m)=>D.vt.find(r=>r.shape===s&&r.m===m);
+// hero
+(function(){
+  const h=document.getElementById("hero");
+  const cards=[["64 行 GEMM（実測）", (D.gemm[64]).toFixed(1)+" ms","XMX ピーク下限 "+D.floor[64].toFixed(1)+" ms（"+Math.round(100*D.floor[64]/D.gemm[64])+"%）"],
+               ["128 行 GEMM（実測）", (D.gemm[128]).toFixed(1)+" ms","下限 "+D.floor[128].toFixed(1)+" ms（"+Math.round(100*D.floor[128]/D.gemm[128])+"%）"],
+               ["gate+up XMX 稼働率（64 行）", vt("merged.gate_up",64).xmx.toFixed(0)+" %","16 行は "+vt("merged.gate_up",16).xmx.toFixed(0)+" %"],
+               ["1000 tok/s の必要サイクル（64 行）", D.cycle.need64.toFixed(1)+" ms","実測 "+D.cycle.cur64.toFixed(1)+" ms"]];
+  for(const c of cards){ const s=document.createElement("div"); s.className="stat"; for(const [cl,t] of [["l",c[0]],["v",c[1]],["d",c[2]]]){ const d=document.createElement("div"); d.className=cl; d.textContent=t; s.appendChild(d);} h.appendChild(s); }
+})();
+// c1 XMX
+(function(){ const f=document.getElementById("c1");
+  const groups=SH.filter(s=>["merged.gate_up","mlp.down","merged.qkvz","out_proj"].includes(s[0])).map(s=>({name:s[1],vals:ROWS.map(m=>vt(s[0],m).xmx)}));
+  grouped(f,groups,ROWS.map(m=>({label:lab(m),color:COL[m],labelBars:m===64})),{max:80,unit:" %",aria:"XMX pipe active"});
+  legend(f,rowsLegend);
+  tableView(f,["形状",...ROWS.map(lab)],groups.map(g=>[g.name,...g.vals.map(v=>v.toFixed(1)+" %")]));
+})();
+// c2 TOPS
+(function(){ const f=document.getElementById("c2");
+  const groups=SH.map(s=>({name:s[1],vals:ROWS.map(m=>D.tops[s[0]][m])}));
+  grouped(f,groups,ROWS.map(m=>({label:lab(m),color:COL[m],labelBars:m===64})),{max:200,unit:" TOPS",ref:{v:D.peak,label:"XMX int8 ピーク 196.5 TOPS"},aria:"achieved TOPS"});
+  legend(f,rowsLegend);
+  tableView(f,["形状",...ROWS.map(lab)],groups.map(g=>[g.name,...g.vals.map(v=>v.toFixed(0)+" ("+Math.round(100*v/D.peak)+"%)")]));
+})();
+// c3 stalls (two panels)
+(function(){ const f=document.getElementById("c3");
+  const shapes=SH.filter(s=>["merged.gate_up","mlp.down","merged.qkvz","out_proj"].includes(s[0]));
+  for(const [key,title] of [["sbid","SBID（ロード結果待ち）"],["send","Send（ロード発行待ち）"]]){
+    const h=document.createElement("div"); h.textContent=title; h.style.cssText="font-size:12px;color:var(--ink2);margin:4px 0 0"; f.appendChild(h);
+    grouped(f,shapes.map(s=>({name:s[1],vals:ROWS.map(m=>vt(s[0],m)[key])})),ROWS.map(m=>({label:lab(m),color:COL[m],labelBars:false})),{max:100,unit:" %",aria:title});
+  }
+  legend(f,rowsLegend);
+  tableView(f,["形状 / 行数","SBID %","Send %","XVE ストール %","占有率 %"],shapes.flatMap(s=>ROWS.map(m=>{const r=vt(s[0],m);return [s[1]+" / "+m,r.sbid,r.send,r.stall,r.occ];})));
+})();
+// c4 DRAM
+(function(){ const f=document.getElementById("c4");
+  const shapes=SH.filter(s=>["merged.gate_up","mlp.down","merged.qkvz","out_proj"].includes(s[0]));
+  const groups=shapes.map(s=>({name:s[1],vals:ROWS.map(m=>vt(s[0],m).dram)}));
+  grouped(f,groups,ROWS.map(m=>({label:lab(m),color:COL[m],labelBars:m===64})),{max:500,unit:" GB/s",ref:{v:440,label:"持続読み出し 約 440 GB/s"},aria:"DRAM read bandwidth"});
+  legend(f,rowsLegend);
+  tableView(f,["形状 / 行数","DRAM GB/s","L3 ミス %"],shapes.flatMap(s=>ROWS.map(m=>{const r=vt(s[0],m);return [s[1]+" / "+m,r.dram,r.l3];})));
+})();
+// c5 GEMM sum vs floor
+(function(){ const f=document.getElementById("c5");
+  const rows=[16,32,64,128];
+  const groups=rows.map(m=>({name:m+" 行",vals:[D.gemm[m],D.floor[m]]}));
+  grouped(f,groups,[{label:"実測",color:"var(--s1)",labelBars:true},{label:"XMX ピーク下限",color:"var(--s2)",labelBars:true}],{max:120,unit:" ms",dec:1,aria:"GEMM sum"});
+  legend(f,[{label:"実測（全 GEMM 合計/パス）",color:"var(--s1)"},{label:"XMX ピークでの下限",color:"var(--s2)"}]);
+  tableView(f,["行数","実測 ms","下限 ms","達成率"],rows.map(m=>[m,D.gemm[m].toFixed(1),D.floor[m].toFixed(1),Math.round(100*D.floor[m]/D.gemm[m])+" %"]));
+})();
+// c6 stacked stage breakdown
+(function(){ const f=document.getElementById("c6");
+  const keys=[["gemm","GEMM","var(--s1)"],["head","lm_head","var(--s7)"],["gdn","GDN","var(--s2)"],["attn","attention","var(--s3)"],["mlp","mlp-act","var(--s4)"],["norm","norm","var(--s5)"],["quant","quant","var(--s6)"]];
+  const rows=[16,32,64]; const W=560,H=250,L=44,R=10,T=14,B=34; const svg=el("svg",{viewBox:`0 0 ${W} ${H}`,role:"img","aria-label":"Main pass stage breakdown"},f);
+  const tot=m=>keys.reduce((a,k)=>a+D.stages[m][k[0]],0); const ymax=100, pw=W-L-R, ph=H-T-B, y=v=>T+ph*(1-v/ymax);
+  for(const v of ticks(ymax,5)){ el("line",{x1:L,x2:W-R,y1:y(v),y2:y(v),class:"gridl"},svg); el("text",{x:L-6,y:y(v)+4,"text-anchor":"end"},svg,String(v)); }
+  el("line",{x1:L,x2:W-R,y1:y(0),y2:y(0),class:"axis"},svg);
+  const gw=pw/rows.length, bw=24;
+  rows.forEach((m,gi)=>{ const x=L+gi*gw+gw/2-bw/2; let acc=0;
+    keys.forEach((k,ki)=>{ const v=D.stages[m][k[0]]; const y0=y(acc+v), h=Math.max(0,ph*v/ymax-2); acc+=v;
+      const last=ki===keys.length-1; const p=el("path",{d:last?barPath(x,y0,bw,h,4):`M${x},${y0+h}V${y0}H${x+bw}V${y0+h}Z`,fill:k[2],class:"bar",tabindex:0,"aria-label":`${m} 行 ${k[1]} ${v} ms`},f.querySelector("svg"));
+      const hit=el("rect",{x:x-4,y:y0,width:bw+8,height:Math.max(h+2,4),fill:"transparent"},svg);
+      const show=ev=>showTip(ev,m+" 行（合計 "+tot(m).toFixed(1)+" ms）",keys.map(kk=>({color:kk[2],label:kk[1],value:D.stages[m][kk[0]].toFixed(1)+" ms"})));
+      hit.addEventListener("pointermove",show); hit.addEventListener("pointerleave",hideTip);
+    });
+    el("text",{x:x+bw/2,y:y(tot(m))-5,"text-anchor":"middle",class:"val"},svg,tot(m).toFixed(1));
+    el("text",{x:x+bw/2,y:H-14,"text-anchor":"middle"},svg,m+" 行");
+  });
+  legend(f,keys.map(k=>({label:k[1],color:k[2]})));
+  tableView(f,["ステージ",...rows.map(m=>m+" 行")],[...keys.map(k=>[k[1],...rows.map(m=>D.stages[m][k[0]].toFixed(2))]),["合計（同期あり）",...rows.map(m=>tot(m).toFixed(1))]]);
+})();
+// c7 cycle vs needed
+(function(){ const f=document.getElementById("c7"); const c=D.cycle;
+  const groups=[{name:"64 行（平均 "+c.tpp64.toFixed(1)+" トークン確定）",vals:[c.cur64,c.need64]},{name:"128 行（平均 "+c.tpp128.toFixed(1)+" トークン確定・オフライン見積）",vals:[c.est128,c.need128]}];
+  grouped(f,groups,[{label:"現状（64 行は実測、128 行は推定）",color:"var(--s1)",labelBars:true},{label:"1000 tok/s に必要",color:"var(--s2)",labelBars:true}],{max:180,unit:" ms",dec:1,aria:"cycle time vs needed"});
+  legend(f,[{label:"現状（64 行は実測、128 行は推定）",color:"var(--s1)"},{label:"1000 tok/s に必要なサイクル時間",color:"var(--s2)"}]);
+  const n=document.createElement("div"); n.className="note"; n.textContent="XMX ピーク下限（GEMM だけ）は 64 行で "+D.floor[64].toFixed(1)+" ms、128 行で "+D.floor[128].toFixed(1)+" ms。GEMM 以外が 64 行で約 29 ms あるため、必要時間 59.5 ms は GEMM をピークの 100% で動かしても届かない。"; f.appendChild(n);
+  tableView(f,["構成","現状 ms","必要 ms","現状 tok/s"],[["64 行",c.cur64,c.need64,(c.tpp64/c.cur64*1000).toFixed(0)],["128 行（推定）",c.est128,c.need128,(c.tpp128/c.est128*1000).toFixed(0)]]);
+})();
+</script>
+</body>
+</html>

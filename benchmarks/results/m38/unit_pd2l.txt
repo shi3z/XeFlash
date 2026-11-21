@@ -1,0 +1,24 @@
+device   : Intel(R) Arc(TM) Pro B60 Graphics (driver 1.18.40196+15)
+memory   : 23.91 GiB total, 22.48 GiB free, max single allocation 22.71 GiB
+threads  : 160 EU x 8 = 1280   SLM 128 KiB   2400 MHz
+launch   : 2.22 us queued, 7.59 us with a wait per launch
+
+matrix              shape    fmt  tok  tpt  seg        ms   ms(med)     Gw/s     GB/s     TOPS  check
+mlp.gate/up    17408x5120     s4   64   32    1    0.1383    0.1383    644.4    322.2    82.48  exact
+mlp.gate/up    17408x5120 s4+a16   64   32    1    0.1779    0.1780    501.1    250.6   128.29  exact
+mlp.down       5120x17408     s4   64   32    1    0.1871    0.1871    476.3    238.2    60.97  exact
+mlp.down       5120x17408 s4+a16   64   32    1    0.2626    0.2626    339.4    169.7    86.88  exact
+gdn.qkv        10240x5120     s4   64   32    1    0.0774    0.0775    677.0    338.5    86.65  exact
+gdn.qkv        10240x5120 s4+a16   64   32    1    0.0983    0.0984    533.3    266.6   136.51  exact
+merged.qkvz    16384x5120     s4   64   32    1    0.1338    0.1338    626.9    313.4    80.24  exact
+merged.qkvz    16384x5120 s4+a16   64   32    1    0.1805    0.1807    464.8    232.4   118.99  exact
+merged.attn_qkv   14336x5120     s4   64   32    1    0.1261    0.1262    581.9    290.9    74.48  exact
+merged.attn_qkv   14336x5120 s4+a16   64   32    1    0.1389    0.1390    528.6    264.3   135.31  exact
+merged.gate_up   34816x5120     s4   64   32    1    0.2720    0.2721    655.3    327.7    83.88  exact
+merged.gate_up   34816x5120 s4+a16   64   32    1    0.3301    0.3303    540.1    270.0   138.26  exact
+out_proj        5120x6144     s4   64   32    1    0.0646    0.0646    487.0    243.5    62.33  exact
+out_proj        5120x6144 s4+a16   64   32    1    0.0916    0.0917    343.3    171.7    87.89  exact
+lm_head       248320x5120     s4   64   32    1    1.8024    1.8028    705.4    352.7    90.29  exact
+lm_head       248320x5120 s4+a16   64   32    1    2.3840    2.3870    533.3    266.6   136.52  exact
+
+wrote benchmarks/results/m38/unit_pd2l.json

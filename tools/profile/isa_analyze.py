@@ -28,7 +28,8 @@ def kernel_label(spv):
 def disasm(spv, tag):
     od = '/tmp/claude-1000/isa_an_' + tag
     shutil.rmtree(od, ignore_errors=True)
-    subprocess.run(['ocloc', 'compile', '-spirv_input', '-file', spv, '-device', 'bmg', '-out_dir', od], capture_output=True)
+    extra = os.environ.get('ISA_OCLOC_OPTS')  # e.g. -ze-opt-large-register-file for kernels launched with the grf_size<256> property
+    subprocess.run(['ocloc', 'compile', '-spirv_input', '-file', spv, '-device', 'bmg', '-out_dir', od] + (['-options', extra] if extra else []), capture_output=True)
     b = glob.glob(od + '/*.bin')
     if not b:  # some modules (e.g. the 3-bit kernels) only build with the ESIMD front end
         subprocess.run(['ocloc', 'compile', '-spirv_input', '-file', spv, '-device', 'bmg', '-out_dir', od, '-options', '-vc-codegen'], capture_output=True)

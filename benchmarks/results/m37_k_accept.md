@@ -1,0 +1,12 @@
+edit_code|sticky|K=31|passes 343|copy passes 193|tok/pass 13.73
+edit_code|sticky|K=63|passes 276|copy passes 126|tok/pass 17.06
+edit_code|sticky|K=127|passes 244|copy passes 94|tok/pass 19.30
+edit_code|sticky|K=255|passes 228|copy passes 78|tok/pass 20.65
+edit_jsonl|sticky|K=31|passes 98|copy passes 93|tok/pass 29.12
+edit_jsonl|sticky|K=63|passes 54|copy passes 49|tok/pass 52.85
+edit_jsonl|sticky|K=127|passes 32|copy passes 27|tok/pass 89.19
+edit_jsonl|sticky|K=255|passes 21|copy passes 16|tok/pass 135.90
+edit_jsonl_long|sticky|K=31|passes 215|copy passes 210|tok/pass 30.20
+edit_jsonl_long|sticky|K=63|passes 113|copy passes 108|tok/pass 57.46
+edit_jsonl_long|sticky|K=127|passes 64|copy passes 59|tok/pass 101.45
+edit_jsonl_long|sticky|K=255|passes 38|copy passes 33|tok/pass 170.87

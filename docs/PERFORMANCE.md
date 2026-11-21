@@ -2473,3 +2473,124 @@ edit_jsonl_long|hv4+bd2:fixed8|586.5 (586.5-586.6)|59.04|1.000|94.99|1.65|5/5|5/
 Result: JSONL edit **323 (16 rows) / 502 (32) / 644 tok/s (64)** from 277 with bdraft2 alone and 25.9 greedy; long JSONL edit 310 / 465 / **591**; code edit 261 / 344 / 372 (from 105). Every configuration gives the same tokens and state as greedy in all 5 repeats (the JSONL answers equal the official expected text 5/5; the code edit stays 0/5 for greedy and all configurations, the 4-bit model's own deviation).
 The spread over 5 processes is below 0.2 tok/s; the final binary reproduces 323.2 / 502.1 / 644.1 on the JSONL edit (`m36/final_jsonl.log`). 600 tok/s is reached on the JSONL edit (644), not yet on the long JSONL edit (591) and not on the code edit (372: only 62% of its passes are copy passes of that length, the rest is the model's own text).
 Main pass at 64 rows 86-95 ms (9% over the 85 ms of a plain pass: commit + the drafter catch-up), so the cycle is now 94% Main; what is left is Main itself: GEMM 57 ms at 64 rows (Part Z), GDN ~14 ms, attention (+7 ms at 8K).
+
+
+## Part AD — 64-row GEMM: why the XMX stays at 60-70%, a faster kernel for 33..96 rows, and where 1000 tok/s stops (2026-11-21)
+
+### AD1. What 1000 tok/s needs (JSONL edit)
+tok/s = tokens per pass / cycle. Measured at 64 rows (Part AC): 59.5 tokens per pass, so 1000 tok/s needs a cycle (Main + draft + commit) of **59.5 ms**; the cycle was 88.5 ms.
+At 128 rows the copy candidates would give 89.2 tokens per pass (JSONL edit; 101.5 on the long JSONL edit; exact offline replay, `m37_k_accept.md`), needing **89 ms** (100 ms).
+Floors: all s4 weights are 25.6 G; a 64-row pass does 6.55 TOP of int8 work (weights x 2 x rows x 2 planes of the 16-bit activations) = **33.3 ms at the 196.5 TOPS XMX peak** (66.7 ms at 128 rows).
+The rest of the pass at 64 rows (profile `m37/detail_3k.log`, synchronised stages, ms): GEMM 56.9 + head 3.2, GDN 14.2, attention 6.5, mlp-act 6.1, norm 3.1, quant 3.4 (total 93.4 with the waits, 85.3 unprofiled): everything except the GEMM is ~29 ms.
+So 59.5 ms is out of reach even with the GEMM at 100% of the peak (33.3 + 29 = 62.3 ms).
+
+### AD2. VTune and ISA of the 16-bit-activation GEMM (rows 16 / 64 / 128; `scripts/vtune_a16.sh`, `m37/vtune/`; interactive charts: `m37/vtune_report.html`)
+GEMM at 64 rows: 57.5 ms = **58% of the XMX peak** (128 rows: 101 ms, 66%); best single kernel 75% (gate+up with the new kernel). Counters of the old (split) kernel, gate+up: 16 rows XMX 24%, 64 rows 61%, 128 rows 68%; DRAM read 374 / 235 / 131 GB/s
+(a64 row pass reads each weight once: not DRAM bound); XVE stalled 55%, SBID 38%, Send 40%, occupancy 92%, no spill, 128 GRF.
+Every DPAS (16 rows x 8 tokens x 32 K) consumes a fresh 256-byte activation tile from L1 (the weight tile sits in registers and is reused over the 8 DPAS of a tile): at 71% of the peak that is 17 G DPAS/s x 256 B = **4.4 TB/s of L1 load traffic**
+(1.4 GB per gate+up call against 0.09 GB of weights); the L3 sees only 0.5-0.6 TB/s, the DRAM 0.2-0.3. The XMX is limited by this operand stream (load-queue full: Send stall, and load latency: SBID stall), not by DRAM, DPAS issue or registers.
+
+### AD3. Four kernel variants against the split kernel at 64 rows (`xf-bench --cold`, `XF_GEMM_A16_32`; hardware counters `scripts/vtune_modes.sh`, `m38/vtune/`)
+ISA of the hot loop, 2 tiles per trip (`isa_analyze.py`; for the 256-GRF kernels `ISA_OCLOC_OPTS=-ze-opt-large-register-file`, which is what the runtime applies for the `grf_size<256>` kernel property):
+
+variant|label|GRF|scratch|spill sends|loads/trip|load B/trip|dpas/trip|loop instr|SBID waits|loads before 1st wait|int-alu|sync
+split (128 GRF, 16 tok/thread)|submit<0,8,2,1,true,2,false>|128|False|0|10|2560|8|35|4|5|7|3
+lgrf (256 GRF, 32 tok/thread)|submit<0,8,4,1,true,2,true>|256|False|0|18|4608|16|55|9|9|7|7
+rb2 (256 GRF, 2 row blocks x 16 tok)|submit<0,8,2,1,true,2,true,2>|256|False|0|12|3072|16|49|5|6|9|4
+rb2s (128 GRF, 2 row blocks x 16 tok)|submit<0,8,2,1,true,2,false,2>|128|False|0|12|3072|16|51|7|6|9|6
+pd2 (128 GRF, distance 2, 16 tok)|submit<0,8,2,1,true,3,false,1>|128|False|0|20|5120|16|59|9|5|12|7
+pd2l (256 GRF, distance 2, 32 tok)|submit<0,8,4,1,true,3,true,1>|256|False|0|36|9216|32|94|14|1|12|10
+
+Unit time per shape, ms (all exact against the CPU reference):
+
+shape (64 rows)|split ms (exact)|lgrf ms (exact)|rb2 ms (exact)|rb2s ms (exact)|pd2 ms (exact)|pd2l ms (exact)
+merged.qkvz|0.2063 (y)|0.1684 (y)|0.2117 (y)|0.1658 (y)|0.2037 (y)|0.1805 (y)
+merged.attn_qkv|0.1592 (y)|0.1334 (y)|0.1652 (y)|0.1596 (y)|0.1621 (y)|0.1389 (y)
+out_proj|0.0871 (y)|0.0795 (y)|0.0868 (y)|0.0927 (y)|0.0926 (y)|0.0916 (y)
+merged.gate_up|0.3692 (y)|0.3101 (y)|0.3810 (y)|0.3520 (y)|0.3737 (y)|0.3301 (y)
+mlp.down|0.1997 (y)|0.2330 (y)|0.2123 (y)|0.2331 (y)|0.2222 (y)|0.2626 (y)
+lm_head|2.9729 (y)|2.3579 (y)|2.6238 (y)|2.3949 (y)|2.5655 (y)|2.3840 (y)
+GEMM sum @64 rows|57.4 ms|52.4 ms|59.0 ms|56.3 ms|59.0 ms|57.1 ms
+
+Counters at 64 rows (spill 0 everywhere):
+
+mode|shape|avg us|spill|GRF|XVE act%|stall%|idle%|occ%|XMX%|ALU0%|ALU1%|SBID%|Send%|DistAcc%|L3 miss%|DRAM GB/s|L3 read GB/s|XMX instr/call (M)|ALU1 instr/call (M)
+split|merged.gate_up|369|0|128|38.3|55.3|6.4|92.3|60.8|1.0|6.0|38.0|39.7|1.7|44.0|235|527|5.39|8.48
+split|mlp.down|196|0|128|33.4|59.8|6.7|93.0|55.7|0.3|4.1|39.5|47.6|0.6|78.0|225|428|2.61|3.05
+split|merged.qkvz|206|0|128|31.5|46.7|21.8|75.8|50.0|0.8|4.9|32.1|32.5|1.2|47.5|194|405|2.47|3.88
+lgrf|merged.gate_up|312|0|256|42.1|51.7|6.1|91.2|71.5|1.0|4.3|31.1|20.1|3.3|47.1|276|593|5.33|5.08
+lgrf|mlp.down|225|0|256|28.0|66.2|5.8|94.1|48.7|0.2|1.9|34.5|59.6|0.6|97.0|196|373|2.62|1.67
+lgrf|merged.qkvz|170|0|256|35.6|49.8|14.6|77.8|59.9|0.9|3.6|32.1|19.4|2.6|48.0|233|517|2.45|2.33
+rb2|merged.gate_up|383|0|256|34.7|58.8|6.5|92.3|58.7|0.9|3.9|38.0|34.1|1.9|47.1|228|475|5.42|5.76
+rb2|mlp.down|208|0|256|29.8|63.8|6.4|93.5|52.5|0.2|2.5|42.0|45.8|0.5|83.5|210|399|2.59|1.96
+rb2|merged.qkvz|211|0|256|29.0|50.7|20.3|77.5|49.0|0.7|3.3|33.1|29.5|1.5|48.5|190|388|2.48|2.63
+rb2s|merged.gate_up|352|0|128|37.1|55.6|7.3|83.6|63.6|0.9|4.2|30.8|22.0|0.8|83.4|249|388|5.35|5.66
+rb2s|mlp.down|228|0|128|27.1|67.4|5.5|47.2|48.2|0.2|2.3|49.3|7.6|0.3|94.0|196|373|2.66|2.00
+rb2s|merged.qkvz|166|0|128|35.5|47.5|17.0|69.0|61.2|0.9|4.1|22.4|11.0|1.0|67.2|242|444|2.45|2.60
+
+Reading:
+* **lgrf = 256 GRF, 32 tokens per thread (adopted for 33..96 rows):** the weight tile is loaded and expanded once per 32 tokens instead of twice, ALU1 instructions -40% (8.5 -> 5.1 M per call), Send stall 40% -> 20%, XMX 61% -> 71.5%, 369 -> 312 us (-15%) although occupancy is the same 91% of a half-size thread pool. Loads per DPAS 1.25 -> 1.13.
+* **rb2 (two row blocks per thread, activation tile shared by two weight tiles, 256 GRF) is not faster** although it has the fewest loads per DPAS (0.75): Send 34%, SBID 38%, XMX 59%, 383 us. With 4 threads per EU there is too little latency hiding: the occupancy loss cancels the saved loads. **rb2s** (same at 128 GRF, no spill) reaches 63.6% / 352 us (+5% over split), 83% occupancy; on `qkvz` it is the best (166 us).
+* **`down` gets slower with lgrf** (196 -> 225 us, XMX 56 -> 49%, Send 60%): 320 row blocks x 2 token groups = 640 threads = exactly 4 per EU, K = 17408: a long loop with too few threads in flight. So `down` stays on the split kernel.
+* **A longer prefetch distance does not reduce the stalls.** Variants with the loads of tile t + 2 issued before the DPAS of tile t (four rotating buffers, `pd2`: 128 GRF / `pd2l`: 256 GRF) are slower than their prefetch-1 versions (59.0 vs 57.4 ms and 57.1 vs 52.4 ms): IGC reschedules the loads close to their use (`pd2l`: 1 load before the first SBID wait, against 9 of 18 in `lgrf`), so the source-level distance does not become a real one.
+* **Where are the duplicate loads?** Weights: the 4 (2 with lgrf) token groups of a row block are adjacent threads of one work-group and read the same tile from L1 (L3 read 2.2x the DRAM traffic, DRAM = one read of the weights); activations: every thread re-reads its token planes from L1 (87% L1 hit, 4.4 TB/s), halving this with rb2 did not pay because of the occupancy.
+Not adopted: rb2, rb2s, pd2, pd2l (kept behind `XF_GEMM_A16_32=rb2|rb2s|pd2|pd2l`; 32-token pipelined loop at 128 GRF `pipe` spills, 79.8 ms).
+
+### AD4. Dispatch (default, `kernels/gemm/gemm.cpp`): 33..96 rows and K <= 8192 -> lgrf, otherwise the split kernel
+Per-shape, per-row-count measurement (split / lgrf, ms; `m38/unit_rows.md`): 24 rows 41.9 / 40.3, 32 rows 41.8 / 42.4 (one token group: too few threads), 48 rows 57.0 / 50.8, 96 rows 84.9 / 80.8, 128 rows 101.5 / 104.6 (best per shape: 100.0).
+
+rows|merged.qkvz: split / lgrf (ms)|merged.attn_qkv: split / lgrf (ms)|out_proj: split / lgrf (ms)|merged.gate_up: split / lgrf (ms)|mlp.down: split / lgrf (ms)|lm_head: split / lgrf (ms)|sum split|sum lgrf|sum best-per-shape
+24|0.128 / 0.123|0.122 / 0.115|0.063 / 0.064|0.257 / 0.250|0.183 / 0.169|1.712 / 1.631|41.9|40.3|40.2
+32|0.128 / 0.130|0.122 / 0.120|0.063 / 0.065|0.257 / 0.256|0.180 / 0.188|1.716 / 1.641|41.8|42.4|41.6
+48|0.206 / 0.169|0.159 / 0.134|0.087 / 0.076|0.369 / 0.309|0.195 / 0.212|2.906 / 2.312|57.0|50.8|49.6
+96|0.243 / 0.213|0.237 / 0.206|0.128 / 0.113|0.525 / 0.472|0.354 / 0.402|4.932 / 4.143|84.9|80.8|77.8
+128|0.331 / 0.317|0.285 / 0.274|0.123 / 0.121|0.670 / 0.685|0.375 / 0.432|6.297 / 5.823|101.5|104.6|100.0
+
+Unit GEMM sum per pass, 16-bit activations, new default: **16 rows 35.0 ms (unchanged), 32 rows 42.0 (unchanged), 64 rows 50.5 (was 57.4)**:
+
+shape|16 rows ms|32 rows ms|64 rows ms (TOPS, % of peak)
+merged.qkvz|0.1041|0.1287|0.1709 (126, 64%)
+merged.attn_qkv|0.0924|0.1230|0.1364 (138, 70%)
+out_proj|0.0571|0.0665|0.0791 (102, 52%)
+merged.gate_up|0.2286|0.2566|0.3107 (147, 75%)
+mlp.down|0.1349|0.1785|0.1998 (114, 58%)
+lm_head|1.5602|1.7064|2.3439 (139, 71%)
+GEMM sum|35.0 ms|42.0 ms|50.5 ms
+
+### AD5. Exactness and end-to-end
+* One pass of n rows against passes of <= 16 rows (`scripts/wide_check.sh`, `m39/wide/`): 23 cases (17..64 rows, xmx / fp32 / fp16 / bf16 KV, JSONL / code / 8K prompts), **0 differences** in tokens + logit bits, GDN state (48 layers), KV cache (16 layers), whole state; the digest (logits, per-layer states) of the new default equals `XF_GEMM_A16_32=split` at 32 and 64 rows.
+* Main pass (position 2927, `xf-run wide`): 16 rows 44.81 ms (unchanged), 32 rows 56.63 (unchanged), **64 rows 85.10 -> 81.26**. In the engine the GEMM stage of a 64-row pass went 56.9 -> 52.0 ms and the head 3.2 -> 2.6 (profile); less than the unit gain (57.4 -> 50.5) because the engine alternates 128- and 256-GRF kernels.
+* 5 repeats, one process each (`scripts/edit_lgrf_suite.sh`, `m40/`; s4-cal, XF_KV=xmx; same tokens and state as greedy in all 5 repeats; JSONL answers equal the official expected text 5/5, code edit 0/5 as before):
+
+task|config|tok/s mean (min-max)|tokens/pass|accept1|Main ms/pass|Draft ms/pass|answer = expected|same tokens+state as greedy
+edit_code|greedy|25.6 (25.6-25.6)|1.00|-|39.10|-|0/5|-
+edit_code|bd2:adapt-cost|104.9 (104.9-105.0)|5.48|0.973|44.62|6.62|0/5|5/5
+edit_code|hy4+bd2:fixed8|260.6 (260.6-260.6)|12.90|0.806|47.01|1.11|0/5|5/5
+edit_code|hw4+bd2:fixed16|336.4 (336.4-336.5)|20.65|0.806|57.17|2.38|0/5|5/5
+edit_code|hv4+bd2:fixed16|374.7 (374.7-374.7)|29.07|0.806|71.74|3.52|0/5|5/5
+edit_code|hv4+bd2:fixed8|383.3 (383.3-383.4)|28.89|0.806|70.01|3.04|0/5|5/5
+edit_jsonl|greedy|25.9 (25.9-25.9)|1.00|-|38.63|-|5/5|-
+edit_jsonl|bd2:adapt-cost|277.4 (277.2-277.5)|15.26|1.000|46.11|7.40|5/5|5/5
+edit_jsonl|hy4+bd2:fixed8|323.3 (323.3-323.4)|15.60|1.000|46.57|0.15|5/5|5/5
+edit_jsonl|hw4+bd2:fixed16|502.2 (502.2-502.3)|31.03|1.000|58.63|0.77|5/5|5/5
+edit_jsonl|hv4+bd2:fixed16|671.8 (671.6-671.9)|59.48|1.000|82.70|1.87|5/5|5/5
+edit_jsonl|hv4+bd2:fixed8|647.4 (647.1-647.5)|57.10|1.000|82.61|1.74|5/5|5/5
+edit_jsonl_long|greedy|25.3 (25.3-25.3)|1.00|-|39.55|-|5/5|-
+edit_jsonl_long|bd2:adapt-cost|262.4 (262.3-262.5)|15.10|1.000|48.66|7.38|5/5|5/5
+edit_jsonl_long|hy4+bd2:fixed8|309.5 (309.5-309.6)|15.72|1.000|49.15|0.11|5/5|5/5
+edit_jsonl_long|hw4+bd2:fixed16|465.2 (465.2-465.3)|30.78|1.000|63.09|0.67|5/5|5/5
+edit_jsonl_long|hv4+bd2:fixed16|613.8 (613.7-613.8)|59.58|1.000|91.33|1.69|5/5|5/5
+edit_jsonl_long|hv4+bd2:fixed8|609.3 (609.3-609.3)|59.04|1.000|91.22|1.65|5/5|5/5
+
+JSONL edit 644.4 -> **671.8 tok/s** (64 rows), long JSONL edit 590.9 -> **613.8**, code edit 371.8 -> 383.3 (fixed8); 16 / 32 rows unchanged (323.3 / 502.2 on the JSONL edit).
+
+### AD6. 128 rows: realistic cycle (estimate from measured parts) and tokens per pass
+GEMM at 128 rows: 100.0 ms (best per shape; the 256-GRF kernel does not help there, 66% of the peak), non-GEMM stages extrapolated linearly from the 32 -> 64-row slopes: GDN ~24.5, attention ~12, mlp-act ~12, norm + quant ~10 (profile scale), x0.92 for the synchronisation of the profile = ~54 ms; commit + draft ~5 ms: **cycle ~160 ms**.
+Tokens per pass 89.2 (JSONL edit) / 101.5 (long): **~560 / ~630 tok/s, no better than the measured 64 rows (672 / 614)**. VRAM: the 128-row workspace is ~0.5 GiB at 8K (logits 127 MB, attention partials 107 MB at 8K); fits at short contexts, not at 60K. Not implemented: the estimate says it cannot beat 64 rows.
+
+### AD7. What limits the XMX, and where 1000 tok/s stops
+1. The XMX reaches 58% (old) / 71% (new kernel, 75% on the best shape) of the 196.5 TOPS peak at 64 rows. The limit is the **operand stream**: each DPAS needs a fresh 256-byte activation tile loaded from L1 (4.4 TB/s at 71%), the load queue is full (Send stall 20-40%) and the load latency is exposed (SBID 31-38%) because the compiler keeps only about one tile of loads in flight and 256 GRF halves the number of threads that could hide it.
+   Sharing the activation tile between two weight tiles (rb2) halves the traffic but costs registers, and the lost occupancy cancels it; a deeper source-level prefetch is undone by IGC's scheduling. Not tried: staging the activation planes in SLM per work-group, or a hand-scheduled loop with explicit load/DPAS interleaving.
+2. The 16-bit activations double the work (2 planes); with 8-bit activations the 64-row GEMM would be 36 ms, but that changes the results (not allowed).
+3. 1000 tok/s on the JSONL edit needs a 59.5 ms cycle at 64 rows: GEMM floor 33.3 ms + 29 ms of GDN / attention / norm / mlp that does not shrink with the XMX. Today: 88.5 ms (GEMM 50.5 + head ~2.6 + the rest ~29 + commit/draft ~4). At 128 rows 89 ms would be needed against ~160.
+   **Not reached; the measured best is 671.8 tok/s (JSONL edit), 613.8 (long JSONL edit).** Remaining levers by size: GDN core (14 ms at 64 rows, bound by its serial chain), the GEMM operand stream (up to ~10 ms if the XMX reached 90%), attention (6.5 ms, more at long context), mlp-act / norm / quant (13 ms of mostly launch-bound small kernels).
