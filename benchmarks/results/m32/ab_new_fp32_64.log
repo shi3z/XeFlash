@@ -1,0 +1,16 @@
+loaded /data/B60special/models/xfm/qwen38-27b-s4-cal.xfm in 6.2s, context capacity 4096 tokens
+device allocations      count          GiB
+  DeltaNet state           48       0.4288
+  KV cache                 16       0.5000
+  MTP                       5       0.3687
+  MTP KV cache              1       0.0312
+  RoPE table                2       0.0010
+  body matrices           256      11.3428
+  embedding (bf16)          1       2.3682
+  lm_head                   1       0.5920
+  matrix scales           779       0.0393
+  small tensors           408       0.0978
+  workspace                 1       0.2431
+  TOTAL requested        1518      16.0130
+driver free VRAM: 22.4843 GiB before, 6.4340 GiB after, difference 16.0503 GiB
+Error: Runtime("xf_forward: Total number of work-items in a work-group cannot exceed 64 for this kernel")

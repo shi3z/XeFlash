@@ -2354,3 +2354,122 @@ The estimate of Part Z was 61.8 ms (3K): measured 59.8. The extrapolation of the
 ### AA3. Consequence
 With a 32-row Main pass of 60-64 ms the width-adaptive hybrid (Part Z estimate, JSONL candidates of 29-30 tokens per pass) is estimated at ~440 tok/s after the model's bias correction (measured 16-row hybrid: 296 / 284).
 Not done yet: the hybrid itself at 32 rows in `xf-run cmp` (candidate longer than 15 tokens -> 32-row verify; bdraft2 tap catch-up of up to 32 rows through the two tap blocks), and its end-to-end measurement.
+
+
+## Part AB — where the GDN time grows with the number of rows (2026-11-20)
+
+`XF_PROF_DETAIL=1 XF_KV=xmx xf-run gen <s4-cal> edit_jsonl.json 8 --profile --ctx 4096` (log `benchmarks/results/m30/gdn_detail_3k.log`; 6 passes x 48 DeltaNet layers per row count;
+"net" = per-kernel time without the empty-queue synchronisation, per layer). GDN is independent of the context length, so one position is enough.
+
+kernel|m=1 us/layer|m=8 us/layer|m=16 us/layer|m=24 us/layer|m=32 us/layer|16->32 (us/layer)|16->32 (ms/pass, x48)|share of growth|slope us/row/layer (16->32)
+gdn:core|43.5|59.0|77.9|96.2|114.8|+36.9|+1.77|49%|2.31
+gdn:gemv-ab|28.0|25.7|40.7|44.9|58.4|+17.7|+0.85|23%|1.11
+gdn:conv|15.8|15.8|23.3|30.9|38.0|+14.7|+0.71|19%|0.92
+gdn:post|14.9|15.3|15.9|15.5|21.3|+5.4|+0.26|7%|0.34
+gdn:gate|9.4|9.9|9.7|9.6|10.6|+0.9|+0.04|1%|0.06
+gdn:qk-norm|9.6|10.3|10.0|10.3|10.4|+0.4|+0.02|1%|0.03
+sum|121.2|136.0|177.5|207.4|253.5|+76.0|+3.65|100%|4.75
+sum ms/pass (x48)|5.82|6.53|8.52|9.96|12.17
+
+Measured: **gdn:core is half of the growth (49%), not all of it.** From 16 to 32 rows the GDN stage grows by 76 us per layer = 3.65 ms per pass (the stage profile of Part AA gave +3.7 ms): core +1.77 ms,
+gemv-ab (the a/b gate projections, 96 rows) +0.85 ms, conv +0.71 ms, post +0.26 ms; gate and qk-norm are flat (10 us, launch-bound). Per extra row: core 2.3 us/layer
+(0.11 ms per pass), gemv-ab 1.1, conv 0.9, post 0.3. Linear extrapolation to 64 rows: GDN about 20 ms (now 12.2 at 32 rows in this accounting, 8.5 at 16), i.e. the next-largest
+non-GEMM growth after attention at long context.
+
+Why (hypotheses from the code, not yet tested): all three growing kernels re-read data per token that does not depend on the token.
+* `gdn:core` (`k_gdn_core`): one thread per (value head, column) walks the tokens; every token it reloads k and q (2 x 512 B) that all 128 threads of the head load too:
+  6144 threads x 1 KB x 32 tokens = 200 MB of L1/L3 loads per layer in 115 us, about 1.7 TB/s, the ceiling seen for activation re-reads in Part P. The chain (decay, hsum, update, hsum) per token is also serial.
+* `gdn:gemv-ab` (`k_gemv_f32`, 96 x m threads): each thread streams its own 20 KB weight row for every token: 63 MB of cached weight re-reads at 32 rows.
+* `gdn:conv` (`k_conv`, m x 160 threads): each output row re-reads 4 input rows (window overlap), 4x the loads of a sliding window.
+
+What is compatible with the bit-exact condition (identical results to the 16-row / 1-row passes, tested by `xf-run wide`): changes that keep the arithmetic of every output element unchanged and only share loads:
+two or four value columns per thread in the core (k, q loaded once, independent chains interleaved), several tokens per thread in gemv-ab (one weight row read, per-token accumulators in the same order),
+a sliding window over tokens in conv. Estimated gain at 32 rows 3-5 ms of the 60 ms pass (6-8%), ~10 ms at 64 rows; to be measured.
+Rewriting the delta rule as a matrix product over 16-32 tokens (chunked / WY form) removes the token-serial dependency but changes the floating-point summation order, so the result is no longer bit-identical to
+single-token decoding: the verifier would then define the "greedy" output only up to rounding, and the same-tokens / same-state guarantee used throughout these measurements would have to be replaced by a tolerance and a measured divergence rate. Not attempted; it only pays if the bit-exact load sharing above is not enough.
+
+
+## Part AC — width-adaptive copy hybrid at 32 / 64 rows: reproducibility, device-side ring catch-up, faster GDN kernels, 64-row engine (2026-11-21)
+
+### AC1. Reproducibility of the 32-row hybrid (Part AA state, `scripts/edit_wide_hybrid_suite.sh`, `benchmarks/results/m31/`)
+5 repeats = 5 processes per task, 450.7 tok/s (450.6-450.7) on the JSONL edit (single run before: 450.5), 419.9 (419.6-420.1) on the long JSONL edit, 315.7 on the code edit (hw4/fixed8); every run identical to greedy (tokens and state); the greedy answer of the JSONL tasks equals the official expected text 5/5.
+
+### AC2. Device-side ring catch-up of the drafter
+`xbd_ctx_dev` (`experimental/bdraft2/xbd.cpp`): the tap block of the main engine is copied device-to-device into the drafter's capture buffer (waited for, the main engine overwrites its taps next) and the ring update is queued without waiting; `Bdraft2::ctx_dev` and `ctx_block` in `tools/run`.
+Passes of 17..64 rows keep their taps in blocks of 16 rows (`Engine::read_taps_block`, `taps_device_ptr_block`). Draft time per pass of the 32-row hybrid on the JSONL edit: **3.47 -> 0.78 ms** (`XF_BD_HOSTCTX=1` = old host path, `m33/host_hw.log` against `dev_hw.log`), 484.4 -> 502.3 tok/s; the 16-row hybrid 1.8 -> 0.15 ms.
+
+### AC3. GDN kernels (bit-identical to the originals; originals kept with `XF_GDN_OLD=1`)
+`k_gdn_core_cb<CB>` (CB value columns per thread: k and q loaded once, CB independent chains), `k_gdn_commit_cb`, `k_conv_tb<TB>` (TB tokens per thread, sliding window, weights loaded once), `k_gemv_f32_tb<TB>` (a weight row read once for TB tokens);
+per-token arithmetic unchanged. Per-kernel time (`XF_PROF_DETAIL`, net us per layer; `scripts/gdn_detail_sweep.sh`, `m32/detail/`): cb* rows = core variants with conv/gemv at TB 4, tb* rows = conv/gemv token block 2/8/16 with the core at CB 2.
+
+config|kernel|m=16|m=32|m=64   (net us per layer)
+old|gdn:core|78.9|117.0|193.9
+cb1|gdn:core|79.0|116.4|194.1
+cb2|gdn:core|51.7|77.8|135.6
+cb4|gdn:core|49.3|77.5|135.2
+tb2|gdn:core|51.3|77.8|135.7
+tb8|gdn:core|52.0|77.4|135.2
+tb16|gdn:core|51.8|77.6|135.0
+old|gdn:gemv-ab|40.8|58.5|90.9
+cb1|gdn:gemv-ab|45.9|50.8|92.4
+cb2|gdn:gemv-ab|46.5|51.0|92.7
+cb4|gdn:gemv-ab|46.8|51.1|92.3
+tb2|gdn:gemv-ab|35.1|58.1|85.7
+tb8|gdn:gemv-ab|78.1|76.7|87.3
+tb16|gdn:gemv-ab|140.9|137.9|137.2
+old|gdn:conv|23.5|38.4|63.0
+cb1|gdn:conv|15.5|18.1|28.3
+cb2|gdn:conv|15.9|18.5|28.5
+cb4|gdn:conv|15.9|18.3|28.1
+tb2|gdn:conv|16.0|23.2|37.7
+tb8|gdn:conv|15.8|17.6|23.6
+tb16|gdn:conv|18.4|18.7|22.3
+
+config|GDN sum m=16 (ms/pass)|m=32|m=64
+old|8.59|12.30|19.03
+cb1|8.43|10.87|17.47
+cb2|7.20|9.06|14.70
+cb4|7.10|9.04|14.64
+tb2|6.61|9.65|14.77
+tb8|8.72|10.22|14.17
+tb16|11.83|13.29|16.47
+
+Findings: the core gains 34% with 2 columns per thread (117 -> 78 us at 32 rows, 194 -> 136 at 64) and nothing more with 4: it is bound by the serial per-token chain (decay, 128-lane reduction, update, reduction), not by the k/q loads.
+conv: 8 tokens per thread -54% (38.4 -> 17.6 us at 32 rows, 63 -> 24 at 64). gemv-ab only has 96 x m / TB threads, so wide blocks starve the GPU: best TB 2 (m <= 16, 40.8 -> 35.1 us), 4 (17..32 rows, 58.5 -> 51.0), 2 (64 rows, 90.9 -> 85.7); a thread count high enough would need splitting the sum over K, which changes the summation order (not bit-identical).
+Defaults: CB 2, conv TB 8, gemv TB by row count. Exactness (`scripts/gdn_ab.sh`, `m32/`, `m33/ab/`): digest of tokens + logit bits + per-layer state hashes identical to `XF_GDN_OLD=1` for 16, 32 and 64 rows (xmx), 32 rows (fp32) and for the CB 1/4 and TB 4 variants.
+Main pass (unprofiled, `xf-run wide`, position 2927): **16 rows 46.72 -> 44.80 ms, 32 rows 59.80 -> 56.64, 64 rows 90.08 -> 85.06**; the commit kernel (the same state update for the accepted tokens) is included in every hybrid cycle.
+
+### AC4. The engine at 64 rows
+`MAXM` / `XF_MAX_TOKENS` / `MAX_TOKENS` = 64. Passes of 33..64 rows use 32 tokens per thread (pad of 32) in the GEMM; the split kernel (Part Z) now gets the padded token count: **bug found by the exactness test**, rows 33..48 (stride mismatch between the 32-token activation layout and the 16-token kernel pad) gave wrong results in all rows
+(`m34/wide`: 48 of 48 rows differ), fixed in `kernels/gemm/gemm.cpp`; 32 and 64 rows were not affected. The SLM attention kernel is limited to 32 rows (work-group of 2 threads per row <= 64); above that the register-tile kernel runs (fp32 / bf16 / fp16 KV).
+Memory: rows per pass are capped by context: 64 up to a context of 32,768, 16 above (the 64-row workspace, with per-layer GDN scratch replicated in 48 layers, would take the 0.4 GiB that is left for the drafter at 60K: the first version used 0.21 GiB more, found by `fit60k`); the 60K footprint is back to exactly the previous one (19.2767 GiB requested, 3.17 GiB free before the drafter, `m36/fit60k_bdraft2.log`).
+Exactness, one pass of n rows against passes of <= 16 rows (`scripts/wide_check.sh`, `m34/wide2/`): 23 cases, **0 differences** in tokens + logit bits, GDN state (48 layers), KV cache (16 layers), whole state: rows 17, 20, 24, 31, 32, 33, 40, 48, 49, 56, 63, 64; xmx / fp32 / fp16 / bf16 KV; JSONL, code and 8K prompts.
+`xf-run cmp --configs hv<min>/<blk>` verifies candidates of >= 32 tokens (up to 63) in one 64-row pass, 16..31 tokens in 32 rows, 4..15 in 16 rows, otherwise bdraft2 with block `<blk>`.
+
+### AC5. End-to-end, 5 repeats (one process each; `scripts/edit_wide64_suite.sh`, `benchmarks/results/m35/`; s4-cal, XF_KV=xmx, n_new = length of the expected answer)
+task|config|tok/s mean (min-max)|tokens/pass|accept1|Main ms/pass|Draft ms/pass|answer = expected|same tokens+state as greedy
+edit_code|greedy|25.6 (25.6-25.6)|1.00|-|39.11|-|0/5|-
+edit_code|bd2:adapt-cost|105.0 (104.8-105.1)|5.45|0.973|44.39|6.58|0/5|5/5
+edit_code|hy4+bd2:fixed8|260.6 (260.5-260.6)|12.90|0.806|47.02|1.11|0/5|5/5
+edit_code|hw4+bd2:fixed16|336.4 (336.3-336.5)|20.65|0.806|57.18|2.38|0/5|5/5
+edit_code|hw4+bd2:fixed8|344.1 (344.0-344.1)|20.56|0.806|55.90|2.04|0/5|5/5
+edit_code|hv4+bd2:fixed16|363.7 (363.7-363.8)|29.07|0.806|74.07|3.53|0/5|5/5
+edit_code|hv4+bd2:fixed8|371.8 (371.7-371.8)|28.89|0.806|72.36|3.04|0/5|5/5
+edit_jsonl|greedy|25.9 (25.9-25.9)|1.00|-|38.63|-|5/5|-
+edit_jsonl|bd2:adapt-cost|277.5 (277.3-277.5)|15.26|1.000|46.10|7.39|5/5|5/5
+edit_jsonl|hy4+bd2:fixed8|323.4 (323.3-323.4)|15.60|1.000|46.56|0.15|5/5|5/5
+edit_jsonl|hw4+bd2:fixed16|502.3 (502.3-502.4)|31.03|1.000|58.62|0.77|5/5|5/5
+edit_jsonl|hw4+bd2:fixed8|492.9 (492.8-493.0)|30.37|1.000|58.54|0.73|5/5|5/5
+edit_jsonl|hv4+bd2:fixed16|644.4 (644.3-644.5)|59.48|1.000|86.46|1.86|5/5|5/5
+edit_jsonl|hv4+bd2:fixed8|620.8 (620.7-620.9)|57.10|1.000|86.38|1.74|5/5|5/5
+edit_jsonl_long|greedy|25.3 (25.3-25.3)|1.00|-|39.55|-|5/5|-
+edit_jsonl_long|bd2:adapt-cost|262.4 (262.3-262.5)|15.10|1.000|48.66|7.39|5/5|5/5
+edit_jsonl_long|hy4+bd2:fixed8|309.5 (309.5-309.6)|15.72|1.000|49.15|0.11|5/5|5/5
+edit_jsonl_long|hw4+bd2:fixed16|465.2 (465.2-465.3)|30.78|1.000|63.09|0.67|5/5|5/5
+edit_jsonl_long|hw4+bd2:fixed8|463.6 (463.5-463.6)|30.63|1.000|63.03|0.66|5/5|5/5
+edit_jsonl_long|hv4+bd2:fixed16|590.9 (590.8-590.9)|59.58|1.000|95.10|1.69|5/5|5/5
+edit_jsonl_long|hv4+bd2:fixed8|586.5 (586.5-586.6)|59.04|1.000|94.99|1.65|5/5|5/5
+
+Result: JSONL edit **323 (16 rows) / 502 (32) / 644 tok/s (64)** from 277 with bdraft2 alone and 25.9 greedy; long JSONL edit 310 / 465 / **591**; code edit 261 / 344 / 372 (from 105). Every configuration gives the same tokens and state as greedy in all 5 repeats (the JSONL answers equal the official expected text 5/5; the code edit stays 0/5 for greedy and all configurations, the 4-bit model's own deviation).
+The spread over 5 processes is below 0.2 tok/s; the final binary reproduces 323.2 / 502.1 / 644.1 on the JSONL edit (`m36/final_jsonl.log`). 600 tok/s is reached on the JSONL edit (644), not yet on the long JSONL edit (591) and not on the code edit (372: only 62% of its passes are copy passes of that length, the rest is the model's own text).
+Main pass at 64 rows 86-95 ms (9% over the 85 ms of a plain pass: commit + the drafter catch-up), so the cycle is now 94% Main; what is left is Main itself: GEMM 57 ms at 64 rows (Part Z), GDN ~14 ms, attention (+7 ms at 8K).

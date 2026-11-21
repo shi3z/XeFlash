@@ -14,7 +14,7 @@ use xeflash_model::Container;
 
 use crate::{Device, DeviceBuf, check, ffi};
 
-pub const MAX_TOKENS: usize = 32;
+pub const MAX_TOKENS: usize = 64;
 /// Word offsets in the workspace id block (4 x MAX_TOKENS words): verify ids, greedy ids, greedy logits (f32 bits).
 const IO_VERIFY: usize = MAX_TOKENS;
 const IO_GREEDY: usize = 2 * MAX_TOKENS;
@@ -584,17 +584,17 @@ impl Engine {
         self.ws.read(self.ws_off(ffi::XF_WS_CAP), out)
     }
 
-    /// Rows 16..31 of the captured states of the last pass (passes of more than 16 rows), `[5 taps][16 rows][5120]` as well.
-    pub fn read_taps_hi(&self, out: &mut [f32]) -> Result<()> {
-        if out.len() != 5 * 16 * HIDDEN {
+    /// Rows 16 * `blk` .. 16 * `blk` + 15 of the captured states of the last pass (passes of more than 16 rows keep their taps in blocks of 16 rows), `[5 taps][16 rows][5120]`.
+    pub fn read_taps_block(&self, blk: usize, out: &mut [f32]) -> Result<()> {
+        if out.len() != 5 * 16 * HIDDEN || blk >= MAX_TOKENS / 16 {
             return Err(Error::Invalid("tap buffer must hold 5 x 16 x 5120 values".into()));
         }
-        self.ws.read(self.ws_off(ffi::XF_WS_CAP) + 5 * 16 * HIDDEN * 4, out)
+        self.ws.read(self.ws_off(ffi::XF_WS_CAP) + blk * 5 * 16 * HIDDEN * 4, out)
     }
 
-    /// Device address of the second tap block (rows 16..31 of a longer pass), same shape as the first.
-    pub fn taps_device_ptr_hi(&self) -> *const f32 {
-        unsafe { self.ws.ptr.cast::<u8>().add(self.ws_off(ffi::XF_WS_CAP) + 5 * 16 * HIDDEN * 4).cast() }
+    /// Device address of tap block `blk` (rows 16 * blk .. 16 * blk + 15 of a longer pass), same shape as the first.
+    pub fn taps_device_ptr_block(&self, blk: usize) -> *const f32 {
+        unsafe { self.ws.ptr.cast::<u8>().add(self.ws_off(ffi::XF_WS_CAP) + blk * 5 * 16 * HIDDEN * 4).cast() }
     }
 
     /// Device address of the tap block (`[5][16][5120]` f32, rows 0..15), for a consumer

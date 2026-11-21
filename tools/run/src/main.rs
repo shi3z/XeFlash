@@ -193,6 +193,8 @@ struct RunStats {
     n16: usize,
     /// Passes verified with a copied (prompt-lookup) candidate instead of a drafter's (hybrid runs).
     ncopy: usize,
+    /// Of those, passes verified with more than 16 rows (width-adaptive hybrid).
+    nwide: usize,
 }
 
 /// Prefill `prompt`, then decode `n_new` tokens greedily with `k` MTP draft
@@ -299,7 +301,7 @@ fn run_once(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, k: usize
     let decode_s = t1.elapsed().as_secs_f64() - hash_s;
     let emitted = out.len();
     out.truncate(n_new);
-    Ok(RunStats { out, emitted, prefill_s, decode_s, passes, t_main, t_mtp, tried, accepted, state, n16: 0, ncopy: 0 })
+    Ok(RunStats { out, emitted, prefill_s, decode_s, passes, t_main, t_mtp, tried, accepted, state, n16: 0, ncopy: 0, nwide: 0 })
 }
 
 /// Speculative decoding with the draft chain on the device: one submission
@@ -363,7 +365,7 @@ fn run_spec(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, k: usize
     let emitted = out.len();
     out.truncate(n_new);
     // The cycle is one submission, so trunk and MTP time are not separable here; see --profile.
-    Ok(RunStats { out, emitted, prefill_s, decode_s, passes, t_main: decode_s, t_mtp: 0.0, tried, accepted, state, n16: 0, ncopy: 0 })
+    Ok(RunStats { out, emitted, prefill_s, decode_s, passes, t_main: decode_s, t_mtp: 0.0, tried, accepted, state, n16: 0, ncopy: 0, nwide: 0 })
 }
 
 /// gen: `<ids.json>[,<ids2.json>...] <n_new> [--mtp K[,K2...]]`. Every prompt
@@ -506,7 +508,7 @@ fn generate(dev: &Device, args: &[String]) -> Result<()> {
             }
         }
         // Separate profiled passes: they synchronise after every stage, so their sum is above the real pass time.
-        for m in [1usize, 8, 16, 24, 32] {
+        for m in [1usize, 8, 16, 32, 48, 64] {
             let mut prof = [0f64; 7];
             let reps = 6;
             let toks: Vec<u32> = (0..m as u32).map(|i| 1000 + i).collect();
@@ -613,6 +615,7 @@ impl Bd {
     fn ctx(&mut self, _: &[f32], _: usize, _: usize) -> Result<()> { Ok(()) }
     fn step(&mut self, _: &[f32], _: usize, _: usize, _: usize, _: u32, _: usize) -> Result<Vec<u32>> { Ok(Vec::new()) }
     fn step_dev(&mut self, _: *const f32, _: usize, _: usize, _: usize, _: u32, _: usize) -> Result<Option<Vec<u32>>> { Ok(None) }
+    fn ctx_dev(&mut self, _: *const f32, _: usize, _: usize) -> Result<bool> { Ok(false) }
 }
 
 /// Speculative decoding with a host-driven draft source: `bd = Some` uses the
@@ -620,15 +623,25 @@ impl Bd {
 /// Verify block is `k + 1` rows. Returns the stats plus seconds spent moving taps.
 /// `block` = 8 or 16 rows per verify pass, or 0 for the adaptive rule (see `Adapt`).
 fn run_ext(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, block: usize, bd: Option<&mut Bd>) -> Result<(RunStats, f64)> {
-    run_ext_mode(dev, e, prompt, n_new, block, bd, false, 0)
+    run_ext_mode(dev, e, prompt, n_new, block, bd, false, 0, 16)
 }
 
 /// `cost` = adaptive rule with the 16/8 cycle-cost ratio measured on this machine, at the current context length
 /// (probe of real 8- and 16-row passes before decoding), instead of the fixed 1.16 of the short-context port notes.
+/// Ring catch-up of the drafter with `n` (<= 16) committed rows held in tap block `blk` of the main engine: device-to-device when allowed and possible, else through the host.
+fn ctx_block(e: &Engine, b: &mut Bd, taps: &mut [f32], blk: usize, n: usize, pos0: usize, dev: bool) -> Result<()> {
+    if dev && b.ctx_dev(e.taps_device_ptr_block(blk), n, pos0)? {
+        return Ok(());
+    }
+    e.read_taps_block(blk, taps)?;
+    b.ctx(taps, n, pos0)
+}
+
+/// `maxrows` (16 = off, 32, 64): a copy candidate of 16 or more tokens (up to 31) is verified in one pass of up to 32 rows, one of 32 or more (up to 63) in a pass of up to 64; shorter ones as before (<= 16 rows).
 /// `hy` > 0: hybrid copy mode (experimental): when the text so far holds an earlier occurrence of the last 5 tokens (4 committed + the
 /// frontier token) whose continuation gives at least `hy` candidate tokens, that continuation (up to 15 tokens) is verified instead of the
 /// drafter's block and the drafter is only caught up with the committed tap rows. Output is still exactly the greedy output.
-fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, block: usize, mut bd: Option<&mut Bd>, cost: bool, hy: usize) -> Result<(RunStats, f64)> {
+fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, block: usize, mut bd: Option<&mut Bd>, cost: bool, hy: usize, maxrows: usize) -> Result<(RunStats, f64)> {
     let k = if block == 0 { 15 } else { block - 1 };
     let mut adapt = Adapt::new();
     let mut zero_copy = bd.is_some();
@@ -641,6 +654,9 @@ fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, bloc
     let mut lk = ext::Lookup::new();
     let mut cp = ext::CopyIndex::new(3);
     let mut ncopy = 0usize;
+    let mut nwide = 0usize;
+    let mut n64 = 0usize;
+    let host_ctx = std::env::var("XF_BD_HOSTCTX").map_or(false, |v| v == "1");
     let mut cp_ptr: Option<usize> = None; // sticky copy alignment (see CopyIndex::propose)
     let mut cp_src = 0usize;
     let mut taps = vec![0f32; 5 * 16 * HIDDEN];
@@ -707,7 +723,8 @@ fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, bloc
             b => b,
         };
         let prop = if hy > 0 {
-            let (c, src) = cp.propose(next, 15, cp_ptr);
+            let (mut c, src) = cp.propose(next, maxrows - 1, cp_ptr);
+            c.truncate(if c.len() >= 32 && maxrows >= 64 { 63 } else if c.len() >= 16 && maxrows >= 32 { 31 } else { 15 });
             cp_src = src;
             c
         } else {
@@ -717,11 +734,13 @@ fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, bloc
         if copied {
             ncopy += 1;
             if let Some(b) = bd.as_deref_mut() {
-                if pend.0 > 0 {
-                    e.read_taps(&mut taps)?;
-                    b.ctx(&taps, pend.0, pend.1)?;
+                // Device-to-device ring catch-up (no host copy, not waited for) unless disabled with XF_BD_HOSTCTX=1 or not possible.
+                for blk in 0..pend.0.div_ceil(16) {
+                    ctx_block(e, b, &mut taps, blk, (pend.0 - 16 * blk).min(16), pend.1 + 16 * blk, zero_copy && !host_ctx)?;
                 }
             }
+            nwide += (prop.len() > 15) as usize;
+            n64 += (prop.len() > 31) as usize;
             ids.extend(prop);
         } else {
             n16 += (rows == 16) as usize;
@@ -731,15 +750,21 @@ fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, bloc
                 // Taps straight from the main engine's device buffer when both
                 // engines share a SYCL context; through host memory otherwise.
                 let mut d = None;
+                // A pass of more than 16 rows left its taps in two blocks: the first 16 rows are caught up on their own (host copy), the rest go with the step.
+                let lastb = pend.0.saturating_sub(1) / 16; // block holding the last pending rows; the earlier (full) blocks are caught up on their own
+                for blk in 0..lastb {
+                    ctx_block(e, b, &mut taps, blk, 16, pend.1 + 16 * blk, zero_copy && !host_ctx)?;
+                }
+                let (pn, ppos) = (pend.0 - 16 * lastb, pend.1 + 16 * lastb);
                 if zero_copy {
-                    d = b.step_dev(e.taps_device_ptr(), pend.0, pend.1, rows, next, pos)?;
+                    d = b.step_dev(e.taps_device_ptr_block(lastb), pn, ppos, rows, next, pos)?;
                     zero_copy = d.is_some();
                 }
                 if d.is_none() {
-                    if pend.0 > 0 {
-                        e.read_taps(&mut taps)?;
+                    if pn > 0 {
+                        e.read_taps_block(lastb, &mut taps)?;
                     }
-                    d = Some(b.step(&taps, pend.0, pend.1, rows, next, pos)?);
+                    d = Some(b.step(&taps, pn, ppos, rows, next, pos)?);
                 }
                 ids.extend(d.unwrap());
             }
@@ -795,7 +820,7 @@ fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, bloc
     out.truncate(n_new);
     e.set_capture(false);
     if hy > 0 {
-        eprintln!("          hybrid: {ncopy} of {passes} passes verified a copied candidate (min {hy} tokens)");
+        eprintln!("          hybrid: {ncopy} of {passes} passes verified a copied candidate (min {hy} tokens), {nwide} of them with more than 16 rows, {n64} with more than 32");
     }
     if block == 0 {
         eprintln!("          adaptive block: {n16} of {passes} passes used 16 rows; taps {}", if zero_copy { "device-to-device" } else { "through host" });
@@ -803,7 +828,7 @@ fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, bloc
         eprintln!("          taps {}", if zero_copy { "device-to-device" } else { "through host" });
     }
     t_taps += 0.0;
-    Ok((RunStats { out, emitted, prefill_s, decode_s, passes, t_main, t_mtp: t_draft, tried, accepted, state, n16, ncopy }, t_taps))
+    Ok((RunStats { out, emitted, prefill_s, decode_s, passes, t_main, t_mtp: t_draft, tried, accepted, state, n16, ncopy, nwide }, t_taps))
 }
 
 /// YASAKANI's rule for choosing between 8 and 16 verify rows (from its port
@@ -893,6 +918,19 @@ fn wide_check(dev: &Device, args: &[String]) -> Result<()> {
     eprintln!("  GDN state + conv history: {} of {} layers differ {:?}", gdn_bad.len(), LAYERS - LAYERS / 4, gdn_bad);
     eprintln!("  KV cache: {} of {} attention layers differ {:?}", kv_bad.len(), LAYERS / 4, kv_bad);
     eprintln!("  whole-state hash: {}", if href == hw { "identical" } else { "DIFFERENT" });
+    // Digest for comparing two builds / settings (e.g. XF_GDN_OLD=1 against the new GDN kernels): tokens + logit bits of all rows, per-layer state hashes.
+    {
+        let mut dl = 0xcbf29ce484222325u64;
+        for (t, l) in &wide {
+            dl = (dl ^ *t as u64).wrapping_mul(0x100000001b3);
+            dl = (dl ^ l.to_bits() as u64).wrapping_mul(0x100000001b3);
+        }
+        let mut dsx = 0xcbf29ce484222325u64;
+        for x in &lw {
+            dsx = (dsx ^ *x).wrapping_mul(0x100000001b3);
+        }
+        eprintln!("  digest: logits {dl:016x} state {dsx:016x} whole {hw:016x}");
+    }
     // timing of a wide pass at this position (no commit)
     for m in [16usize, rows] {
         let ids = &tail[..m];
@@ -984,7 +1022,7 @@ fn compare(dev: &Device, args: &[String]) -> Result<()> {
             let _ = std::fmt::Write::write_fmt(
                 &mut json,
                 format_args!(
-                    "  {{\"prompt\":\"{name}\",\"drafter\":\"{label}\",\"block\":{block},\"tok_per_s\":{tps:.3},\"tokens_per_pass\":{:.4},\"cycle_ms\":{cyc:.3},\"main_ms\":{:.3},\"draft_ms\":{:.3},\"taps_ms\":{:.3},\"same_tokens\":{same},\"same_state\":{},\"passes\":{},\"passes16\":{},\"emitted\":{},\"new_tokens\":{},\"accept1\":{:.4},\"prefill_tok_s\":{:.1},\"copy_passes\":{}}},\n",
+                    "  {{\"prompt\":\"{name}\",\"drafter\":\"{label}\",\"block\":{block},\"tok_per_s\":{tps:.3},\"tokens_per_pass\":{:.4},\"cycle_ms\":{cyc:.3},\"main_ms\":{:.3},\"draft_ms\":{:.3},\"taps_ms\":{:.3},\"same_tokens\":{same},\"same_state\":{},\"passes\":{},\"passes16\":{},\"emitted\":{},\"new_tokens\":{},\"accept1\":{:.4},\"prefill_tok_s\":{:.1},\"copy_passes\":{},\"wide_passes\":{}}},\n",
                     r.emitted as f64 / r.passes as f64,
                     if split { r.t_main / r.passes as f64 * 1e3 } else { -1.0 },
                     if split { (r.t_mtp + taps_s) / r.passes as f64 * 1e3 } else { -1.0 },
@@ -996,7 +1034,8 @@ fn compare(dev: &Device, args: &[String]) -> Result<()> {
                     r.out.len(),
                     r.accepted.get(1).copied().unwrap_or(0) as f64 / r.tried.get(1).copied().unwrap_or(1).max(1) as f64,
                     prompt.len() as f64 / r.prefill_s.max(1e-9),
-                    r.ncopy
+                    r.ncopy,
+                    r.nwide
                 ),
             );
             if let Some(dir) = opt(args, "--save-tokens") {
@@ -1019,7 +1058,9 @@ fn compare(dev: &Device, args: &[String]) -> Result<()> {
             };
             for cfg in cfgs {
                 // `hy<min>/<blk>`: hybrid copy mode (experimental), fallback drafter block <blk> (8, 16, 0 or 0c).
-                let (hy, cfg_b) = match cfg.strip_prefix("hy").and_then(|c| c.split_once('/')) {
+                // `hw<min>/<blk>`: copy candidates up to 32 rows; `hv<min>/<blk>`: up to 64 rows.
+                let maxrows = if cfg.starts_with("hv") { 64 } else if cfg.starts_with("hw") { 32 } else { 16 };
+                let (hy, cfg_b) = match cfg.strip_prefix("hy").or_else(|| cfg.strip_prefix("hw")).or_else(|| cfg.strip_prefix("hv")).and_then(|c| c.split_once('/')) {
                     Some((m, b)) => (m.parse::<usize>().map_err(|_| Error::Invalid("bad --configs hy<min>/<blk>".into()))?, b.to_string()),
                     None => (0, cfg.clone()),
                 };
@@ -1027,13 +1068,13 @@ fn compare(dev: &Device, args: &[String]) -> Result<()> {
                     "0c" => (0usize, true),
                     c => (c.parse::<usize>().map_err(|_| Error::Invalid("bad --configs".into()))?, false),
                 };
-                let (r, taps_s) = run_ext_mode(dev, &mut e, &prompt, n_new, blk, Some(b), cost, hy)?;
+                let (r, taps_s) = run_ext_mode(dev, &mut e, &prompt, n_new, blk, Some(b), cost, hy, maxrows)?;
                 let label = match (blk, cost) {
                     (0, true) => "bd2:adapt-cost".to_string(),
                     (0, false) => "bd2:adapt-old".to_string(),
                     (n, _) => format!("bd2:fixed{n}"),
                 };
-                let label = if hy > 0 { format!("hy{hy}+{label}") } else { label };
+                let label = if hy > 0 { format!("{}{hy}+{label}", match maxrows { 64 => "hv", 32 => "hw", _ => "hy" }) } else { label };
                 report(&label, &r, taps_s, true);
             }
         }

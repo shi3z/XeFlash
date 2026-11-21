@@ -1,0 +1,31 @@
+loaded /data/B60special/models/xfm/qwen38-27b-s4-cal.xfm in 6.2s, context capacity 4096 tokens
+device allocations      count          GiB
+  DeltaNet state           48       0.4288
+  KV cache                 16       0.2500
+  MTP                       5       0.3687
+  MTP KV cache              1       0.0156
+  RoPE table                2       0.0010
+  body matrices           256      11.3428
+  embedding (bf16)          1       2.3682
+  lm_head                   1       0.5920
+  matrix scales           779       0.0393
+  small tensors           408       0.0978
+  workspace                 1       0.1479
+  TOTAL requested        1518      15.6522
+driver free VRAM: 22.4843 GiB before, 6.7948 GiB after, difference 15.6894 GiB
+row 0: 16-row passes 248046 / 0x41d0d5fa, wide pass 93905 / 0x429f0ef7
+row 1: 16-row passes 248046 / 0x41bf09a1, wide pass 226836 / 0x42130ea5
+row 2: 16-row passes 248046 / 0x41c7e2c6, wide pass 20036 / 0x404d7073
+row 3: 16-row passes 248046 / 0x41aeac0d, wide pass 10143 / 0xbfdd5656
+row 4: 16-row passes 12 / 0x41af243e, wide pass 22733 / 0xc0dd7512
+row 5: 16-row passes 16 / 0x41bd7a25, wide pass 18279 / 0x4069914b
+row 6: 16-row passes 248046 / 0x41cb699c, wide pass 170121 / 0xc1515200
+row 7: 16-row passes 21 / 0x41c0c433, wide pass 226836 / 0x42685731
+wide 48 rows vs passes of <= 16: output tokens + logit bits: 48 of 48 rows differ
+  GDN state + conv history: 48 of 48 layers differ [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18, 20, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41, 42, 44, 45, 46, 48, 49, 50, 52, 53, 54, 56, 57, 58, 60, 61, 62]
+  KV cache: 16 of 16 attention layers differ [3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 43, 47, 51, 55, 59, 63]
+  whole-state hash: DIFFERENT
+  digest: logits a71745db1151a432 state bc026ac51931999a whole bfbd0f206aaf9173
+  16 rows: 44.80 ms per pass at position 2927
+  48 rows: 70.42 ms per pass at position 2927
+Error: Invalid("wide pass differs from passes of at most 16 rows")

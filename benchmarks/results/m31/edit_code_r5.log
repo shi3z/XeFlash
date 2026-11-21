@@ -1,0 +1,34 @@
+loaded /data/B60special/models/xfm/qwen38-27b-s4-cal.xfm in 6.5s, context capacity 10240 tokens
+device allocations      count          GiB
+  DeltaNet state           48       0.2875
+  KV cache                 16       0.6250
+  MTP                       5       0.3687
+  MTP KV cache              1       0.0391
+  RoPE table                2       0.0024
+  body matrices           256      11.3428
+  embedding (bf16)          1       2.3682
+  head sketch               4       0.1291
+  lm_head                   1       0.5920
+  matrix scales           779       0.0393
+  small tensors           408       0.0978
+  workspace                 1       0.0927
+  TOTAL requested        1522      15.9846
+driver free VRAM: 22.4843 GiB before, 6.4640 GiB after, difference 16.0203 GiB
+bdraft2 backend loaded: +2.799 GiB device memory (driver)
+edit_edit_code none        24.83 tok/s | 1.00 tok/pass | main  40.28 ms/pass
+          cost probe at position 4769: 8 rows 42.0 ms, 16 rows 48.0 ms -> c16 = 1.124
+          adaptive block: 239 of 869 passes used 16 rows; taps device-to-device
+edit_edit_code bd2:adapt-cost  101.54 tok/s | 5.42 tok/pass | cycle  53.36 ms | main  44.93, draft   6.45 (of which taps 0.00) ms/pass | accept% [98 90 82 77 75 77 77 80 88 82 76 77 70 79 33] | same tokens, same state
+          hybrid: 303 of 365 passes verified a copied candidate (min 4 tokens), 0 of them with more than 16 rows
+          taps device-to-device
+edit_edit_code hy4+bd2:fixed8  241.49 tok/s | 12.90 tok/pass | cycle  53.42 ms | main  48.32, draft   2.46 (of which taps 0.00) ms/pass | accept% [81 72 78 96 70 68 54] | same tokens, same state
+          hybrid: 166 of 228 passes verified a copied candidate (min 4 tokens), 163 of them with more than 16 rows
+          taps device-to-device
+edit_edit_code hw4+bd2:fixed16  307.92 tok/s | 20.65 tok/pass | cycle  67.07 ms | main  59.51, draft   4.24 (of which taps 0.00) ms/pass | accept% [81 72 78 93 69 67 67 62 100 80 75 67 100 50 0] | same tokens, same state
+          hybrid: 167 of 229 passes verified a copied candidate (min 4 tokens), 164 of them with more than 16 rows
+          taps device-to-device
+edit_edit_code hw4+bd2:fixed8  315.86 tok/s | 20.56 tok/pass | cycle  65.10 ms | main  57.89, draft   3.89 (of which taps 0.00) ms/pass | accept% [81 72 78 96 70 68 54] | same tokens, same state
+          cost probe at position 4769: 8 rows 41.9 ms, 16 rows 48.0 ms -> c16 = 1.125
+          hybrid: 167 of 229 passes verified a copied candidate (min 4 tokens), 164 of them with more than 16 rows
+          adaptive block: 14 of 229 passes used 16 rows; taps device-to-device
+edit_edit_code hw4+bd2:adapt-cost  313.71 tok/s | 20.56 tok/pass | cycle  65.55 ms | main  58.26, draft   3.96 (of which taps 0.00) ms/pass | accept% [81 72 78 96 70 68 54 50 100 100 100 0 0 0 0] | same tokens, same state

@@ -180,6 +180,7 @@ pub mod bdraft2 {
         fn xbd_reset(h: *mut c_void) -> i32;
         fn xbd_ctx(h: *mut c_void, taps: *const f32, n: i32, pos0: i32) -> i32;
         fn xbd_step(h: *mut c_void, taps: *const f32, n: i32, pos0: i32, r: i32, tok: i32, p: i32, out: *mut i32) -> i32;
+        fn xbd_ctx_dev(h: *mut c_void, dev_taps: *const f32, n: i32, pos0: i32) -> i32;
         fn xbd_step_dev(h: *mut c_void, dev_taps: *const f32, n: i32, pos0: i32, r: i32, tok: i32, p: i32, out: *mut i32) -> i32;
     }
 
@@ -221,6 +222,17 @@ pub mod bdraft2 {
         /// Like [`step`], reading the taps from the main engine's device
         /// buffer. `Ok(None)` if the two engines do not share a SYCL context
         /// (the caller then falls back to the host copy).
+        /// Ring catch-up from the other engine's device buffer, queued without waiting. `Ok(false)` if the buffer is not usable (host path needed).
+        pub fn ctx_dev(&mut self, dev_taps: *const f32, n: usize, pos0: usize) -> Result<bool> {
+            match unsafe { xbd_ctx_dev(self.0, dev_taps, n as i32, pos0 as i32) } {
+                2 => Ok(false),
+                st => {
+                    check(st)?;
+                    Ok(true)
+                }
+            }
+        }
+
         pub fn step_dev(&mut self, dev_taps: *const f32, n: usize, pos0: usize, r: usize, tok: u32, p: usize) -> Result<Option<Vec<u32>>> {
             let mut out = vec![0i32; r];
             match unsafe { xbd_step_dev(self.0, dev_taps, n as i32, pos0 as i32, r as i32, tok as i32, p as i32, out.as_mut_ptr()) } {

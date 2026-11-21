@@ -743,7 +743,12 @@ template <int WF, bool A16> int dispatch(sycl::queue &q, const xf_gemm_desc &d) 
     const int pk = F_IS_FLOAT(WF) ? 0 : pipe_kind(d, 32);
     if (pk == 2 && p32_on() && !A16) submit<WF, 8, 4, 1, A16, 2>(q, d);
     else if (pk == 2 && p32_on() && A16 && a16_32_mode() == 1) submit<WF, 8, 4, 1, A16, 2>(q, d);
-    else if (pk == 2 && p32_on() && A16 && a16_32_mode() == 2) submit<WF, 8, 2, 1, A16, 2>(q, d);
+    else if (pk == 2 && p32_on() && A16 && a16_32_mode() == 2) {
+      // The activation tiles are laid out for a pad of 32 tokens (tokens_per_thread == 32), the 16-token kernel pads to 16: give it the padded count (rows 33..48 would otherwise stride wrongly)
+      xf_gemm_desc d2 = d;
+      d2.m = (d.m + 31) / 32 * 32;
+      submit<WF, 8, 2, 1, A16, 2>(q, d2);
+    }
     else submit<WF, 8, 4, 1, A16>(q, d);
     return XF_OK;
   }

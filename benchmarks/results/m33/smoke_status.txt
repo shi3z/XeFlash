@@ -1,0 +1,4 @@
+host_hw rc=0
+dev_hw rc=0
+dev_hv rc=0
+done

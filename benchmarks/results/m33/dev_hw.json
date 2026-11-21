@@ -1,0 +1,3 @@
+[
+  {"prompt":"edit_edit_jsonl","drafter":"hw4+bd2:fixed16","block":8,"tok_per_s":502.253,"tokens_per_pass":31.0326,"cycle_ms":61.787,"main_ms":58.625,"draft_ms":0.778,"taps_ms":0.000,"same_tokens":true,"same_state":true,"passes":92,"passes16":2,"emitted":2855,"new_tokens":2854,"accept1":1.0000,"prefill_tok_s":332.7,"copy_passes":90,"wide_passes":90}
+]

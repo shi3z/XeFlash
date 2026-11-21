@@ -1,0 +1,6 @@
+wide 64 rows vs passes of <= 16: output tokens + logit bits: 0 of 64 rows differ
+  GDN state + conv history: 0 of 48 layers differ []
+  KV cache: 0 of 16 attention layers differ []
+  whole-state hash: identical
+  digest: logits 87ba4d789449dc7b state ed1080d6282d57c8 whole cf2c1cec1a8ab0db
+  64 rows: 85.10 ms per pass at position 2927

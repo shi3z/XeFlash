@@ -1,0 +1,19 @@
+task|config|tok/s mean (min-max)|tokens/pass|accept1|Main ms/pass|Draft ms/pass|answer = expected|same tokens+state as greedy
+edit_code|greedy|24.8 (24.8-24.8)|1.00|-|40.28|-|0/5|-
+edit_code|bd2:adapt-cost|101.3 (101.0-101.5)|5.35|0.976|44.52|6.37|0/5|5/5
+edit_code|hy4+bd2:fixed8|241.4 (241.3-241.5)|12.90|0.806|48.33|2.47|0/5|5/5
+edit_code|hw4+bd2:fixed16|307.8 (307.7-307.9)|20.65|0.806|59.52|4.25|0/5|5/5
+edit_code|hw4+bd2:fixed8|315.7 (315.7-315.9)|20.56|0.806|57.90|3.91|0/5|5/5
+edit_code|hw4+bd2:adapt-cost|313.6 (313.5-313.7)|20.56|0.806|58.27|3.98|0/5|5/5
+edit_jsonl|greedy|25.1 (25.1-25.1)|1.00|-|39.86|-|5/5|-
+edit_jsonl|bd2:adapt-cost|261.6 (261.6-261.6)|15.26|1.000|48.10|7.37|5/5|5/5
+edit_jsonl|hy4+bd2:fixed8|295.4 (295.1-295.5)|15.60|1.000|48.15|1.78|5/5|5/5
+edit_jsonl|hw4+bd2:fixed16|450.7 (450.6-450.7)|31.03|1.000|61.13|3.46|5/5|5/5
+edit_jsonl|hw4+bd2:fixed8|442.7 (442.6-442.8)|30.37|1.000|61.01|3.40|5/5|5/5
+edit_jsonl|hw4+bd2:adapt-cost|442.6 (442.5-442.7)|30.37|1.000|61.02|3.40|5/5|5/5
+edit_jsonl_long|greedy|24.5 (24.5-24.5)|1.00|-|40.81|-|5/5|-
+edit_jsonl_long|bd2:adapt-cost|247.4 (247.2-247.4)|15.06|1.000|50.65|7.40|5/5|5/5
+edit_jsonl_long|hy4+bd2:fixed8|284.0 (283.9-284.0)|15.72|1.000|50.72|1.75|5/5|5/5
+edit_jsonl_long|hw4+bd2:fixed16|419.9 (419.6-420.1)|30.78|1.000|65.62|3.41|5/5|5/5
+edit_jsonl_long|hw4+bd2:fixed8|418.5 (418.3-418.6)|30.63|1.000|65.56|3.39|5/5|5/5
+edit_jsonl_long|hw4+bd2:adapt-cost|418.6 (418.2-418.7)|30.63|1.000|65.56|3.38|5/5|5/5

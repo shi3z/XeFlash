@@ -68,6 +68,22 @@ int xbd_ctx(void *h, const float *taps, int n, int pos0) {
   });
 }
 
+// Same as xbd_ctx, with the taps read from the other engine's device buffer (see xbd_step_dev): a device-to-device copy of the tap block and the ring
+// update are queued on the drafter's queue and NOT waited for (the queue is in order: the next xbd_step / xbd_ctx_dev runs after them). The copy itself is
+// waited for, because the other engine overwrites its tap block with its next pass. Returns 2 if dev_taps is not a device allocation of this context.
+int xbd_ctx_dev(void *h, const float *dev_taps, int n, int pos0) {
+  auto *x = static_cast<Xbd *>(h);
+  try {
+    if (sycl::get_pointer_type(dev_taps, x->E.q.get_context()) != sycl::usm::alloc::device) return 2;
+  } catch (...) {
+    return 2;
+  }
+  return guard([&] {
+    x->E.q.memcpy(x->D.cap, dev_taps, size_t(5) * 16 * 5120 * sizeof(float)).wait();
+    x->D.ctx(n, pos0);
+  });
+}
+
 // Catch the ring up with n committed rows (n may be 0, then taps is ignored),
 // then draft one block of R rows (8 or 16): frontier token `tok` at position
 // p, R - 1 drafts for positions p + 1 .. p + R - 1 written to out.

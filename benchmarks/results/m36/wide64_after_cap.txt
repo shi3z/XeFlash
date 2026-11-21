@@ -1,0 +1,3 @@
+wide 64 rows vs passes of <= 16: output tokens + logit bits: 0 of 64 rows differ
+  whole-state hash: identical
+  64 rows: 85.02 ms per pass at position 2927

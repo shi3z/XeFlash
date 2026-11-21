@@ -1,0 +1,27 @@
+loaded /data/B60special/models/xfm/qwen38-27b-s4-cal.xfm in 6.5s, context capacity 8192 tokens
+device allocations      count          GiB
+  DeltaNet state           48       0.2875
+  KV cache                 16       0.5000
+  MTP                       5       0.3687
+  MTP KV cache              1       0.0312
+  RoPE table                2       0.0020
+  body matrices           256      11.3428
+  embedding (bf16)          1       2.3682
+  head sketch               4       0.1291
+  lm_head                   1       0.5920
+  matrix scales           779       0.0393
+  small tensors           408       0.0978
+  workspace                 1       0.0867
+  TOTAL requested        1522      15.8452
+driver free VRAM: 22.4843 GiB before, 6.6029 GiB after, difference 15.8814 GiB
+bdraft2 backend loaded: +2.798 GiB device memory (driver)
+edit_edit_jsonl none        25.08 tok/s | 1.00 tok/pass | main  39.87 ms/pass
+          hybrid: 179 of 181 passes verified a copied candidate (min 4 tokens), 0 of them with more than 16 rows
+          taps device-to-device
+edit_edit_jsonl hy4+bd2:fixed16  298.00 tok/s | 15.77 tok/pass | cycle  52.93 ms | main  48.21, draft   1.81 (of which taps 0.00) ms/pass | accept% [100 100 100 100 100 100 50 100 100 100 100 100 100 100 100] | same tokens, same state
+          hybrid: 90 of 92 passes verified a copied candidate (min 4 tokens), 90 of them with more than 16 rows
+          taps device-to-device
+edit_edit_jsonl hw4+bd2:fixed16  450.53 tok/s | 31.03 tok/pass | cycle  68.88 ms | main  61.14, draft   3.48 (of which taps 0.00) ms/pass | accept% [100 100 100 100 100 100 50 100 100 100 100 100 100 100 100] | same tokens, same state
+          hybrid: 92 of 94 passes verified a copied candidate (min 4 tokens), 92 of them with more than 16 rows
+          taps device-to-device
+edit_edit_jsonl hw4+bd2:fixed8  442.28 tok/s | 30.37 tok/pass | cycle  68.67 ms | main  61.03, draft   3.44 (of which taps 0.00) ms/pass | accept% [100 100 100 100 100 100 50] | same tokens, same state

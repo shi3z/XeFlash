@@ -30,9 +30,12 @@ using es::simd;
 
 namespace {
 
-constexpr int MAXM = 32;
+constexpr int MAXM = 64;
 constexpr int IDV = MAXM, IDG = 2 * MAXM, IDL = 3 * MAXM; // io block: pass ids [0,MAXM), verify ids [IDV,..), greedy ids [IDG,..), greedy logits (f32) [IDL,..)
-constexpr int GMAX = (6 * MAXM + 15) / 16;              // attention row groups of 16 (token, head) rows
+// Rows per pass: 64 up to a context of 32,768 positions; above that the workspace (logits, MLP activations, attention partials: pseg alone is 4 x groups x (blocks / 4 + 2) x 4096 floats = 380 MB at 60K for 64 rows)
+// would eat the 0.4 GiB that is left for the drafter at 60K (benchmarks/results/m34/fit60k_bdraft2.log), so passes are limited to 16 rows there as before the 32/64-row change.
+constexpr int rows_cap(int ctx) { return ctx > 32768 ? 16 : MAXM; }
+constexpr int gmax_of(int ctx) { return (6 * rows_cap(ctx) + 15) / 16; } // attention row groups of 16 (token, head) rows
 constexpr int D = 5120, FF = 17408, QKV = 10240, VD = 6144, QP = 12288, KVD = 1024, VOCAB = 248320;
 constexpr int KH = 16, VH = 48, HD = 128;      // DeltaNet heads
 constexpr int AH = 24, AKH = 4, AD = 256;      // attention heads
@@ -81,7 +84,7 @@ ESIMD_INLINE void storef(float *p, float x) SYCL_ESIMD_FUNCTION {
 struct WS {
   int32_t *ids; // io block (4 x MAXM words): pass ids, verify ids (next + drafts), greedy ids, greedy logits (f32)
   float *sk_z, *sk_s, *candv;
-  float *cap; // residual stream after layers 5, 19, 33, 47, 61: rows 0..15 as [5][16][D], then rows 16..31 as a second [5][16][D] block
+  float *cap; // residual stream after layers 5, 19, 33, 47, 61: blocks of 16 rows, each [5][16][D]
   int32_t *cand, *candi;
   float *inv, *ts, *toff, *pmax, *psum, *h, *xn, *y;
   int8_t *xhi;
@@ -112,49 +115,50 @@ WS carve_ws(void *base, int ctx) {
   Bump b{static_cast<char *>(base)};
   const size_t nb = size_t(ctx) / 64 + 1;
   WS w;
-  w.ids = b.take<int32_t>(4 * MAXM);
-  w.inv = b.take<float>(MAXM);
-  w.ts = b.take<float>(MAXM);
-  w.toff = b.take<float>(MAXM);
-  w.pmax = b.take<float>(MAXM * PS);
-  w.psum = b.take<float>(MAXM * PS);
-  w.h = b.take<float>(MAXM * D);
-  w.xn = b.take<float>(MAXM * D);
-  w.y = b.take<float>(MAXM * D);
-  w.xhi = b.take<int8_t>(size_t(FF / 32) * MAXM * 32);
-  w.xlo = b.take<uint8_t>(size_t(FF / 32) * MAXM * 32);
-  w.ypart = b.take<int32_t>(size_t(4) * 2 * MAXM * VD);
-  w.act = b.take<float>(MAXM * QKV);
-  w.yz = b.take<float>(MAXM * VD);
-  w.yab = b.take<float>(MAXM * 128);
-  w.qn = b.take<float>(MAXM * KH * HD);
-  w.gout = b.take<float>(MAXM * VD);
-  w.go = b.take<float>(MAXM * VD);
-  w.yq = b.take<float>(MAXM * AQKV);
-  w.yk = b.take<float>(MAXM * KVD);
-  w.yv = b.take<float>(MAXM * KVD);
-  w.qr = b.take<float>(MAXM * AH * AD);
-  w.g = b.take<float>(size_t(MAXM) * 2 * FF);
-  w.u = b.take<float>(size_t(MAXM) * 2 * FF);
-  w.logits = b.take<float>(size_t(MAXM) * VOCAB);
-  w.amv = b.take<float>(MAXM * AMC * 64);
-  w.ami = b.take<int32_t>(MAXM * AMC * 64);
-  w.pm = b.take<float>(MAXM * AH * nb);
-  w.pd = b.take<float>(MAXM * AH * nb);
+  const int MX = rows_cap(ctx); // rows per pass this workspace is sized for
+  w.ids = b.take<int32_t>(4 * MAXM); // io block: fixed size, offsets IDV/IDG/IDL
+  w.inv = b.take<float>(MX);
+  w.ts = b.take<float>(MX);
+  w.toff = b.take<float>(MX);
+  w.pmax = b.take<float>(MX * PS);
+  w.psum = b.take<float>(MX * PS);
+  w.h = b.take<float>(MX * D);
+  w.xn = b.take<float>(MX * D);
+  w.y = b.take<float>(MX * D);
+  w.xhi = b.take<int8_t>(size_t(FF / 32) * MX * 32);
+  w.xlo = b.take<uint8_t>(size_t(FF / 32) * MX * 32);
+  w.ypart = b.take<int32_t>(size_t(4) * 2 * MX * VD);
+  w.act = b.take<float>(MX * QKV);
+  w.yz = b.take<float>(MX * VD);
+  w.yab = b.take<float>(MX * 128);
+  w.qn = b.take<float>(MX * KH * HD);
+  w.gout = b.take<float>(MX * VD);
+  w.go = b.take<float>(MX * VD);
+  w.yq = b.take<float>(MX * AQKV);
+  w.yk = b.take<float>(MX * KVD);
+  w.yv = b.take<float>(MX * KVD);
+  w.qr = b.take<float>(MX * AH * AD);
+  w.g = b.take<float>(size_t(MX) * 2 * FF);
+  w.u = b.take<float>(size_t(MX) * 2 * FF);
+  w.logits = b.take<float>(size_t(MX) * VOCAB);
+  w.amv = b.take<float>(MX * AMC * 64);
+  w.ami = b.take<int32_t>(MX * AMC * 64);
+  w.pm = b.take<float>(MX * AH * nb);
+  w.pd = b.take<float>(MX * AH * nb);
   // XF_KV=xmx uses the fused kernel (segment partials in pseg), so the 378 MB (at 60K) block-partial buffer is only kept for XF_XMX_OLD
-  w.pv = b.take<float>(((kv_mode() == 3 && !std::getenv("XF_XMX_OLD")) || kv_mode() == 4) ? size_t(4096) : size_t(MAXM) * AH * nb * AD);
-  w.mh = b.take<float>(MAXM * D);
-  w.me = b.take<float>(MAXM * 2 * D);
-  w.cap = b.take<float>(size_t(5) * MAXM * D);
+  w.pv = b.take<float>(((kv_mode() == 3 && !std::getenv("XF_XMX_OLD")) || kv_mode() == 4) ? size_t(4096) : size_t(MX) * AH * nb * AD);
+  w.mh = b.take<float>(MX * D);
+  w.me = b.take<float>(MX * 2 * D);
+  w.cap = b.take<float>(size_t(5) * MX * D);
   w.sk_z = b.take<float>(2048);
   w.sk_s = b.take<float>(VOCAB);
   w.cand = b.take<int32_t>(4096);
   w.candi = b.take<int32_t>(4096);
   w.candv = b.take<float>(4096);
-  w.q16 = b.take<uint16_t>(size_t(AKH) * GMAX * 16 * 256);
-  w.pseg = b.take<float>(size_t(AKH) * GMAX * (nb / 4 + 2) * 4096);
-  w.psm = b.take<float>(size_t(AKH) * GMAX * (nb / 4 + 2) * 16);
-  w.psd = b.take<float>(size_t(AKH) * GMAX * (nb / 4 + 2) * 16);
+  w.q16 = b.take<uint16_t>(size_t(AKH) * gmax_of(ctx) * 16 * 256);
+  w.pseg = b.take<float>(size_t(AKH) * gmax_of(ctx) * (nb / 4 + 2) * 4096);
+  w.psm = b.take<float>(size_t(AKH) * gmax_of(ctx) * (nb / 4 + 2) * 16);
+  w.psd = b.take<float>(size_t(AKH) * gmax_of(ctx) * (nb / 4 + 2) * 16);
   w.total = b.off;
   return w;
 }
@@ -163,16 +167,17 @@ struct GdnState {
   float *S, *hist, *raw, *kn, *dsave, *beta, *decay;
   size_t total;
 };
-GdnState carve_gdn(void *base) {
+GdnState carve_gdn(void *base, int ctx) {
+  const int MX = rows_cap(ctx); // rows per pass; the per-layer scratch below is replicated in all 48 DeltaNet layers
   Bump b{static_cast<char *>(base)};
   GdnState s;
   s.S = b.take<float>(size_t(VH) * HD * HD); // [value head][value column j][key row i]
   s.hist = b.take<float>(3 * QKV);
-  s.raw = b.take<float>(MAXM * QKVZ);
-  s.kn = b.take<float>(MAXM * KH * HD);
-  s.dsave = b.take<float>(MAXM * VD);
-  s.beta = b.take<float>(MAXM * 64);
-  s.decay = b.take<float>(MAXM * 64);
+  s.raw = b.take<float>(MX * QKVZ);
+  s.kn = b.take<float>(MX * KH * HD);
+  s.dsave = b.take<float>(MX * VD);
+  s.beta = b.take<float>(MX * 64);
+  s.decay = b.take<float>(MX * 64);
   s.total = b.off;
   return s;
 }
@@ -475,6 +480,37 @@ void k_gemv_f32(Q &q, const float *w, const float *x, float *y, int rows, int m)
   });
 }
 
+// Same arithmetic as k_gemv_f32 per (token, row); one thread handles a row for TB tokens, so every weight chunk is loaded once for TB tokens.
+template <int TB> void k_gemv_f32_tb(Q &q, const float *w, const float *x, float *y, int rows, int m) {
+  const int nt = (m + TB - 1) / TB;
+  q.parallel_for(sycl::range<1>(size_t(nt) * rows), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const size_t r = id[0] % rows;
+    const int t0 = int(id[0] / rows) * TB;
+    const int tn = std::min(TB, m - t0);
+    simd<float, 64> acc[TB];
+#pragma unroll
+    for (int t = 0; t < TB; t++) acc[t] = 0.0f;
+    for (int c0 = 0; c0 < D / 64; c0 += 4) {
+      simd<float, 64> a[4];
+#pragma unroll
+      for (int u = 0; u < 4; u++) a[u].copy_from(w + r * D + (c0 + u) * 64);
+#pragma unroll
+      for (int t = 0; t < TB; t++) {
+        if (t < tn) {
+          simd<float, 64> b[4];
+#pragma unroll
+          for (int u = 0; u < 4; u++) b[u].copy_from(x + size_t(t0 + t) * D + (c0 + u) * 64);
+#pragma unroll
+          for (int u = 0; u < 4; u++) acc[t] += a[u] * b[u];
+        }
+      }
+    }
+#pragma unroll
+    for (int t = 0; t < TB; t++)
+      if (t < tn) storef(y + size_t(t0 + t) * 128 + (r < 48 ? r : r + 16), hsum<64>(acc[t]));
+  });
+}
+
 // y[m][r] = dot(W[r], x[m]) in FP32 for a dense row-major matrix (mtp.fc).
 void k_gemv_dense(Q &q, const float *w, const float *x, float *y, int rows, int cols, int m) {
   q.parallel_for(sycl::range<1>(size_t(m) * rows), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
@@ -511,10 +547,11 @@ void k_mtp_cat(Q &q, const float *emb, const float *inv_e, const float *ge, cons
 }
 
 // dst = h (+ y): a copy of the residual stream for an external consumer.
-// Rows 0..15 go to dst (the [5][16][D] block an external drafter reads), rows 16..31 to dst_hi (a second block of the same shape).
-void k_capture(Q &q, const float *h, const float *y, float *dst, float *dst_hi, int m) {
+// Row r of tap `tap` goes to cap + (r / 16) * 5 * 16 * D + tap * 16 * D + (r % 16) * D: blocks of 16 rows, each laid out [5][16][D] (the layout an external drafter reads).
+void k_capture(Q &q, const float *h, const float *y, float *cap, int tap, int m) {
   q.parallel_for(sycl::range<1>(size_t(m) * (D / 64)), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
-    float *const o = id[0] < size_t(16) * (D / 64) ? dst + id[0] * 64 : dst_hi + (id[0] - size_t(16) * (D / 64)) * 64;
+    const size_t row = id[0] / (D / 64), ch = id[0] % (D / 64);
+    float *const o = cap + (row / 16) * size_t(5) * 16 * D + size_t(tap) * 16 * D + (row % 16) * D + ch * 64;
     simd<float, 64> a;
     a.copy_from(h + id[0] * 64);
     if (y) {
@@ -550,6 +587,36 @@ void k_conv(Q &q, const float *raw, size_t rs, const float *hist, const float *t
       acc += x * w;
     }
     (acc * sigmoid<64>(acc)).copy_to(act + size_t(mi) * QKV + c * 64);
+  });
+}
+
+// Same arithmetic as k_conv (acc = ((x0 w0 + x1 w1) + x2 w2) + x3 w3, then silu), but one thread handles up to TB consecutive tokens of a 64-channel chunk:
+// the 4 weight vectors are loaded once and every input row of the window once (k_conv reloads each row for 4 outputs).
+template <int TB> void k_conv_tb(Q &q, const float *raw, size_t rs, const float *hist, const float *taps, float *act, int m) {
+  const int nt = (m + TB - 1) / TB;
+  q.parallel_for(sycl::range<1>(size_t(nt) * (QKV / 64)), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const size_t c = id[0] % (QKV / 64);
+    const int t0 = int(id[0] / (QKV / 64)) * TB;
+    const int tn = std::min(TB, m - t0);
+    simd<float, 64> w[4], x[TB + 3];
+#pragma unroll
+    for (int k = 0; k < 4; k++) w[k].copy_from(taps + size_t(k) * QKV + c * 64);
+#pragma unroll
+    for (int i = 0; i < TB + 3; i++) {
+      if (i < tn + 3) {
+        const int r = t0 - 3 + i;
+        x[i].copy_from(r >= 0 ? raw + size_t(r) * rs + c * 64 : hist + size_t(3 + r) * QKV + c * 64);
+      }
+    }
+#pragma unroll
+    for (int t = 0; t < TB; t++) {
+      if (t < tn) {
+        simd<float, 64> acc(0.0f);
+#pragma unroll
+        for (int k = 0; k < 4; k++) acc += x[t + k] * w[k];
+        (acc * sigmoid<64>(acc)).copy_to(act + size_t(t0 + t) * QKV + c * 64);
+      }
+    }
   });
 }
 
@@ -623,6 +690,54 @@ void k_gdn_commit(Q &q, float *S, const float *kn, const float *decay, const flo
   });
 }
 
+// Same arithmetic as k_gdn_core per column; one thread owns CB adjacent value columns of one head, so the k and q rows of a token are loaded once for CB columns
+// (k_gdn_core reloads them in all 128 threads of the head) and CB independent update chains run side by side.
+template <int CB>
+void k_gdn_core_cb(Q &q, const float *S, const float *act, const float *qn, const float *kn, const float *beta, const float *decay, float *dsave, float *gout, int m) {
+  q.parallel_for(sycl::range<1>(size_t(VH) * HD / CB), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const size_t col0 = id[0] * CB;
+    const size_t h = col0 / HD, j0 = col0 % HD, kh = h / 3;
+    simd<float, HD> s[CB];
+#pragma unroll
+    for (int c = 0; c < CB; c++) s[c].copy_from(S + (col0 + c) * HD);
+    for (int mi = 0; mi < m; mi++) {
+      simd<float, HD> k, qq;
+      k.copy_from(kn + (size_t(mi) * KH + kh) * HD);
+      qq.copy_from(qn + (size_t(mi) * KH + kh) * HD);
+      const float dec = loadf(decay + mi * 64 + h), bet = loadf(beta + mi * 64 + h);
+#pragma unroll
+      for (int c = 0; c < CB; c++) {
+        s[c] = s[c] * dec;
+        const float kv = hsum<HD>(s[c] * k);
+        const float d = (loadf(act + size_t(mi) * QKV + 2 * KH * HD + h * HD + j0 + c) - kv) * bet;
+        s[c] = s[c] + k * d;
+        storef(dsave + size_t(mi) * VD + h * HD + j0 + c, d);
+        storef(gout + size_t(mi) * VD + h * HD + j0 + c, hsum<HD>(s[c] * qq));
+      }
+    }
+  });
+}
+
+template <int CB>
+void k_gdn_commit_cb(Q &q, float *S, const float *kn, const float *decay, const float *dsave, int n) {
+  q.parallel_for(sycl::range<1>(size_t(VH) * HD / CB), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const size_t col0 = id[0] * CB;
+    const size_t h = col0 / HD, j0 = col0 % HD, kh = h / 3;
+    simd<float, HD> s[CB];
+#pragma unroll
+    for (int c = 0; c < CB; c++) s[c].copy_from(S + (col0 + c) * HD);
+    for (int mi = 0; mi < n; mi++) {
+      simd<float, HD> k;
+      k.copy_from(kn + (size_t(mi) * KH + kh) * HD);
+      const float dec = loadf(decay + mi * 64 + h);
+#pragma unroll
+      for (int c = 0; c < CB; c++) s[c] = s[c] * dec + k * loadf(dsave + size_t(mi) * VD + h * HD + j0 + c);
+    }
+#pragma unroll
+    for (int c = 0; c < CB; c++) s[c].copy_to(S + (col0 + c) * HD);
+  });
+}
+
 // hist <- last three rows of (hist ++ raw[0..n)).
 void k_hist_commit(Q &q, float *hist, const float *raw, size_t rs, int n) {
   q.parallel_for(sycl::range<1>(QKV / 64), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
@@ -652,6 +767,47 @@ void k_gdn_post(Q &q, const float *gout, const float *z, size_t zs, const float 
     storef(pmax + mi * PS + h * 2, hmax<64>(a.template select<64, 1>(0)));
     storef(pmax + mi * PS + h * 2 + 1, hmax<64>(a.template select<64, 1>(64)));
   });
+}
+
+
+// XF_GDN_OLD=1: the original one-token-per-thread GDN kernels (for A/B tests); XF_GDN_CB (columns per thread of the core, 1|2|4), XF_GDN_CONV_TB (1|4|8), XF_GDN_GEMV_TB (1|4|8).
+int env_int(const char *name, int dflt) {
+  const char *e = std::getenv(name);
+  return e ? std::atoi(e) : dflt;
+}
+bool gdn_old() {
+  static const bool o = env_int("XF_GDN_OLD", 0) != 0;
+  return o;
+}
+void gdn_core(Q &q, const float *S, const float *act, const float *qn, const float *kn, const float *beta, const float *decay, float *dsave, float *gout, int m) {
+  static const int cb = env_int("XF_GDN_CB", 2);
+  if (gdn_old() || cb == 1) k_gdn_core(q, S, act, qn, kn, beta, decay, dsave, gout, m);
+  else if (cb == 4) k_gdn_core_cb<4>(q, S, act, qn, kn, beta, decay, dsave, gout, m);
+  else k_gdn_core_cb<2>(q, S, act, qn, kn, beta, decay, dsave, gout, m);
+}
+void gdn_commit(Q &q, float *S, const float *kn, const float *decay, const float *dsave, int n) {
+  static const int cb = env_int("XF_GDN_CB", 2);
+  if (gdn_old() || cb == 1) k_gdn_commit(q, S, kn, decay, dsave, n);
+  else if (cb == 4) k_gdn_commit_cb<4>(q, S, kn, decay, dsave, n);
+  else k_gdn_commit_cb<2>(q, S, kn, decay, dsave, n);
+}
+void gdn_conv(Q &q, const float *raw, size_t rs, const float *hist, const float *taps, float *act, int m) {
+  static const int tb = env_int("XF_GDN_CONV_TB", 8);
+  if (gdn_old() || tb <= 1 || m == 1) k_conv(q, raw, rs, hist, taps, act, m);
+  else if (tb == 2) k_conv_tb<2>(q, raw, rs, hist, taps, act, m);
+  else if (tb == 4) k_conv_tb<4>(q, raw, rs, hist, taps, act, m);
+  else if (tb == 16) k_conv_tb<16>(q, raw, rs, hist, taps, act, m);
+  else k_conv_tb<8>(q, raw, rs, hist, taps, act, m);
+}
+void gdn_gemv_ab(Q &q, const float *w, const float *x, float *y, int rows, int m) {
+  // Default token block by the measured optimum (benchmarks/results/m32/gdn_sweep.md): the gemv has only 96 x m / TB threads, so wide blocks leave the GPU idle.
+  static const int tbe = env_int("XF_GDN_GEMV_TB", 0);
+  const int tb = tbe ? tbe : (m > 16 && m <= 32) ? 4 : 2;
+  if (gdn_old() || tb <= 1 || m == 1) k_gemv_f32(q, w, x, y, rows, m);
+  else if (tb == 2) k_gemv_f32_tb<2>(q, w, x, y, rows, m);
+  else if (tb == 8) k_gemv_f32_tb<8>(q, w, x, y, rows, m);
+  else if (tb == 16) k_gemv_f32_tb<16>(q, w, x, y, rows, m);
+  else k_gemv_f32_tb<4>(q, w, x, y, rows, m);
 }
 
 // Head-wise RMSNorm (gain holds 1 + w) and RoPE on the first 64 dims.
@@ -2016,10 +2172,10 @@ struct Pass {
       // Two launches; each writes its own contiguous [m][FF] block, so stage
       // them and interleave is avoided by giving up its own buffer.
       if (int st = gemm(L.m[gi], ws.xn, ws.u)) return st;
-      if (int st = gemm(L.m[gi + 1], ws.xn, ws.u + size_t(MAXM) * FF)) return st;
+      if (int st = gemm(L.m[gi + 1], ws.xn, ws.u + size_t(rows_cap(md->ctx)) * FF)) return st;
     }
     const float *gptr = merged ? ws.g : ws.u;
-    const float *uptr = merged ? ws.g + FF : ws.u + size_t(MAXM) * FF;
+    const float *uptr = merged ? ws.g + FF : ws.u + size_t(rows_cap(md->ctx)) * FF;
     const size_t stride = merged ? gs : size_t(FF);
     if (!(skip_mask() & 32)) k_mlp_act(q, const_cast<float *>(gptr), uptr, stride, ws.pmax, m);
     tm.tick(P_MLP, "mlp-act");
@@ -2030,7 +2186,7 @@ struct Pass {
 
   int gdn(const xf_layer &L) {
     Q &q = ctx->q;
-    GdnState s = carve_gdn(L.state);
+    GdnState s = carve_gdn(L.state, md->ctx);
     const bool merged = L.m[1].rows == 0; // m[0] is qkv+z stacked
     const size_t rs = merged ? QKVZ : QKV;
     const float *z = merged ? s.raw + QKV : ws.yz;
@@ -2040,15 +2196,15 @@ struct Pass {
     if (!merged)
       if (int st = gemm(L.m[1], ws.xn, ws.yz)) return st;
     const int sk = skip_mask();
-    if (!(sk & 8)) k_gemv_f32(q, L.aux[0], ws.xn, ws.yab, 96, m);
+    if (!(sk & 8)) gdn_gemv_ab(q, L.aux[0], ws.xn, ws.yab, 96, m);
     tm.dtick(P_GDN, "gdn:gemv-ab");
-    if (!(sk & 4)) k_conv(q, s.raw, rs, s.hist, L.aux[1], ws.act, m);
+    if (!(sk & 4)) gdn_conv(q, s.raw, rs, s.hist, L.aux[1], ws.act, m);
     tm.dtick(P_GDN, "gdn:conv");
     if (!(sk & 4)) k_gdn_qk(q, ws.act, ws.qn, s.kn, m);
     tm.dtick(P_GDN, "gdn:qk-norm");
     if (!(sk & 4)) k_gdn_gate(q, ws.yab, L.aux[2], L.aux[3], s.beta, s.decay, m);
     tm.dtick(P_GDN, "gdn:gate");
-    if (!(sk & 16)) k_gdn_core(q, s.S, ws.act, ws.qn, s.kn, s.beta, s.decay, s.dsave, ws.gout, m);
+    if (!(sk & 16)) gdn_core(q, s.S, ws.act, ws.qn, s.kn, s.beta, s.decay, s.dsave, ws.gout, m);
     tm.dtick(P_GDN, "gdn:core");
     if (!(sk & 4)) k_gdn_post(q, ws.gout, z, zs, L.aux[4], ws.go, ws.pmax, m);
     tm.tick(P_GDN, "gdn:post");
@@ -2183,7 +2339,7 @@ struct Pass {
       if (gp == 0) gp = 1000;
       const char *esl = std::getenv("XF_ATTN_SLM");
       const bool autoslm = !esl;
-      int slm = esl ? std::atoi(esl) : ((m >= 2 && !(m <= 8 && nbk >= 48 && nbk < 112)) ? 3 : 0);
+      int slm = esl ? std::atoi(esl) : ((m >= 2 && m <= 32 && !(m <= 8 && nbk >= 48 && nbk < 112)) ? 3 : 0); // m <= 32: the work-group (m * 2 threads) is limited to 64 threads
       if (std::getenv("XF_ATTN_LOG") && !(slm && m >= 2)) {
         static unsigned seen = 0;
         const unsigned key = unsigned(m) * 4u + (nbk < 24 ? 0u : nbk < 48 ? 1u : 2u);
@@ -2254,7 +2410,7 @@ extern "C" {
 size_t xf_ws_bytes(int ctx) { return carve_ws(nullptr, ctx).total; }
 
 size_t xf_state_bytes(int kind, int ctx) {
-  return kind == XF_LAYER_GDN ? carve_gdn(nullptr).total : carve_attn(nullptr, ctx).total;
+  return kind == XF_LAYER_GDN ? carve_gdn(nullptr, ctx).total : carve_attn(nullptr, ctx).total;
 }
 
 size_t xf_ws_offset(int which, int ctx) {
@@ -2276,13 +2432,13 @@ size_t xf_ws_offset(int which, int ctx) {
 
 int xf_forward(xf_ctx *ctx, const xf_model *md, int m, int pos0, int l0, int l1, int flags, double *prof) {
   const int slot = (flags & XF_FWD_IDS_SLOT1) ? IDV : 0;
-  if (!ctx || !md || m < 1 || m > MAXM || pos0 < 0 || pos0 + m > md->ctx || l0 < 0 || l1 > md->nlayers) {
+  if (!ctx || !md || m < 1 || m > rows_cap(md->ctx) || pos0 < 0 || pos0 + m > md->ctx || l0 < 0 || l1 > md->nlayers) {
     xf_set_error("xf_forward: invalid arguments (token count, position or layer range)");
     return XF_ERR_INVALID;
   }
   return xf_guard("xf_forward", [&]() -> int {
     const int tpt = m == 1 ? 1 : m <= 8 ? 8 : m <= 16 ? 16 : 32;
-    Pass p{ctx, md, carve_ws(md->ws, md->ctx), m, tpt, tpt, Timer(ctx->q, prof)};
+    Pass p{ctx, md, carve_ws(md->ws, md->ctx), m, (m + tpt - 1) / tpt * tpt, tpt, Timer(ctx->q, prof)};
     p.tm.mrows = p.m;
     Q &q = ctx->q;
     if (flags & XF_FWD_EMBED) {
@@ -2300,7 +2456,7 @@ int xf_forward(xf_ctx *ctx, const xf_model *md, int m, int pos0, int l0, int l1,
       const int st = L.kind == XF_LAYER_GDN ? p.gdn(L) : p.attn(L, pos0);
       if (st != XF_OK) return st;
       if ((flags & XF_FWD_CAPTURE) && l % 14 == 5) // hidden_states[l + 1] for l = 5, 19, 33, 47, 61
-        k_capture(q, p.ws.h, p.pending ? p.ws.y : nullptr, p.ws.cap + size_t(l / 14) * 16 * D, p.ws.cap + size_t(5) * 16 * D + size_t(l / 14) * 16 * D, m);
+        k_capture(q, p.ws.h, p.pending ? p.ws.y : nullptr, p.ws.cap, l / 14, m);
       if (sync_every > 0 && (l + 1) % sync_every == 0) q.wait_and_throw();
     }
     if (flags & XF_FWD_HEAD) {
@@ -2431,8 +2587,8 @@ int xf_commit(xf_ctx *ctx, const xf_model *md, int n) {
     for (int l = 0; l < md->nlayers; l++) {
       const xf_layer &L = md->layers[l];
       if (L.kind != XF_LAYER_GDN) continue;
-      GdnState s = carve_gdn(L.state);
-      k_gdn_commit(ctx->q, s.S, s.kn, s.decay, s.dsave, n);
+      GdnState s = carve_gdn(L.state, md->ctx);
+      gdn_commit(ctx->q, s.S, s.kn, s.decay, s.dsave, n);
       k_hist_commit(ctx->q, s.hist, s.raw, L.m[1].rows == 0 ? size_t(QKVZ) : size_t(QKV), n);
     }
     return XF_OK;
