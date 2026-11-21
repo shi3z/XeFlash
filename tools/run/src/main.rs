@@ -657,6 +657,7 @@ fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, bloc
     let mut nwide = 0usize;
     let mut n64 = 0usize;
     let host_ctx = std::env::var("XF_BD_HOSTCTX").map_or(false, |v| v == "1");
+    let (mut t_prop, mut t_post) = (0f64, 0f64);
     let mut cp_ptr: Option<usize> = None; // sticky copy alignment (see CopyIndex::propose)
     let mut cp_src = 0usize;
     let mut taps = vec![0f32; 5 * 16 * HIDDEN];
@@ -722,6 +723,7 @@ fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, bloc
             0 => 8,
             b => b,
         };
+        let tp0 = Instant::now();
         let prop = if hy > 0 {
             let (mut c, src) = cp.propose(next, maxrows - 1, cp_ptr);
             c.truncate(if c.len() >= 32 && maxrows >= 64 { 63 } else if c.len() >= 16 && maxrows >= 32 { 31 } else { 15 });
@@ -730,6 +732,7 @@ fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, bloc
         } else {
             Vec::new()
         };
+        t_prop += tp0.elapsed().as_secs_f64();
         let copied = hy > 0 && prop.len() >= hy;
         if copied {
             ncopy += 1;
@@ -794,11 +797,15 @@ fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, bloc
                 accepted[i] += 1;
             }
         }
+        let tq0 = Instant::now();
         for i in 0..n {
-            lk.push(ids[i], g[i].0);
+            if !(hy > 0 && bd.is_some()) {
+                lk.push(ids[i], g[i].0); // the D0 / D1 tables are only read by the lookup drafter
+            }
             cp.push(ids[i]);
         }
         out.extend_from_slice(&ids[..n]);
+        t_post += tq0.elapsed().as_secs_f64();
         if state.0 == 0 && out.len() >= STATE_AT {
             {
                 let th = Instant::now();
@@ -820,6 +827,7 @@ fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, bloc
     out.truncate(n_new);
     e.set_capture(false);
     if hy > 0 {
+        eprintln!("          host time per pass: candidate search {:.3} ms, token bookkeeping {:.3} ms", t_prop / passes as f64 * 1e3, t_post / passes as f64 * 1e3);
         eprintln!("          hybrid: {ncopy} of {passes} passes verified a copied candidate (min {hy} tokens), {nwide} of them with more than 16 rows, {n64} with more than 32");
     }
     if block == 0 {
@@ -940,6 +948,22 @@ fn wide_check(dev: &Device, args: &[String]) -> Result<()> {
             e.forward(ids, None)?;
         }
         eprintln!("  {m:>2} rows: {:.2} ms per pass at position {}", t.elapsed().as_secs_f64() / 8.0 * 1e3, e.position());
+    }
+    // commit of the whole pass (the state update of the accepted tokens), timed with the queue drained (state changes: after all comparisons)
+    {
+        let mut tc = 0f64;
+        let reps = 6usize.min(e.capacity().saturating_sub(e.position()) / rows); // stay inside the context
+        for _ in 0..reps {
+            let _ = e.forward(tail, None)?;
+            dev.wait()?;
+            let t = Instant::now();
+            e.commit(rows)?;
+            dev.wait()?;
+            tc += t.elapsed().as_secs_f64();
+        }
+        if reps > 0 {
+            eprintln!("  commit of {rows} rows: {:.2} ms", tc / reps as f64 * 1e3);
+        }
     }
     if bad > 0 || href != hw || !gdn_bad.is_empty() || !kv_bad.is_empty() {
         return Err(Error::Invalid("wide pass differs from passes of at most 16 rows".into()));

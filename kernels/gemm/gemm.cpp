@@ -563,6 +563,114 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0, bool LGRF = false
   return q.parallel_for(sycl::range<1>(nthreads), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL { run(id[0]); });
 }
 
+// Experiment (XF_GEMM_A16_32=slm): activation tiles shared through SLM. A work-group is 8 threads = 8 row blocks of the same 16-token group; per stage of two 32-column tiles every thread loads
+// one eighth (64 bytes) of each activation plane from L1 into registers, stores it to SLM (double-buffered), and after one barrier all threads read the complete tiles from SLM, so the L1 sees
+// one eighth of the activation traffic. Same integer arithmetic as the pipelined kernel (16-bit activations, s4 weights, no segments). 128 GRF.
+ESIMD_INLINE uint32_t slm_off(uint32_t b, uint32_t j, uint32_t pl, uint32_t nt) SYCL_ESIMD_FUNCTION { return ((b * nt + j) * 2 + pl) * 512u; }
+
+template <int WF, int NT> sycl::event submit_slm(sycl::queue &q, const xf_gemm_desc &d) {
+  using F = Fmt<WF>;
+  constexpr int R = 8, G = 2, TPT = R * G, WDW = F::stored_dw, XDW = 8 * TPT;
+  const int32_t *W = static_cast<const int32_t *>(d.w);
+  const int32_t *X = static_cast<const int32_t *>(d.x);
+  const int32_t *XL = static_cast<const int32_t *>(d.xlo);
+  const float *RS = d.rs;
+  const float *TS = d.ts;
+  const float *TO = d.toff;
+  const float *RB = d.bias;
+  float *Y = d.y;
+  const size_t rows = d.rows, rowblks = rows / 16, tiles = size_t(d.cols) / F::tile_cols;
+  const size_t mpad = (size_t(d.m) + TPT - 1) / TPT * TPT, tgroups = mpad / TPT;
+  const size_t xstride = mpad * 8;
+  const uint32_t nst = uint32_t(tiles) / NT;
+  const size_t nthreads = rowblks * tgroups;
+  return q.parallel_for(sycl::nd_range<1>(nthreads, 8), [=](sycl::nd_item<1> it) SYCL_ESIMD_KERNEL {
+    slm_init<2 * NT * 1024>();
+    const uint32_t lt = uint32_t(it.get_local_id(0));
+    const size_t wgi = it.get_global_id(0) / 8;
+    const size_t tg = wgi % tgroups, rb = (wgi / tgroups) * 8 + lt;
+    const int32_t *wq = W + rb * tiles * WDW;
+    const size_t xoff = tg * TPT * 8;
+    const int32_t *xq = X + xoff, *xlq = XL + xoff;
+    simd<int32_t, 16 * R> acc[G], accl[G];
+#pragma unroll
+    for (int g = 0; g < G; g++) {
+      acc[g] = 0;
+      accl[g] = 0;
+    }
+    // SLM layout: [buffer][tile of the stage][plane] of 512 bytes
+    simd<int32_t, 16> sa[NT], sl[NT];
+    simd<int32_t, WDW> wa[NT], wb[NT];
+    // prologue: slices of stage 0 -> SLM buffer 0, weights of stage 0 -> wa
+#pragma unroll
+    for (int j = 0; j < NT; j++) {
+      sa[j].copy_from(xq + size_t(j) * xstride + lt * 16);
+      sl[j].copy_from(xlq + size_t(j) * xstride + lt * 16);
+      slm_block_store<int32_t, 16>(slm_off(0, j, 0, NT) + lt * 64, sa[j]);
+      slm_block_store<int32_t, 16>(slm_off(0, j, 1, NT) + lt * 64, sl[j]);
+      wa[j].copy_from(wq + size_t(j) * WDW);
+    }
+    barrier();
+    for (uint32_t st = 0; st < nst; st++) {
+      const uint32_t b = st & 1;
+      const bool more = st + 1 < nst;
+      if (more) {
+#pragma unroll
+        for (int j = 0; j < NT; j++) {
+          const size_t t = size_t(NT * (st + 1) + j);
+          sa[j].copy_from(xq + t * xstride + lt * 16);
+          sl[j].copy_from(xlq + t * xstride + lt * 16);
+          wb[j].copy_from(wq + t * WDW);
+        }
+      }
+#pragma unroll
+      for (int j = 0; j < NT; j++) {
+        simd<int32_t, XDW> xa = slm_block_load<int32_t, XDW>(slm_off(b, j, 0, NT));
+        simd<int32_t, XDW> xl = slm_block_load<int32_t, XDW>(slm_off(b, j, 1, NT));
+        simd<int32_t, F::opnd_dw> w = operand<WF>(wa[j]);
+#pragma unroll
+        for (int g = 0; g < G; g++) {
+          simd<int32_t, 8 * R> a = xa.template select<8 * R, 1>(g * 8 * R);
+          acc[g] = mac<WF, R>(acc[g], w, a, false);
+        }
+#pragma unroll
+        for (int g = 0; g < G; g++) {
+          simd<int32_t, 8 * R> a = xl.template select<8 * R, 1>(g * 8 * R);
+          accl[g] = mac<WF, R>(accl[g], w, a, true);
+        }
+      }
+      if (more) {
+#pragma unroll
+        for (int j = 0; j < NT; j++) {
+          slm_block_store<int32_t, 16>(slm_off(b ^ 1, j, 0, NT) + lt * 64, sa[j]);
+          slm_block_store<int32_t, 16>(slm_off(b ^ 1, j, 1, NT) + lt * 64, sl[j]);
+          wa[j] = wb[j];
+        }
+      }
+      barrier();
+    }
+    simd<float, 16> rsv;
+    rsv.copy_from(RS + rb * 16);
+    simd<float, TPT> tsv;
+    tsv.copy_from(TS + tg * TPT);
+    simd<float, TPT> tov(0.0f);
+    if (TO) tov.copy_from(TO + tg * TPT);
+    simd<float, 16> rbv(0.0f);
+    if (RB) rbv.copy_from(RB + rb * 16);
+#pragma unroll
+    for (int g = 0; g < G; g++) {
+#pragma unroll
+      for (int m = 0; m < R; m++) {
+        simd<int32_t, 16> si = acc[g].template select<16, 1>(16 * m);
+        simd<int32_t, 16> li = accl[g].template select<16, 1>(16 * m);
+        const size_t tok = tg * TPT + g * R + m;
+        simd<float, 16> f = finish<true>(si, li, rsv, float(tsv[g * R + m]), float(tov[g * R + m]), rbv);
+        f.copy_to(Y + tok * rows + rb * 16);
+      }
+    }
+  });
+}
+
 // Float formats: sum the per-segment partial outputs into y.
 sycl::event combine_float(sycl::queue &q, const float *ypart, float *y, size_t n, size_t segs) {
   return q.parallel_for(sycl::range<1>(n / 16), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
@@ -747,7 +855,7 @@ int pipe_u() {
 }
 // How 16-bit-activation passes of more than 16 rows run (default 2 = auto: "lgrf" for 33..96 rows on the matrices with K <= 8192, "split" otherwise; "split" forces the split kernel): "old" = plain 4-group loop, "pipe" = pipelined 4-group loop, "split" = the 16-row pipelined kernel for two token groups with the groups adjacent (XF_GEMM_A16_32).
 int a16_32_mode() {
-  static const int m = [] { const char *e = std::getenv("XF_GEMM_A16_32"); return !e ? 2 : !std::strcmp(e, "split") ? 8 : !std::strcmp(e, "pipe") ? 1 : !std::strcmp(e, "old") ? 0 : !std::strcmp(e, "lgrf") ? 3 : !std::strcmp(e, "rb2") ? 4 : !std::strcmp(e, "rb2s") ? 5 : !std::strcmp(e, "pd2") ? 6 : !std::strcmp(e, "pd2l") ? 7 : 2; }();
+  static const int m = [] { const char *e = std::getenv("XF_GEMM_A16_32"); return !e ? 2 : !std::strcmp(e, "split") ? 8 : !std::strcmp(e, "pipe") ? 1 : !std::strcmp(e, "old") ? 0 : !std::strcmp(e, "lgrf") ? 3 : !std::strcmp(e, "rb2") ? 4 : !std::strcmp(e, "rb2s") ? 5 : !std::strcmp(e, "pd2") ? 6 : !std::strcmp(e, "pd2l") ? 7 : !std::strcmp(e, "slm") ? 9 : !std::strcmp(e, "slm4") ? 10 : !std::strcmp(e, "slm8") ? 11 : 2; }();
   return m;
 }
 bool p32_on() {
@@ -823,6 +931,15 @@ template <int WF, bool A16> int dispatch(sycl::queue &q, const xf_gemm_desc &d) 
     const int pk = F_IS_FLOAT(WF) ? 0 : pipe_kind(d, 32);
     if (pk == 2 && p32_on() && !A16) submit<WF, 8, 4, 1, A16, 2>(q, d);
     else if (pk == 2 && p32_on() && A16 && a16_32_mode() == 1) submit<WF, 8, 4, 1, A16, 2>(q, d);
+    else if (pk == 2 && p32_on() && A16 && (a16_32_mode() == 9 || a16_32_mode() == 10 || a16_32_mode() == 11) && WF == XF_W_S4 && d.segs == 1 && (d.rows / 16) % 8 == 0 && (d.cols / 32) % 8 == 0) {
+      if constexpr (WF == XF_W_S4 && A16) {
+        xf_gemm_desc d2 = d;
+        d2.m = (d.m + 31) / 32 * 32;
+        if (a16_32_mode() == 9) submit_slm<WF, 2>(q, d2);
+        else if (a16_32_mode() == 10) submit_slm<WF, 4>(q, d2);
+        else submit_slm<WF, 8>(q, d2);
+      }
+    }
     else if (pk == 2 && p32_on() && A16 && a16_32_mode() == 6 && (d.cols / 32) % 4 == 0) {
       xf_gemm_desc d2 = d;
       d2.m = (d.m + 31) / 32 * 32;

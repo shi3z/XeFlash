@@ -1,0 +1,24 @@
+device   : Intel(R) Arc(TM) Pro B60 Graphics (driver 1.18.40196+15)
+memory   : 23.91 GiB total, 22.48 GiB free, max single allocation 22.71 GiB
+threads  : 160 EU x 8 = 1280   SLM 128 KiB   2400 MHz
+launch   : 2.36 us queued, 5.66 us with a wait per launch
+
+matrix              shape    fmt  tok  tpt  seg        ms   ms(med)     Gw/s     GB/s     TOPS  check
+mlp.gate/up    17408x5120     s4   64   32    1    0.1383    0.1384    644.3    322.1    82.47  exact
+mlp.gate/up    17408x5120 s4+a16   64   32    1    0.3358    0.3360    265.5    132.7    67.96  exact
+mlp.down       5120x17408     s4   64   32    1    0.1873    0.1873    476.0    238.0    60.93  exact
+mlp.down       5120x17408 s4+a16   64   32    1    0.3713    0.3714    240.1    120.0    61.45  exact
+gdn.qkv        10240x5120     s4   64   32    1    0.0774    0.0774    677.5    338.8    86.72  exact
+gdn.qkv        10240x5120 s4+a16   64   32    1    0.1816    0.1816    288.7    144.3    73.90  exact
+merged.qkvz    16384x5120     s4   64   32    1    0.1338    0.1339    626.8    313.4    80.22  exact
+merged.qkvz    16384x5120 s4+a16   64   32    1    0.3269    0.3271    256.6    128.3    65.69  exact
+merged.attn_qkv   14336x5120     s4   64   32    1    0.1261    0.1262    581.9    291.0    74.49  exact
+merged.attn_qkv   14336x5120 s4+a16   64   32    1    0.2649    0.2649    277.1    138.6    70.95  exact
+merged.gate_up   34816x5120     s4   64   32    1    0.2708    0.2709    658.2    329.1    84.24  exact
+merged.gate_up   34816x5120 s4+a16   64   32    1    0.5951    0.5953    299.5    149.8    76.68  exact
+out_proj        5120x6144     s4   64   32    1    0.0653    0.0654    481.8    240.9    61.66  exact
+out_proj        5120x6144 s4+a16   64   32    1    0.1577    0.1578    199.5     99.7    51.07  exact
+lm_head       248320x5120     s4   64   32    1    1.8026    1.8029    705.3    352.7    90.28  exact
+lm_head       248320x5120 s4+a16   64   32    1    3.8971    3.9016    326.2    163.1    83.52  exact
+
+wrote benchmarks/results/m42/unit_slm8.json

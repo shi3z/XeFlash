@@ -1,0 +1,23 @@
+loaded /data/B60special/models/xfm/qwen38-27b-s4-cal.xfm in 6.2s, context capacity 4096 tokens
+device allocations      count          GiB
+  DeltaNet state           48       0.4288
+  KV cache                 16       0.5000
+  MTP                       5       0.3687
+  MTP KV cache              1       0.0312
+  RoPE table                2       0.0010
+  body matrices           256      11.3428
+  embedding (bf16)          1       2.3682
+  lm_head                   1       0.5920
+  matrix scales           779       0.0393
+  small tensors           408       0.0978
+  workspace                 1       0.2431
+  TOTAL requested        1518      16.0130
+driver free VRAM: 22.4843 GiB before, 6.4340 GiB after, difference 16.0503 GiB
+wide 17 rows vs passes of <= 16: output tokens + logit bits: 0 of 17 rows differ
+  GDN state + conv history: 0 of 48 layers differ []
+  KV cache: 0 of 16 attention layers differ []
+  whole-state hash: identical
+  digest: logits ecdc95a642fc4ff8 state c29a065038a425de whole 124719fa654d4a75
+  16 rows: 47.20 ms per pass at position 2927
+  17 rows: 55.90 ms per pass at position 2927
+  commit of 17 rows: 1.50 ms

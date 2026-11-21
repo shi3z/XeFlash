@@ -1,0 +1,24 @@
+device   : Intel(R) Arc(TM) Pro B60 Graphics (driver 1.18.40196+15)
+memory   : 23.91 GiB total, 22.48 GiB free, max single allocation 22.71 GiB
+threads  : 160 EU x 8 = 1280   SLM 128 KiB   2400 MHz
+launch   : 2.71 us queued, 7.54 us with a wait per launch
+
+matrix              shape    fmt  tok  tpt  seg        ms   ms(med)     Gw/s     GB/s     TOPS  check
+mlp.gate/up    17408x5120     s4   64   32    1    0.1383    0.1384    644.6    322.3    82.51  exact
+mlp.gate/up    17408x5120 s4+a16   64   32    1    0.1703    0.1704    523.3    261.7   133.97  exact
+mlp.down       5120x17408     s4   64   32    1    0.1871    0.1871    476.4    238.2    60.99  exact
+mlp.down       5120x17408 s4+a16   64   32    1    0.1999    0.1999    445.9    223.0   114.15  exact
+gdn.qkv        10240x5120     s4   64   32    1    0.0775    0.0775    676.9    338.4    86.64  exact
+gdn.qkv        10240x5120 s4+a16   64   32    1    0.0945    0.0946    554.6    277.3   141.98  exact
+merged.qkvz    16384x5120     s4   64   32    1    0.1338    0.1339    627.1    313.5    80.26  exact
+merged.qkvz    16384x5120 s4+a16   64   32    1    0.1684    0.1684    498.1    249.1   127.52  exact
+merged.attn_qkv   14336x5120     s4   64   32    1    0.1260    0.1261    582.7    291.4    74.59  exact
+merged.attn_qkv   14336x5120 s4+a16   64   32    1    0.1334    0.1334    550.2    275.1   140.85  exact
+merged.gate_up   34816x5120     s4   64   32    1    0.2721    0.2722    655.0    327.5    83.84  exact
+merged.gate_up   34816x5120 s4+a16   64   32    1    0.3101    0.3102    574.9    287.5   147.17  exact
+out_proj        5120x6144     s4   64   32    1    0.0645    0.0647    487.7    243.9    62.43  exact
+out_proj        5120x6144 s4+a16   64   32    1    0.0794    0.0796    396.3    198.2   101.46  exact
+lm_head       248320x5120     s4   64   32    1    1.8028    1.8030    705.2    352.6    90.27  exact
+lm_head       248320x5120 s4+a16   64   32    1    2.3573    2.3595    539.3    269.7   138.07  exact
+
+wrote benchmarks/results/m42/unit_auto.json

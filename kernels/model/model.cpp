@@ -457,6 +457,66 @@ void k_quant(Q &q, const float *v, size_t vs, int n, const float *cs, float cmax
   });
 }
 
+// MLP activation fused with the activation quantisation of the down projection (merged gate|up rows of stride gs): per token one work-group of NC / 8 threads,
+// every thread computes silu(gate) * up of its 8 chunks of 64 columns (same expression as k_mlp_act), the row maximum is reduced through SLM, and the 16-bit quantisation
+// (same expressions as k_quant) is applied to the values still held in registers. Bit-identical to k_mlp_act + k_quant; the activated row is never written to memory.
+void k_mlpact_quant(Q &q, const float *g, size_t gs, const float *cs, float cmax, int m, int mpad, int8_t *xhi, uint8_t *xlo, float *ts, float *toff) {
+  constexpr int NC = FF / 64, CPT = 8, LT = NC / CPT; // 272 chunks, 34 threads
+  static_assert(NC % CPT == 0 && LT <= 64, "chunk split");
+  q.parallel_for(sycl::nd_range<1>(size_t(m) * LT, LT), [=](sycl::nd_item<1> it) SYCL_ESIMD_KERNEL {
+    es::slm_init<512>();
+    const size_t mi = it.get_group(0), t = it.get_local_id(0);
+    const simd<int32_t, 64> iota(0, 1);
+    simd<float, 64> a[CPT], u[CPT];
+#pragma unroll
+    for (int k = 0; k < CPT; k++) {
+      a[k].copy_from(g + mi * gs + (t * CPT + k) * 64);
+      u[k].copy_from(g + FF + mi * gs + (t * CPT + k) * 64);
+    }
+    simd<float, 64> mx(0.0f);
+#pragma unroll
+    for (int k = 0; k < CPT; k++) {
+      a[k] = a[k] * sigmoid<64>(a[k]) * u[k];
+      mx = es::max(mx, es::abs(a[k]));
+    }
+    es::slm_scalar_store<float>(uint32_t(t * 4), hmax<64>(mx));
+    es::barrier();
+    simd<float, 64> part = es::slm_block_load<float, 64>(0);
+    part.merge(simd<float, 64>(0.0f), iota >= LT);
+    float step = hmax<64>(part) * cmax * (1.0f / 32767.0f);
+    if (!(step > 0.0f)) step = 1.0f;
+    const float istep = 1.0f / step;
+    simd<float, 64> sum(0.0f);
+#pragma unroll
+    for (int k = 0; k < CPT; k++) {
+      const size_t c = t * CPT + k;
+      simd<float, 64> sc;
+      sc.copy_from(cs + c * 64);
+      simd<float, 64> r = es::rnde<float>(a[k] * sc * istep);
+      r = es::max(es::min(r, simd<float, 64>(32767.0f)), simd<float, 64>(-32767.0f));
+      sum += r;
+      simd<int32_t, 64> xi = es::convert<int32_t>(r);
+      simd<int8_t, 64> hb = es::convert<int8_t>(xi >> 8);
+      simd<uint8_t, 64> lb = es::convert<uint8_t>(xi & 0xFF);
+#pragma unroll
+      for (int half = 0; half < 2; half++) {
+        simd<int8_t, 32> aa = hb.template select<32, 1>(32 * half);
+        simd<uint8_t, 32> bb = lb.template select<32, 1>(32 * half);
+        aa.copy_to(xhi + ((2 * c + half) * mpad + mi) * 32);
+        bb.copy_to(xlo + ((2 * c + half) * mpad + mi) * 32);
+      }
+    }
+    es::slm_scalar_store<float>(uint32_t(256 + t * 4), hsum<64>(sum));
+    es::barrier();
+    if (t == 0) {
+      simd<float, 64> part2 = es::slm_block_load<float, 64>(256);
+      part2.merge(simd<float, 64>(0.0f), iota >= LT);
+      storef(toff + mi, 0.5f * hsum<64>(part2));
+      storef(ts + mi, step);
+    }
+  });
+}
+
 // y[m][r] = dot(W[r], x[m]) in FP32, W row-major [rows][D]. For the two tiny
 // DeltaNet gate projections (96 rows).
 void k_gemv_f32(Q &q, const float *w, const float *x, float *y, int rows, int m) {
@@ -508,6 +568,47 @@ template <int TB> void k_gemv_f32_tb(Q &q, const float *w, const float *x, float
 #pragma unroll
     for (int t = 0; t < TB; t++)
       if (t < tn) storef(y + size_t(t0 + t) * 128 + (r < 48 ? r : r + 16), hsum<64>(acc[t]));
+  });
+}
+
+// Same arithmetic as k_gemv_f32 per (token, row); one thread handles RR consecutive rows for TB tokens: a token's activation chunk is loaded once for RR rows
+// and a row's weight chunk once for TB tokens (k_gemv_f32 loads both per (row, token)).
+template <int RR, int TB> void k_gemv_f32_rt(Q &q, const float *w, const float *x, float *y, int rows, int m) {
+  const int nt = (m + TB - 1) / TB;
+  const int nr = rows / RR;
+  q.parallel_for(sycl::range<1>(size_t(nt) * nr), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const size_t r0 = (id[0] % nr) * RR;
+    const int t0 = int(id[0] / nr) * TB;
+    const int tn = std::min(TB, m - t0);
+    simd<float, 64> acc[RR][TB];
+#pragma unroll
+    for (int i = 0; i < RR; i++)
+#pragma unroll
+      for (int t = 0; t < TB; t++) acc[i][t] = 0.0f;
+    for (int c0 = 0; c0 < D / 64; c0 += 2) {
+      simd<float, 64> a[RR][2];
+#pragma unroll
+      for (int i = 0; i < RR; i++)
+#pragma unroll
+        for (int u = 0; u < 2; u++) a[i][u].copy_from(w + (r0 + i) * D + (c0 + u) * 64);
+#pragma unroll
+      for (int t = 0; t < TB; t++) {
+        if (t < tn) {
+          simd<float, 64> b[2];
+#pragma unroll
+          for (int u = 0; u < 2; u++) b[u].copy_from(x + size_t(t0 + t) * D + (c0 + u) * 64);
+#pragma unroll
+          for (int u = 0; u < 2; u++)
+#pragma unroll
+            for (int i = 0; i < RR; i++) acc[i][t] += a[i][u] * b[u];
+        }
+      }
+    }
+#pragma unroll
+    for (int i = 0; i < RR; i++)
+#pragma unroll
+      for (int t = 0; t < TB; t++)
+        if (t < tn) storef(y + size_t(t0 + t) * 128 + ((r0 + i) < 48 ? (r0 + i) : (r0 + i) + 16), hsum<64>(acc[i][t]));
   });
 }
 
@@ -697,43 +798,99 @@ void k_gdn_core_cb(Q &q, const float *S, const float *act, const float *qn, cons
   q.parallel_for(sycl::range<1>(size_t(VH) * HD / CB), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
     const size_t col0 = id[0] * CB;
     const size_t h = col0 / HD, j0 = col0 % HD, kh = h / 3;
+    const simd<uint32_t, CB> lane(0, 4); // byte offsets of the CB adjacent columns
     simd<float, HD> s[CB];
 #pragma unroll
     for (int c = 0; c < CB; c++) s[c].copy_from(S + (col0 + c) * HD);
+    // the loads of token mi + 1 are issued before the update chain of token mi
+    simd<float, HD> k, qq;
+    float dec, bet;
+    simd<float, CB> vv;
+    k.copy_from(kn + kh * HD);
+    qq.copy_from(qn + kh * HD);
+    dec = loadf(decay + h);
+    bet = loadf(beta + h);
+    vv = gather<float, CB>(act + 2 * KH * HD + h * HD + j0, lane);
     for (int mi = 0; mi < m; mi++) {
-      simd<float, HD> k, qq;
-      k.copy_from(kn + (size_t(mi) * KH + kh) * HD);
-      qq.copy_from(qn + (size_t(mi) * KH + kh) * HD);
-      const float dec = loadf(decay + mi * 64 + h), bet = loadf(beta + mi * 64 + h);
+      simd<float, HD> k1, qq1;
+      float dec1 = 0, bet1 = 0;
+      simd<float, CB> vv1;
+      if (mi + 1 < m) {
+        k1.copy_from(kn + (size_t(mi + 1) * KH + kh) * HD);
+        qq1.copy_from(qn + (size_t(mi + 1) * KH + kh) * HD);
+        dec1 = loadf(decay + (mi + 1) * 64 + h);
+        bet1 = loadf(beta + (mi + 1) * 64 + h);
+        vv1 = gather<float, CB>(act + size_t(mi + 1) * QKV + 2 * KH * HD + h * HD + j0, lane);
+      }
+      simd<float, CB> dd, oo;
 #pragma unroll
       for (int c = 0; c < CB; c++) {
         s[c] = s[c] * dec;
         const float kv = hsum<HD>(s[c] * k);
-        const float d = (loadf(act + size_t(mi) * QKV + 2 * KH * HD + h * HD + j0 + c) - kv) * bet;
+        const float d = (float(vv[c]) - kv) * bet;
         s[c] = s[c] + k * d;
-        storef(dsave + size_t(mi) * VD + h * HD + j0 + c, d);
-        storef(gout + size_t(mi) * VD + h * HD + j0 + c, hsum<HD>(s[c] * qq));
+        dd[c] = d;
+        oo[c] = hsum<HD>(s[c] * qq);
       }
+      scatter<float, CB>(dsave + size_t(mi) * VD + h * HD + j0, lane, dd);
+      scatter<float, CB>(gout + size_t(mi) * VD + h * HD + j0, lane, oo);
+      k = k1;
+      qq = qq1;
+      dec = dec1;
+      bet = bet1;
+      vv = vv1;
     }
   });
 }
 
+// State update of the accepted tokens, CB value columns per thread (bit-identical to k_gdn_commit), fused with the convolution-history update (k_hist_commit's work in
+// QKV / 64 extra threads of the same launch: one launch per DeltaNet layer instead of two).
 template <int CB>
-void k_gdn_commit_cb(Q &q, float *S, const float *kn, const float *decay, const float *dsave, int n) {
-  q.parallel_for(sycl::range<1>(size_t(VH) * HD / CB), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+void k_gdn_commit_cb(Q &q, float *S, const float *kn, const float *decay, const float *dsave, int n, float *hist, const float *raw, size_t rs) {
+  constexpr size_t NST = size_t(VH) * HD / CB;
+  q.parallel_for(sycl::range<1>(NST + QKV / 64), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    if (id[0] >= NST) {
+      const size_t c = id[0] - NST;
+      simd<float, 64> r[3];
+#pragma unroll
+      for (int i = 0; i < 3; i++) {
+        const int x = n + i; // index into hist ++ raw
+        r[i].copy_from(x < 3 ? hist + size_t(x) * QKV + c * 64 : raw + size_t(x - 3) * rs + c * 64);
+      }
+#pragma unroll
+      for (int i = 0; i < 3; i++) r[i].copy_to(hist + size_t(i) * QKV + c * 64);
+      return;
+    }
     const size_t col0 = id[0] * CB;
     const size_t h = col0 / HD, j0 = col0 % HD, kh = h / 3;
+    const simd<uint32_t, CB> lane(0, 4);
     simd<float, HD> s[CB];
 #pragma unroll
     for (int c = 0; c < CB; c++) s[c].copy_from(S + (col0 + c) * HD);
-    for (int mi = 0; mi < n; mi++) {
-      simd<float, HD> k;
-      k.copy_from(kn + (size_t(mi) * KH + kh) * HD);
-      const float dec = loadf(decay + mi * 64 + h);
-#pragma unroll
-      for (int c = 0; c < CB; c++) s[c] = s[c] * dec + k * loadf(dsave + size_t(mi) * VD + h * HD + j0 + c);
+    // the loads of token mi + 1 (k row, decay, the CB values d) are issued before the update of token mi
+    simd<float, HD> k;
+    float dec = 0;
+    simd<float, CB> dv;
+    if (n > 0) {
+      k.copy_from(kn + kh * HD);
+      dec = loadf(decay + h);
+      dv = gather<float, CB>(dsave + h * HD + j0, lane);
     }
+    for (int mi = 0; mi < n; mi++) {
+      simd<float, HD> k1;
+      float dec1 = 0;
+      simd<float, CB> dv1;
+      if (mi + 1 < n) {
+        k1.copy_from(kn + (size_t(mi + 1) * KH + kh) * HD);
+        dec1 = loadf(decay + (mi + 1) * 64 + h);
+        dv1 = gather<float, CB>(dsave + size_t(mi + 1) * VD + h * HD + j0, lane);
+      }
 #pragma unroll
+      for (int c = 0; c < CB; c++) s[c] = s[c] * dec + k * float(dv[c]);
+      k = k1;
+      dec = dec1;
+      dv = dv1;
+    }
     for (int c = 0; c < CB; c++) s[c].copy_to(S + (col0 + c) * HD);
   });
 }
@@ -782,14 +939,18 @@ bool gdn_old() {
 void gdn_core(Q &q, const float *S, const float *act, const float *qn, const float *kn, const float *beta, const float *decay, float *dsave, float *gout, int m) {
   static const int cb = env_int("XF_GDN_CB", 2);
   if (gdn_old() || cb == 1) k_gdn_core(q, S, act, qn, kn, beta, decay, dsave, gout, m);
+  else if (cb == 8) k_gdn_core_cb<8>(q, S, act, qn, kn, beta, decay, dsave, gout, m);
   else if (cb == 4) k_gdn_core_cb<4>(q, S, act, qn, kn, beta, decay, dsave, gout, m);
   else k_gdn_core_cb<2>(q, S, act, qn, kn, beta, decay, dsave, gout, m);
 }
-void gdn_commit(Q &q, float *S, const float *kn, const float *decay, const float *dsave, int n) {
-  static const int cb = env_int("XF_GDN_CB", 2);
-  if (gdn_old() || cb == 1) k_gdn_commit(q, S, kn, decay, dsave, n);
-  else if (cb == 4) k_gdn_commit_cb<4>(q, S, kn, decay, dsave, n);
-  else k_gdn_commit_cb<2>(q, S, kn, decay, dsave, n);
+void gdn_commit(Q &q, float *S, const float *kn, const float *decay, const float *dsave, int n, float *hist, const float *raw, size_t rs) {
+  static const int cb = env_int("XF_GDN_COMMIT_CB", 8); // 1 = the original two kernels
+  if (gdn_old() || cb == 1) {
+    k_gdn_commit(q, S, kn, decay, dsave, n);
+    k_hist_commit(q, hist, raw, rs, n);
+  } else if (cb == 8) k_gdn_commit_cb<8>(q, S, kn, decay, dsave, n, hist, raw, rs);
+  else if (cb == 2) k_gdn_commit_cb<2>(q, S, kn, decay, dsave, n, hist, raw, rs);
+  else k_gdn_commit_cb<4>(q, S, kn, decay, dsave, n, hist, raw, rs);
 }
 void gdn_conv(Q &q, const float *raw, size_t rs, const float *hist, const float *taps, float *act, int m) {
   static const int tb = env_int("XF_GDN_CONV_TB", 8);
@@ -803,11 +964,76 @@ void gdn_gemv_ab(Q &q, const float *w, const float *x, float *y, int rows, int m
   // Default token block by the measured optimum (benchmarks/results/m32/gdn_sweep.md): the gemv has only 96 x m / TB threads, so wide blocks leave the GPU idle.
   static const int tbe = env_int("XF_GDN_GEMV_TB", 0);
   const int tb = tbe ? tbe : (m > 16 && m <= 32) ? 4 : 2;
+  static const int rt_env = env_int("XF_GDN_GEMV_RT", -1);
+  const int rt = rt_env >= 0 ? rt_env : (m > 32 ? 42 : 0); // default: 4 rows x 2 tokens above 32 rows (benchmarks/results/m41/gdn_sweep2.md), the token-block kernel otherwise; 0 = token-block kernel; 24 = 2 rows x 4 tokens, 42 = 4 rows x 2 tokens, 44 = 4 rows x 4 tokens, 22 = 2 x 2, 82 = 8 x 2
+  if (!gdn_old() && m > 1 && rt) {
+    if (rt == 22) k_gemv_f32_rt<2, 2>(q, w, x, y, rows, m);
+    else if (rt == 24) k_gemv_f32_rt<2, 4>(q, w, x, y, rows, m);
+    else if (rt == 42) k_gemv_f32_rt<4, 2>(q, w, x, y, rows, m);
+    else if (rt == 44) k_gemv_f32_rt<4, 4>(q, w, x, y, rows, m);
+    else k_gemv_f32_rt<8, 2>(q, w, x, y, rows, m);
+    return;
+  }
   if (gdn_old() || tb <= 1 || m == 1) k_gemv_f32(q, w, x, y, rows, m);
   else if (tb == 2) k_gemv_f32_tb<2>(q, w, x, y, rows, m);
   else if (tb == 8) k_gemv_f32_tb<8>(q, w, x, y, rows, m);
   else if (tb == 16) k_gemv_f32_tb<16>(q, w, x, y, rows, m);
   else k_gemv_f32_tb<4>(q, w, x, y, rows, m);
+}
+
+// DeltaNet output norm / gate (k_gdn_post) fused with the activation quantisation of the output projection: per token one work-group of VH = 48 threads, one per value head
+// (128 columns = 2 chunks of 64 = the chunk pair k_quant gives each of its 48 threads for n = 6144); the head's output stays in registers, the token's maximum is reduced through SLM and
+// the 16-bit quantisation (same expressions as k_quant) is applied. Bit-identical to k_gdn_post + k_quant; go and pmax are not written.
+void k_gdn_post_quant(Q &q, const float *gout, const float *z, size_t zs, const float *gw, const float *cs, float cmax, int m, int mpad, int8_t *xhi, uint8_t *xlo, float *ts,
+                      float *toff) {
+  q.parallel_for(sycl::nd_range<1>(size_t(m) * VH, VH), [=](sycl::nd_item<1> it) SYCL_ESIMD_KERNEL {
+    es::slm_init<512>();
+    const size_t mi = it.get_group(0), h = it.get_local_id(0);
+    const simd<int32_t, 64> iota(0, 1);
+    simd<float, HD> o, zz, w;
+    o.copy_from(gout + mi * VD + h * HD);
+    zz.copy_from(z + mi * zs + h * HD);
+    w.copy_from(gw);
+    o = o * srsqrt(hsum<HD>(o * o) * (1.0f / HD) + EPS) * w * (zz * sigmoid<HD>(zz));
+    simd<float, HD> ab = es::abs(o);
+    const float lm = std::max(hmax<64>(ab.template select<64, 1>(0)), hmax<64>(ab.template select<64, 1>(64)));
+    es::slm_scalar_store<float>(uint32_t(h * 4), lm);
+    es::barrier();
+    simd<float, 64> part = es::slm_block_load<float, 64>(0);
+    part.merge(simd<float, 64>(0.0f), iota >= VH);
+    float step = hmax<64>(part) * cmax * (1.0f / 32767.0f);
+    if (!(step > 0.0f)) step = 1.0f;
+    const float istep = 1.0f / step;
+    simd<float, 64> sum(0.0f);
+#pragma unroll
+    for (int k = 0; k < 2; k++) {
+      const size_t c = h * 2 + k;
+      simd<float, 64> sc;
+      sc.copy_from(cs + c * 64);
+      simd<float, 64> x = o.template select<64, 1>(64 * k);
+      simd<float, 64> r = es::rnde<float>(x * sc * istep);
+      r = es::max(es::min(r, simd<float, 64>(32767.0f)), simd<float, 64>(-32767.0f));
+      sum += r;
+      simd<int32_t, 64> xi = es::convert<int32_t>(r);
+      simd<int8_t, 64> hb = es::convert<int8_t>(xi >> 8);
+      simd<uint8_t, 64> lb = es::convert<uint8_t>(xi & 0xFF);
+#pragma unroll
+      for (int half = 0; half < 2; half++) {
+        simd<int8_t, 32> aa = hb.template select<32, 1>(32 * half);
+        simd<uint8_t, 32> bb = lb.template select<32, 1>(32 * half);
+        aa.copy_to(xhi + ((2 * c + half) * mpad + mi) * 32);
+        bb.copy_to(xlo + ((2 * c + half) * mpad + mi) * 32);
+      }
+    }
+    es::slm_scalar_store<float>(uint32_t(256 + h * 4), hsum<64>(sum));
+    es::barrier();
+    if (h == 0) {
+      simd<float, 64> part2 = es::slm_block_load<float, 64>(256);
+      part2.merge(simd<float, 64>(0.0f), iota >= VH);
+      storef(toff + mi, 0.5f * hsum<64>(part2));
+      storef(ts + mi, step);
+    }
+  });
 }
 
 // Head-wise RMSNorm (gain holds 1 + w) and RoPE on the first 64 dims.
@@ -2076,6 +2302,7 @@ struct Pass {
   bool pending = false; // ws.y still has to be added to ws.h
   int gemm_cat = P_GEMM; // profile category of the next GEMM (the head has its own)
   const xf_mat *quantised = nullptr; // matrix whose quantised input the last norm kernel already wrote
+  const xf_mat *pre_quant = nullptr; // matrix whose quantised input a fused kernel (MLP activation + quantisation) already wrote
 
   // y[m][rows] = mat (v[m][cols]) ; pmax must describe v.
   // `vs` is the row stride of v (0 = mat.cols). The output row stride is mat.rows.
@@ -2086,7 +2313,9 @@ struct Pass {
     Q &q = ctx->q;
     const int m = one ? 1 : this->m, mpad = one ? 1 : this->mpad, tpt = one ? 1 : this->tpt;
     const float *pmax = pm ? pm : ws.pmax;
-    if (quantised == &mat && v == ws.xn) {
+    if (pre_quant == &mat) {
+      pre_quant = nullptr; // the fused MLP kernel already produced the byte planes of this matrix
+    } else if (quantised == &mat && v == ws.xn) {
       quantised = nullptr; // the norm kernel already produced the byte planes of this matrix
     } else if (skip_mask() & 1) {
     } else {
@@ -2177,8 +2406,15 @@ struct Pass {
     const float *gptr = merged ? ws.g : ws.u;
     const float *uptr = merged ? ws.g + FF : ws.u + size_t(rows_cap(md->ctx)) * FF;
     const size_t stride = merged ? gs : size_t(FF);
-    if (!(skip_mask() & 32)) k_mlp_act(q, const_cast<float *>(gptr), uptr, stride, ws.pmax, m);
-    tm.tick(P_MLP, "mlp-act");
+    static const bool fuse_env = env_int("XF_MLP_FUSE", 1) != 0; // XF_MLP_FUSE=0: separate activation and quantisation kernels
+    if (merged && fuse_env && skip_mask() == 0) {
+      k_mlpact_quant(q, ws.g, gs, L.m[gi + 2].cs, L.m[gi + 2].cmax, m, mpad, ws.xhi, ws.xlo, ws.ts, ws.toff);
+      pre_quant = &L.m[gi + 2];
+      tm.tick(P_MLP, "mlp-act+quant");
+    } else {
+      if (!(skip_mask() & 32)) k_mlp_act(q, const_cast<float *>(gptr), uptr, stride, ws.pmax, m);
+      tm.tick(P_MLP, "mlp-act");
+    }
     if (int st = gemm(L.m[gi + 2], gptr, ws.y, stride)) return st;
     pending = true;
     return XF_OK;
@@ -2206,8 +2442,15 @@ struct Pass {
     tm.dtick(P_GDN, "gdn:gate");
     if (!(sk & 16)) gdn_core(q, s.S, ws.act, ws.qn, s.kn, s.beta, s.decay, s.dsave, ws.gout, m);
     tm.dtick(P_GDN, "gdn:core");
-    if (!(sk & 4)) k_gdn_post(q, ws.gout, z, zs, L.aux[4], ws.go, ws.pmax, m);
-    tm.tick(P_GDN, "gdn:post");
+    static const bool post_fuse = env_int("XF_POST_FUSE", 1) != 0; // XF_POST_FUSE=0: separate output norm and quantisation kernels
+    if (post_fuse && sk == 0) {
+      k_gdn_post_quant(q, ws.gout, z, zs, L.aux[4], L.m[2].cs, L.m[2].cmax, m, mpad, ws.xhi, ws.xlo, ws.ts, ws.toff);
+      pre_quant = &L.m[2];
+      tm.tick(P_GDN, "gdn:post+quant");
+    } else {
+      if (!(sk & 4)) k_gdn_post(q, ws.gout, z, zs, L.aux[4], ws.go, ws.pmax, m);
+      tm.tick(P_GDN, "gdn:post");
+    }
     if (int st = gemm(L.m[2], ws.go, ws.y)) return st;
     pending = true;
     return mlp(L, 3);
@@ -2588,8 +2831,7 @@ int xf_commit(xf_ctx *ctx, const xf_model *md, int n) {
       const xf_layer &L = md->layers[l];
       if (L.kind != XF_LAYER_GDN) continue;
       GdnState s = carve_gdn(L.state, md->ctx);
-      gdn_commit(ctx->q, s.S, s.kn, s.decay, s.dsave, n);
-      k_hist_commit(ctx->q, s.hist, s.raw, L.m[1].rows == 0 ? size_t(QKVZ) : size_t(QKV), n);
+      gdn_commit(ctx->q, s.S, s.kn, s.decay, s.dsave, n, s.hist, s.raw, L.m[1].rows == 0 ? size_t(QKVZ) : size_t(QKV));
     }
     return XF_OK;
   });

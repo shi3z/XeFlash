@@ -1,0 +1,56 @@
+device   : Intel(R) Arc(TM) Pro B60 Graphics (driver 1.18.40196+15)
+memory   : 23.91 GiB total, 22.48 GiB free, max single allocation 22.71 GiB
+threads  : 160 EU x 8 = 1280   SLM 128 KiB   2400 MHz
+launch   : 2.22 us queued, 6.68 us with a wait per launch
+
+matrix              shape    fmt  tok  tpt  seg        ms   ms(med)     Gw/s     GB/s     TOPS  check
+mlp.gate/up    17408x5120     s4   16   16    1    0.1099    0.1099    810.8    405.4    25.95  exact
+mlp.gate/up    17408x5120 s4+a16   16   16    1    0.1100    0.1100    810.0    405.0    51.84  exact
+mlp.gate/up    17408x5120     s4   32   32    1    0.1161    0.1161    767.8    383.9    49.14  exact
+mlp.gate/up    17408x5120 s4+a16   32   32    1    0.1323    0.1323    673.9    337.0    86.26  exact
+mlp.gate/up    17408x5120     s4   64   32    1    0.1384    0.1384    644.1    322.1    82.45  exact
+mlp.gate/up    17408x5120 s4+a16   64   32    1    0.1730    0.1731    515.2    257.6   131.89  exact
+mlp.down       5120x17408     s4   16   16    1    0.1157    0.1157    770.5    385.2    24.66  exact
+mlp.down       5120x17408 s4+a16   16   16    1    0.1350    0.1350    660.4    330.2    42.27  exact
+mlp.down       5120x17408     s4   32   32    1    0.1354    0.1355    658.2    329.1    42.12  exact
+mlp.down       5120x17408 s4+a16   32   32    1    0.1785    0.1786    499.3    249.6    63.91  exact
+mlp.down       5120x17408     s4   64   32    1    0.1870    0.1870    476.6    238.3    61.01  exact
+mlp.down       5120x17408 s4+a16   64   32    1    0.1998    0.1998    446.1    223.1   114.21  exact
+gdn.qkv        10240x5120     s4   16   16    1    0.0672    0.0673    779.7    389.8    24.95  exact
+gdn.qkv        10240x5120 s4+a16   16   16    1    0.0685    0.0685    765.7    382.9    49.01  exact
+gdn.qkv        10240x5120     s4   32   32    1    0.0710    0.0710    738.4    369.2    47.26  exact
+gdn.qkv        10240x5120 s4+a16   32   32    1    0.0744    0.0744    704.4    352.2    90.16  exact
+gdn.qkv        10240x5120     s4   64   32    1    0.0774    0.0774    677.5    338.8    86.73  exact
+gdn.qkv        10240x5120 s4+a16   64   32    1    0.0976    0.0977    536.9    268.5   137.45  exact
+merged.qkvz    16384x5120     s4   16   16    1    0.1038    0.1038    808.2    404.1    25.86  exact
+merged.qkvz    16384x5120 s4+a16   16   16    1    0.1041    0.1041    805.9    403.0    51.58  exact
+merged.qkvz    16384x5120     s4   32   32    1    0.1085    0.1085    773.4    386.7    49.50  exact
+merged.qkvz    16384x5120 s4+a16   32   32    1    0.1288    0.1288    651.5    325.8    83.40  exact
+merged.qkvz    16384x5120     s4   64   32    1    0.1338    0.1339    627.0    313.5    80.26  exact
+merged.qkvz    16384x5120 s4+a16   64   32    1    0.1710    0.1710    490.7    245.3   125.61  exact
+merged.attn_qkv   14336x5120     s4   16   16    1    0.0917    0.0917    800.3    400.1    25.61  exact
+merged.attn_qkv   14336x5120 s4+a16   16   16    1    0.0924    0.0924    794.1    397.0    50.82  exact
+merged.attn_qkv   14336x5120     s4   32   32    1    0.0960    0.0960    764.6    382.3    48.94  exact
+merged.attn_qkv   14336x5120 s4+a16   32   32    1    0.1230    0.1230    596.8    298.4    76.40  exact
+merged.attn_qkv   14336x5120     s4   64   32    1    0.1260    0.1261    582.3    291.2    74.54  exact
+merged.attn_qkv   14336x5120 s4+a16   64   32    1    0.1363    0.1363    538.6    269.3   137.88  exact
+merged.gate_up   34816x5120     s4   16   16    1    0.2272    0.2273    784.6    392.3    25.11  exact
+merged.gate_up   34816x5120 s4+a16   16   16    1    0.2286    0.2287    779.8    389.9    49.91  exact
+merged.gate_up   34816x5120     s4   32   32    1    0.2381    0.2381    748.6    374.3    47.91  exact
+merged.gate_up   34816x5120 s4+a16   32   32    1    0.2563    0.2565    695.4    347.7    89.02  exact
+merged.gate_up   34816x5120     s4   64   32    1    0.2718    0.2719    655.8    327.9    83.94  exact
+merged.gate_up   34816x5120 s4+a16   64   32    1    0.3104    0.3105    574.2    287.1   147.00  exact
+out_proj        5120x6144     s4   16   16    1    0.0607    0.0608    517.9    258.9    16.57  exact
+out_proj        5120x6144 s4+a16   16   16    1    0.0568    0.0569    553.4    276.7    35.42  exact
+out_proj        5120x6144     s4   32   32    1    0.0581    0.0582    541.6    270.8    34.66  exact
+out_proj        5120x6144 s4+a16   32   32    1    0.0663    0.0664    474.7    237.3    60.76  exact
+out_proj        5120x6144     s4   64   32    1    0.0632    0.0633    497.6    248.8    63.69  exact
+out_proj        5120x6144 s4+a16   64   32    1    0.0791    0.0792    397.8    198.9   101.82  exact
+lm_head       248320x5120     s4   16   16    1    1.5496    1.5499    820.5    410.2    26.26  exact
+lm_head       248320x5120 s4+a16   16   16    1    1.5605    1.5606    814.7    407.4    52.14  exact
+lm_head       248320x5120     s4   32   32    1    1.6317    1.6318    779.2    389.6    49.87  exact
+lm_head       248320x5120 s4+a16   32   32    1    1.7063    1.7065    745.1    372.6    95.37  exact
+lm_head       248320x5120     s4   64   32    1    1.8019    1.8021    705.6    352.8    90.32  exact
+lm_head       248320x5120 s4+a16   64   32    1    2.3433    2.3444    542.6    271.3   138.90  exact
+
+wrote benchmarks/results/m43/unit_final.json

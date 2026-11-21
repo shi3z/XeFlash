@@ -1,0 +1,40 @@
+device   : Intel(R) Arc(TM) Pro B60 Graphics (driver 1.18.40196+15)
+memory   : 23.91 GiB total, 22.48 GiB free, max single allocation 22.71 GiB
+threads  : 160 EU x 8 = 1280   SLM 128 KiB   2400 MHz
+launch   : 2.16 us queued, 7.57 us with a wait per launch
+
+matrix              shape    fmt  tok  tpt  seg        ms   ms(med)     Gw/s     GB/s     TOPS  check
+mlp.gate/up    17408x5120     s4   16   16    1    0.1098    0.1098    811.8    405.9    25.98  exact
+mlp.gate/up    17408x5120 s4+a16   16   16    1    0.1107    0.1107    805.4    402.7    51.55  exact
+mlp.gate/up    17408x5120     s4   64   32    1    0.1400    0.1401    636.6    318.3    81.49  exact
+mlp.gate/up    17408x5120 s4+a16   64   32    1    0.1710    0.1710    521.3    260.7   133.46  exact
+mlp.down       5120x17408     s4   16   16    1    0.1162    0.1162    767.2    383.6    24.55  exact
+mlp.down       5120x17408 s4+a16   16   16    1    0.1426    0.1427    624.8    312.4    39.99  exact
+mlp.down       5120x17408     s4   64   32    1    0.1838    0.1838    485.0    242.5    62.08  exact
+mlp.down       5120x17408 s4+a16   64   32    1    0.2122    0.2122    420.1    210.0   107.53  exact
+gdn.qkv        10240x5120     s4   16   16    1    0.0665    0.0666    788.0    394.0    25.22  exact
+gdn.qkv        10240x5120 s4+a16   16   16    1    0.0712    0.0712    736.6    368.3    47.14  exact
+gdn.qkv        10240x5120     s4   64   32    1    0.0791    0.0791    663.0    331.5    84.87  exact
+gdn.qkv        10240x5120 s4+a16   64   32    1    0.0943    0.0943    555.9    278.0   142.32  exact
+merged.qkvz    16384x5120     s4   16   16    1    0.1043    0.1049    803.9    402.0    25.73  exact
+merged.qkvz    16384x5120 s4+a16   16   16    1    0.1053    0.1054    796.3    398.1    50.96  exact
+merged.qkvz    16384x5120     s4   64   32    1    0.1344    0.1345    624.3    312.2    79.92  exact
+merged.qkvz    16384x5120 s4+a16   64   32    1    0.1694    0.1695    495.1    247.6   126.75  exact
+merged.attn_qkv   14336x5120     s4   16   16    1    0.0916    0.0916    801.3    400.6    25.64  exact
+merged.attn_qkv   14336x5120 s4+a16   16   16    1    0.0933    0.0933    786.8    393.4    50.36  exact
+merged.attn_qkv   14336x5120     s4   64   32    1    0.1235    0.1235    594.5    297.2    76.09  exact
+merged.attn_qkv   14336x5120 s4+a16   64   32    1    0.1337    0.1338    549.0    274.5   140.53  exact
+merged.gate_up   34816x5120     s4   16   16    1    0.2270    0.2270    785.3    392.7    25.13  exact
+merged.gate_up   34816x5120 s4+a16   16   16    1    0.2289    0.2290    778.7    389.3    49.83  exact
+merged.gate_up   34816x5120     s4   64   32    1    0.2807    0.2808    635.0    317.5    81.27  exact
+merged.gate_up   34816x5120 s4+a16   64   32    1    0.3100    0.3100    575.0    287.5   147.20  exact
+out_proj        5120x6144     s4   16   16    1    0.0537    0.0538    585.3    292.7    18.73  exact
+out_proj        5120x6144 s4+a16   16   16    1    0.0559    0.0561    562.4    281.2    35.99  exact
+out_proj        5120x6144     s4   64   32    1    0.0661    0.0663    476.2    238.1    60.95  exact
+out_proj        5120x6144 s4+a16   64   32    1    0.0784    0.0785    401.1    200.5   102.68  exact
+lm_head       248320x5120     s4   16   16    1    1.5476    1.5481    821.5    410.8    26.29  exact
+lm_head       248320x5120 s4+a16   16   16    1    1.5588    1.5591    815.6    407.8    52.20  exact
+lm_head       248320x5120     s4   64   32    1    1.8040    1.8045    704.8    352.4    90.21  exact
+lm_head       248320x5120 s4+a16   64   32    1    2.2201    2.2206    572.7    286.3   146.60  exact
+
+wrote benchmarks/results/m42/unit_wg8.json

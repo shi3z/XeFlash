@@ -1,0 +1,3 @@
+slm_merged.gate_up 0
+slm_mlp.down 0
+done

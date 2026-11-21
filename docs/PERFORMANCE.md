@@ -2594,3 +2594,134 @@ Tokens per pass 89.2 (JSONL edit) / 101.5 (long): **~560 / ~630 tok/s, no better
 2. The 16-bit activations double the work (2 planes); with 8-bit activations the 64-row GEMM would be 36 ms, but that changes the results (not allowed).
 3. 1000 tok/s on the JSONL edit needs a 59.5 ms cycle at 64 rows: GEMM floor 33.3 ms + 29 ms of GDN / attention / norm / mlp that does not shrink with the XMX. Today: 88.5 ms (GEMM 50.5 + head ~2.6 + the rest ~29 + commit/draft ~4). At 128 rows 89 ms would be needed against ~160.
    **Not reached; the measured best is 671.8 tok/s (JSONL edit), 613.8 (long JSONL edit).** Remaining levers by size: GDN core (14 ms at 64 rows, bound by its serial chain), the GEMM operand stream (up to ~10 ms if the XMX reached 90%), attention (6.5 ms, more at long context), mlp-act / norm / quant (13 ms of mostly launch-bound small kernels).
+
+
+## Part AE — cycle accounting, fused small kernels, GDN commit / gemv, and the GEMM operand-supply experiments (2026-11-21)
+
+Baseline: commit 36b5653 (Part AD), 64-row hybrid, JSONL edit 671.8 tok/s (cycle 88.5 ms). Final: **743.2 tok/s (+10.6%), cycle 80.0 ms**, bit-identical. 800 tok/s (cycle 74.4 ms) was **not reached**; the numbers below say what is left.
+
+### AE1. Where the cycle went (the 4 ms nobody counted)
+cycle 88.58 ms = Main 82.71 + draft 1.89 + **4.0 ms not in any timer**. Host work is not it (candidate search 0.000 ms, token bookkeeping 0.005 ms per pass, `m41/host_jsonl.log`).
+The missing time is the **commit** of the accepted tokens (the DeltaNet state update of the accepted rows, 48 layers x 2 kernels), which runs on the device after the verify pass and is waited for at the top of the next cycle (`xf-run wide` now times it, `m41`): 1.96 / 2.88 / **4.74 ms** for 16 / 32 / 64 rows.
+
+### AE2. Changes adopted (all bit-identical; digest of tokens + logit bits + per-layer states equal to the previous build at 16 / 32 / 64 rows, xmx KV)
+| change | 64-row Main pass (ms) | other |
+|---|---|---|
+| MLP activation fused with the down projection's activation quantisation (`k_mlpact_quant`: one work-group per token, silu(gate) x up kept in registers, row maximum through SLM, 16-bit quantisation; `XF_MLP_FUSE=0` = old) | 81.24 -> 76.28 (-5.0) | 16 rows -1.6 ms |
+| commit: state update + convolution history in one launch, 8 value columns per thread (`XF_GDN_COMMIT_CB`, 1 = old) | (commit time) | 4.74 -> 3.00 ms (CB 2: 4.51, CB 4: 3.88) |
+| gdn:gemv-ab: 4 rows x 2 tokens per thread above 32 rows (`XF_GDN_GEMV_RT`) | 76.25 -> 75.02 (-1.2) | 88.7 -> 63.5 us per layer |
+| GDN output norm fused with the out-projection's quantisation (`k_gdn_post_quant`, `XF_POST_FUSE=0` = old) | with the two rows above 76.28 -> 74.19 | post + act-quant 1.37 + 0.9 -> 1.0 ms |
+| next-token loads issued before the update chain in the GDN core / commit, vector load / store of the per-column scalars | 74.19 -> 74.06 (-0.13) | commit 3.00 -> 2.94: negligible, kept |
+Result of the Main pass at position 2927 (`m43/wide_*.log`): **16 rows 44.81 -> 42.88 ms, 32 rows 56.63 -> 53.46, 64 rows 81.26 -> 74.06**; commit **1.47 / 1.95 / 2.94 ms**.
+GDN core / gemv / commit sweep at 64 rows (`scripts/gdn_sweep2.sh`, `m41/sweep/`; cb = core columns per thread, cc = commit columns per thread, rt = gemv rows x tokens per thread):
+
+variant|core us/layer (m=64)|gemv-ab us|conv us|Main pass 64 rows (ms)|commit 64 rows (ms)|exact (tokens/state)
+base|135.3|88.7|24.1|76.25|3.74|identical
+cb4|136.4|88.4|23.5|76.23|3.74|identical
+cb8|149.5|88.4|23.6|76.86|3.74|identical
+cc2|134.7|88.6|23.7|76.25|4.51|identical
+cc8|135.3|89.2|23.8|76.21|3.00|identical
+rt22|134.8|94.0|23.3|76.53|3.73|identical
+rt24|134.5|86.1|23.7|76.15|3.73|identical
+rt42|134.8|63.5|23.5|75.02|3.73|identical
+rt44|135.0|86.0|23.6|76.07|3.74|identical
+rt82|135.1|108.4|23.9|77.18|3.74|identical
+
+Core columns per thread: 2 = 4 (135-136 us), 8 is slower (150 us, register pressure): the core is bound by its serial per-token chain, not by loads.
+
+### AE3. GEMM operand-supply experiments (64 rows, `xf-bench --cold`; none adopted; kernels removed or kept behind `XF_GEMM_A16_32=slm|slm4|slm8`)
+1. **Weight prefetch** (explicit `prefetch` of the weight stream 4..32 tiles ahead into L1 / L2, which IGC cannot move): no gain, worse for longer distances (the weights are not the latency problem; the added instructions cost 1.4% even at distance 0, so the code was removed):
+
+prefetch distance (tiles)|16 rows GEMM sum (ms)|64 rows GEMM sum (ms)|gate_up 64 rows (ms)|down 64 rows (ms)|all exact
+0|35.51|50.88|0.3091|0.2115|True
+4|37.24|50.99|0.3056|0.2177|True
+8|37.45|51.62|0.3108|0.2176|True
+16|39.08|52.78|0.3200|0.2187|True
+32|42.76|56.63|0.3554|0.2251|True
+
+2. **Work-group size** (2 / 4 / 8 / 16 threads) has no effect on the GEMM:
+
+XF_GEMM_WG (threads per work-group)|16 rows GEMM sum|64 rows GEMM sum|gate_up 64|qkvz 64|down 64|out_proj 64
+2|35.63|51.16|0.3089|0.1677|0.2123|0.0796
+4|35.47|50.89|0.3090|0.1680|0.2115|0.0787
+8|35.47|50.93|0.3100|0.1694|0.2122|0.0784
+16|35.59|51.17|0.3135|0.1725|0.2116|0.0775
+
+3. **Column segments for `down` at 64 rows** (2 / 4 / 8): 0.316 / 0.337 / 0.386 ms against 0.207 ms with 1 segment (the combine kernel costs more than the extra threads gain).
+4. **SLM sharing of the activation planes** (`submit_slm`: 8 threads = 8 row blocks of one 16-token group, each loads one eighth of the stage's activation tiles from L1, stores to SLM (double buffer), one barrier per stage of 2 / 4 / 8 tiles, all threads read the complete tiles from SLM; exact, 128 GRF, no spill; ISA: 16 DPAS and 35 sync instructions per stage). Unit time gate+up 0.434 / 0.432 / 0.595 ms (stage of 2 / 4 / 8 tiles) against 0.310 ms for the adopted kernel, qkvz 0.234 against 0.168, down 0.210 against 0.200.
+   Counters (gate+up, 64 rows): **the L1 operand traffic is removed (Send stall 40% -> 5.9%) but the XMX falls from 71.5% to 52%**, because the stage now waits at a barrier (23%), on the SLM store -> load dependency (Dist/Acc 20%) and on SBID (29%); a longer stage does not amortise it:
+
+kernel|shape|avg us|GRF|XVE act%|stall%|idle%|occ%|XMX%|SBID%|Send%|Barrier%|DistAcc%|L3 miss%|DRAM GB/s|sync instr/call (M)
+slm|merged.gate_up|435|128|56.5|38.7|4.8|93.1|51.8|28.9|5.9|22.9|19.6|63.0|202|0.68
+slm|mlp.down|207|128|51.6|41.8|6.6|93.3|52.5|35.2|6.9|29.1|22.2|86.7|211|0.33
+
+5. **L1 against SLM bandwidth** (`kernels/probe/l1_slm_bw.cpp`, 512-byte loads, TB/s; L1 = global loads hitting a resident buffer):
+
+```
+threads wg | L1 TB/s (N=4) | SLM TB/s (N=4)
+  1280  4 |   6.17 |   9.05
+  1280  8 |   8.59 |   9.66
+  2560  4 |   6.47 |   9.44
+  2560  8 |   8.16 |   9.72
+  5120  4 |   6.59 |  10.14
+  5120  8 |   8.98 |  10.74
+```
+   The GEMM draws 4.4 TB/s of operand traffic from L1, below the 6.2-9.0 TB/s the L1 sustains in this probe: the L1 data port is not saturated, the limit is the latency / issue of the load -> DPAS dependency, so moving the traffic to SLM (9-10 TB/s) cannot pay for a barrier per stage.
+6. Earlier in Part AD (same conclusion): 2 row blocks per thread (fewest loads per DPAS) loses to the lost occupancy; a source-level prefetch distance 2 is undone by IGC (loads sunk to their use).
+
+### AE4. End-to-end, 5 processes per task (`scripts/edit_ae_suite.sh`, `m43/`; s4-cal, XF_KV=xmx; same tokens and state as greedy in every repeat; the JSONL answers equal the official expected text 5/5, the code edit stays 0/5 for greedy and all configurations)
+task|config|tok/s mean (min-max)|tokens/pass|accept1|Main ms/pass|Draft ms/pass|answer = expected|same tokens+state as greedy
+edit_code|greedy|26.2 (26.2-26.2)|1.00|-|38.15|-|0/5|-
+edit_code|bd2:adapt-cost|108.7 (108.7-108.8)|5.51|0.975|43.07|6.65|0/5|5/5
+edit_code|hy4+bd2:fixed8|272.6 (272.6-272.6)|12.90|0.806|45.08|1.11|0/5|5/5
+edit_code|hw4+bd2:fixed16|356.4 (356.3-356.4)|20.65|0.806|54.20|2.38|0/5|5/5
+edit_code|hv4+bd2:fixed16|405.2 (405.2-405.3)|29.07|0.806|66.58|3.52|0/5|5/5
+edit_code|hv4+bd2:fixed8|414.0 (413.9-414.0)|28.89|0.806|65.13|3.04|0/5|5/5
+edit_jsonl|greedy|26.5 (26.5-26.5)|1.00|-|37.70|-|5/5|-
+edit_jsonl|bd2:adapt-cost|289.7 (289.6-289.8)|15.26|1.000|44.06|7.40|5/5|5/5
+edit_jsonl|hy4+bd2:fixed8|339.9 (339.8-339.9)|15.60|1.000|44.53|0.15|5/5|5/5
+edit_jsonl|hw4+bd2:fixed16|536.6 (536.5-536.7)|31.03|1.000|55.38|0.78|5/5|5/5
+edit_jsonl|hv4+bd2:fixed16|743.2 (743.1-743.4)|59.48|1.000|75.65|1.86|5/5|5/5
+edit_jsonl|hv4+bd2:fixed8|715.8 (715.6-716.0)|57.10|1.000|75.58|1.74|5/5|5/5
+edit_jsonl_long|greedy|25.9 (25.9-25.9)|1.00|-|38.62|-|5/5|-
+edit_jsonl_long|bd2:adapt-cost|273.5 (273.4-273.6)|15.10|1.000|46.61|7.38|5/5|5/5
+edit_jsonl_long|hy4+bd2:fixed8|324.6 (324.6-324.6)|15.72|1.000|47.09|0.11|5/5|5/5
+edit_jsonl_long|hw4+bd2:fixed16|495.1 (495.0-495.1)|30.78|1.000|59.81|0.68|5/5|5/5
+edit_jsonl_long|hv4+bd2:fixed16|673.8 (673.7-674.0)|59.58|1.000|84.18|1.68|5/5|5/5
+edit_jsonl_long|hv4+bd2:fixed8|668.9 (668.8-669.0)|59.04|1.000|84.07|1.65|5/5|5/5
+
+| task (64-row hybrid, fixed16 / code: fixed8) | Part AD | Part AE | change |
+|---|---|---|---|
+| JSONL edit | 671.8 | **743.2** | +10.6% |
+| long JSONL edit | 613.8 | **673.8** | +9.8% |
+| code edit | 383.3 | **414.0** | +8.0% |
+| JSONL edit, 32 rows | 502.2 | 536.6 | +6.9% |
+| JSONL edit, 16 rows | 323.3 | 339.9 | +5.1% |
+Spread over 5 processes <= 0.3 tok/s. Exactness: one pass of n rows against passes of <= 16 rows, 23 cases (17..64 rows, xmx / fp32 / fp16 / bf16 KV, JSONL / code / 8K prompts), 0 differences in tokens + logit bits, GDN state (48 layers), KV cache (16 layers), whole state (`m43/wide/`; the two 8K cases first reported rc=1 only because the new commit timing loop ran past the context, fixed and re-run). Unit GEMM sums unchanged: 34.9 / 41.9 / 50.4 ms (16 / 32 / 64 rows).
+
+### AE5. What is left at 64 rows (stage-synchronised per-kernel table, `m43/detail_3k.log`)
+kernel (64 rows, position ~3K)|calls/pass|net us/call|ms/pass|share
+gemm 34816x5120|64|331.7|21.25|27%
+gemm  5120x17408|64|194.7|12.48|16%
+gemm 16384x5120|48|188.9|9.08|11%
+gdn:core|48|138.5|6.66|8%
+gemm  5120x6144|64|95.2|6.11|8%
+attn:xmx-main|16|272.1|4.36|5%
+mlp-act+quant|64|50.5|3.25|4%
+addnorm+quant|128|24.6|3.19|4%
+gdn:gemv-ab|48|62.8|3.03|4%
+gemm 14336x5120|16|151.6|2.43|3%
+gemm 248320x5120  (head)|1|2373.5|2.37|3%
+gdn:conv|48|23.6|1.15|1%
+gdn:post+quant|48|20.6|1.00|1%
+attn:combine|16|56.9|0.92|1%
+sum (stage-synchronised) ms: 80.1
+
+800 tok/s needs the cycle at 74.4 ms: 5.6 ms more than today (80.0 = Main 74.06 incl. commit overlap + draft 1.9 + commit ~3 not overlapped). Candidates with their measured size: GEMM 53.7 ms at 65% of the XMX peak (every point of XMX utilisation is ~0.8 ms);
+GDN core 6.7 ms (chain-bound), attention 6.5 ms, MLP activation + quantisation 3.2 (50 us per layer for 64 tokens), addnorm + quant 3.2 (128 launches at 24.6 us, launch / latency bound), gemv-ab 3.0, conv 1.2. Fusing conv / qk-norm / gate (~0.9 ms) and speeding up addnorm + quant (~1 ms) would not close the gap alone; 800 needs the GEMM too.
+
+### AE6. The most promising way to 1000 tok/s (from the data above)
+1. The GEMM is the lever (65% of the cycle). The best kernel reaches 71% XMX with Send stall 20% and SBID 31%; the SLM experiment proved the L1 operand supply can be taken off the critical path (Send 5.9%) but a plain barrier per stage cost more than it saved (XMX 52%).
+   The step that keeps the SLM benefit without the barrier stall is a **producer / consumer split with named (split) barriers**: one thread per work-group streams the next activation stage into SLM with big loads and signals, the 7 compute threads only wait on that signal for the stage they need (the previous stage is read while the next one is produced), and no thread waits at a full barrier. Expected: XMX 75-80% on every shape, i.e. GEMM 50 -> ~42 ms (-8 ms), cycle ~72 ms = 825 tok/s. Not implemented here (new kernel structure with `named_barrier`; the SLM data path and the exactness of the integer arithmetic are already validated by `submit_slm`).
+2. A 16-bit-activation GEMM with fewer DPAS per weight tile does not exist without changing the result (8-bit planes would be 36 ms but change the output).
+3. 1000 tok/s (59.5 ms) additionally needs ~15 ms out of the non-GEMM 27 ms (GDN chain, attention, ~900 small launches): a persistent / fused GDN layer kernel (conv + qk-norm + gate + core + post in one launch per layer, state kept in SLM / registers across tokens) is the only structural option there that keeps the floating-point order; it is a large rewrite with a ceiling of about -6 ms.

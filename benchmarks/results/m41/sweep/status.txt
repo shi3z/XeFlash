@@ -1,0 +1,11 @@
+base rc=0
+cb4 rc=0
+cb8 rc=0
+cc2 rc=0
+cc8 rc=0
+rt22 rc=0
+rt24 rc=0
+rt42 rc=0
+rt44 rc=0
+rt82 rc=0
+done
