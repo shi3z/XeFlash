@@ -1,0 +1,6 @@
+Timing-only upper bounds, 64 rows, XF_GEMM_NATIVE binaries made from the disassembly (results WRONG on purpose: rel error shown by xf-bench).
+variant                        gate_up_ms   qkvz_ms
+unedited round trip (exact)    0.3107       0.1695
+no loads in the main loop      0.2529       0.1443   (DPAS-only floor of the 16x32 structure)
+no weight loads (2 of 18)      0.2553       0.1454   (also removes the DRAM weight stream)
+no activation loads (16 of 18) 0.2837       0.1587

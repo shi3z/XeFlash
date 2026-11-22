@@ -2863,3 +2863,29 @@ Built (default off, no change to any result): `XF_GEMM_NATIVE=<zebin>` makes the
 What the loop looks like (read from the listing): two halves per trip, each = 9 loads (1 weight, 4 + 4 activation planes) into the buffer set just consumed (`sync.nop {$n.src}` waits for the DPAS that read it), then `sync.allwr` on the previous half's loads, then 8 + 8 DPAS. So the loads are already one full 16-DPAS stage ahead and the wait is split in two (b-plane DPAS first). Registers: accumulators r138..r201, buffers r21..r133, about 50 GRFs (r206..r254) unused in the loop.
 
 Not done: a three-buffer (two stages ahead) rewrite of the loop. It needs the unroll to become 3 halves (K-tile count is not a multiple of 3 for every shape: prologue/epilogue and SWSB token re-allocation by hand) and it is the only edit that the compiler's scheduler cannot undo; earlier source-level tests (pd2, explicit weight prefetch, Parts AD/AG) showed no gain, so the expected gain is small and no estimate is claimed. No performance change was measured in this part.
+
+### AH2. Where the 64-row GEMM loop loses time (native-ISA load-removal bounds, `m47/load_removal_bounds.txt`)
+Timing-only variants of the unedited binary (loads inside the main loop deleted; results wrong on purpose), 64 rows: gate_up 0.3107 ms (unedited) / 0.2529 (no loads) / 0.2553 (no weight loads, 2 of 18) / 0.2837 (no activation loads, 16 of 18); qkvz 0.1695 / 0.1443 / 0.1454 / 0.1587.
+Reading (measured): the DPAS-only floor of the 16 rows x 32 tokens structure is 253 us (about 92% of XMX peak), so the loads cost at most 58 us (18.6%) on gate_up and 25 us (14.9%) on qkvz. About 3/4 of it disappears with the weight loads alone; the 16 activation loads cost at most 27 us (8.8%). Caveat: removing the weight loads also removes the DRAM stream (bandwidth and latency are not separated by this test).
+Prediction (not measured): a deeper load pipeline hides latency only; bandwidth and send-queue stalls stay. Expected 0 to 40% of the 58 us, i.e. GEMM sum 50.4 -> 47..50 ms, 64-row cycle -0..3 ms, 762 -> 762..790 tok/s.
+
+### AH3. Weight prefetch distance in hand-written ISA (gate_up, 64 rows): not adopted
+`tools/isa/gen_wpf.py` rewrites the K loop of the 256-GRF kernel (original binary kept: `m47/native/orig_rt.zebin`, `m47/wpf/*.zebin`, listings `m47/wpf/wpf{1,2,3}.asm`): four weight register sets (4 regs each), weights loaded DW tiles ahead (DW = 1, 2, 3), activation loads, DPAS order and accumulators unchanged; prologue (tile 0 from the original prologue, tiles 1..DW-1 explicit), steady loop of 4 tiles per trip, peeled last trip with no loads past the end of K, jump back to the original epilogue. Taken only when the tile count is a multiple of 4 (every s4 shape of the model: K = 5120 -> 160, 17408 -> 544), otherwise the original loop runs (that fallback path was not exercised). Registers: weight sets r21..r36 (+ r133), second activation set r33..r64 (the first stays in the original prologue registers), pointers / counters r66..r78: all inside the 49 GRFs the loop did not use, no scratch (`grf_count` 256 unchanged). SWSB: one token per weight set (4), per activation load (16), two DPAS release tokens per parity; every load waits for the release of the DPAS that read its destination set (`sync.allrd`), every DPAS group waits for its own loads (`sync.allwr`).
+
+Load issue to first DPAS use (instructions in the steady loop, static): DW=1 28, DW=2 47, DW=3 66 (original loop: 39 for the same quantity, one half-trip). So the distance really changed; the DPAS order did not.
+
+5 processes each, interleaved, 64 rows, all `exact` (`m47/wpf/gate_up_5x.txt`), median (min..max) ms:
+variant|gate_up|qkvz
+original round trip|0.3107 (0.3106..0.3107)|0.1696
+DW=1 (same distance as the compiler's loop)|0.3106 (0.3105..0.3106)|0.1689
+DW=2|0.3261 (0.3261..0.3272) +5.0%|0.1744 +2.8%
+DW=3|0.3285 (0.3284..0.3286) +5.7%|0.1769 +4.3%
+
+VTune (`m47/wpf/vtune_summary.txt`, gate_up, 256-GRF kernel row):
+variant|time us|XMX active %|SBID stall %|Send stall %|DRAM read GB/s|L3 read GB/s
+original|311|71.5|31.0|20.2|277|596
+DW=1|311|71.7|31.6|20.3|279|602
+DW=2|327|68.2|27.9|33.9|262|536
+DW=3|330|67.7|27.7|34.5|263|539
+
+Reading (measured): the extra distance does hide latency (SBID stall -3.7 points), but the send queue then fills (Send stall +13.6 points), the XMX falls 71.5 -> 68.2%, DRAM and L3 bandwidth fall. A deeper weight pipeline is therefore net negative; the DW=1 rebuild shows that the hand-written structure itself costs nothing (same time as the compiler's). Not a scoreboard limit (tokens are not the stall; SBID drops), not DRAM-bandwidth saturation (277 GB/s of 456, the read-only stream reaches 418), not a too-short distance: the limit is the number of outstanding loads the memory pipe accepts per EU (Send queue), which the earlier load-removal bound (`load_removal_bounds.txt`, the 58 us) is made of. Consequence: latency hiding by prefetch depth cannot recover that time; only fewer or larger load messages (same bytes, fewer sends) could. Not rolled out to qkvz (it is slower there too); no E2E effect (the default path is unchanged: 762.3 tok/s from Part AG).

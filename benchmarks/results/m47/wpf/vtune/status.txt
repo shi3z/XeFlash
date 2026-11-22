@@ -1,0 +1,5 @@
+orig_merged.gate_up 0
+dw1_merged.gate_up 0
+dw2_merged.gate_up 0
+dw3_merged.gate_up 0
+done
