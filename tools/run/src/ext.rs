@@ -180,6 +180,7 @@ pub mod bdraft2 {
         fn xbd_reset(h: *mut c_void) -> i32;
         fn xbd_ctx(h: *mut c_void, taps: *const f32, n: i32, pos0: i32) -> i32;
         fn xbd_step(h: *mut c_void, taps: *const f32, n: i32, pos0: i32, r: i32, tok: i32, p: i32, out: *mut i32) -> i32;
+        fn xbd_ctx_dev_blocks(h: *mut c_void, dev_taps: *const f32, nblocks: i32, n_total: i32, pos0: i32) -> i32;
         fn xbd_ctx_dev(h: *mut c_void, dev_taps: *const f32, n: i32, pos0: i32) -> i32;
         fn xbd_step_dev(h: *mut c_void, dev_taps: *const f32, n: i32, pos0: i32, r: i32, tok: i32, p: i32, out: *mut i32) -> i32;
     }
@@ -222,6 +223,17 @@ pub mod bdraft2 {
         /// Like [`step`], reading the taps from the main engine's device
         /// buffer. `Ok(None)` if the two engines do not share a SYCL context
         /// (the caller then falls back to the host copy).
+        /// Ring catch-up with `n_total` rows (<= 64) held in `nblocks` consecutive tap blocks starting at `dev_taps`: one staged copy, then queued without waiting.
+        pub fn ctx_dev_blocks(&mut self, dev_taps: *const f32, nblocks: usize, n_total: usize, pos0: usize) -> Result<bool> {
+            match unsafe { xbd_ctx_dev_blocks(self.0, dev_taps, nblocks as i32, n_total as i32, pos0 as i32) } {
+                2 => Ok(false),
+                st => {
+                    check(st)?;
+                    Ok(true)
+                }
+            }
+        }
+
         /// Ring catch-up from the other engine's device buffer, queued without waiting. `Ok(false)` if the buffer is not usable (host path needed).
         pub fn ctx_dev(&mut self, dev_taps: *const f32, n: usize, pos0: usize) -> Result<bool> {
             match unsafe { xbd_ctx_dev(self.0, dev_taps, n as i32, pos0 as i32) } {

@@ -1,0 +1,37 @@
+loaded /data/B60special/models/xfm/qwen38-27b-s4-cal.xfm in 6.5s, context capacity 14336 tokens
+device allocations      count          GiB
+  DeltaNet state           48       0.5695
+  KV cache                 16       0.8750
+  MTP                       5       0.3687
+  MTP KV cache              1       0.0547
+  RoPE table                2       0.0034
+  body matrices           256      11.3428
+  embedding (bf16)          1       2.3682
+  head sketch               4       0.1291
+  lm_head                   1       0.5920
+  matrix scales           779       0.0393
+  small tensors           408       0.0978
+  workspace                 1       0.2088
+  TOTAL requested        1522      16.6493
+driver free VRAM: 22.4843 GiB before, 5.8010 GiB after, difference 16.6832 GiB
+bdraft2 backend loaded: +2.807 GiB device memory (driver)
+edit_edit_jsonl_long none        25.94 tok/s | 1.00 tok/pass | main  38.55 ms/pass
+          cost probe at position 6576: 8 rows 40.7 ms, 16 rows 44.9 ms -> c16 = 1.089
+          adaptive block: 426 of 430 passes used 16 rows; taps device-to-device
+edit_edit_jsonl_long bd2:adapt-cost  273.77 tok/s | 15.10 tok/pass | cycle  55.16 ms | main  47.08, draft   7.38 (of which taps 0.00) ms/pass | accept% [100 100 100 100 99 99 100 100 99 99 99 99 95 95 85] | same tokens, same state
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.001 ms
+          hybrid: 411 of 413 passes verified a copied candidate (min 4 tokens), 0 of them with more than 16 rows, 0 with more than 32
+          taps device-to-device
+edit_edit_jsonl_long hy4+bd2:fixed8  325.99 tok/s | 15.72 tok/pass | cycle  48.23 ms | main  47.60, draft   0.11 (of which taps 0.00) ms/pass | accept% [100 100 100 100 100 50 100] | same tokens, same state
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.002 ms
+          hybrid: 209 of 211 passes verified a copied candidate (min 4 tokens), 209 of them with more than 16 rows, 0 with more than 32
+          taps device-to-device
+edit_edit_jsonl_long hw4+bd2:fixed16  503.36 tok/s | 30.78 tok/pass | cycle  61.14 ms | main  59.94, draft   0.67 (of which taps 0.00) ms/pass | accept% [100 100 100 100 100 50 100 100 100 100 100 100 100 100 100] | same tokens, same state
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.004 ms
+          hybrid: 107 of 109 passes verified a copied candidate (min 4 tokens), 107 of them with more than 16 rows, 107 with more than 32
+          taps device-to-device
+edit_edit_jsonl_long hv4+bd2:fixed16  688.33 tok/s | 59.58 tok/pass | cycle  86.55 ms | main  84.26, draft   1.70 (of which taps 0.00) ms/pass | accept% [100 100 100 100 100 50 100 100 100 100 100 100 100 100 100] | same tokens, same state
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.004 ms
+          hybrid: 108 of 110 passes verified a copied candidate (min 4 tokens), 108 of them with more than 16 rows, 108 with more than 32
+          taps device-to-device
+edit_edit_jsonl_long hv4+bd2:fixed8  683.18 tok/s | 59.04 tok/pass | cycle  86.41 ms | main  84.15, draft   1.67 (of which taps 0.00) ms/pass | accept% [100 100 100 100 100 50 100] | same tokens, same state

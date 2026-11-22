@@ -163,8 +163,17 @@ WS carve_ws(void *base, int ctx) {
   return w;
 }
 
+// XF_GDN_SHADOW=1 (experiment): the DeltaNet core also writes the state after the last token of the pass into a shadow buffer Sx (a full-acceptance commit could then be a pointer swap)
+bool shadow_on() {
+  static const bool on = !(std::getenv("XF_GDN_SHADOW") && std::getenv("XF_GDN_SHADOW")[0] == '0'); // XF_GDN_SHADOW=0: always run the commit kernels
+  return on;
+}
+bool shadow_check() { return std::getenv("XF_GDN_SHADOW_CHECK") != nullptr; }
+constexpr int SHADOW_MIN_ROWS = 8; // below this the shadow stores cost more than the commit they replace
+static int g_last_m = 0;           // rows of the last forward pass
+static bool g_shadow_valid = false; // the last forward pass wrote the shadow state of every DeltaNet layer
 struct GdnState {
-  float *S, *hist, *raw, *kn, *dsave, *beta, *decay;
+  float *S, *hist, *raw, *kn, *dsave, *beta, *decay, *Sx;
   size_t total;
 };
 GdnState carve_gdn(void *base, int ctx) {
@@ -178,6 +187,7 @@ GdnState carve_gdn(void *base, int ctx) {
   s.dsave = b.take<float>(MX * VD);
   s.beta = b.take<float>(MX * 64);
   s.decay = b.take<float>(MX * 64);
+  s.Sx = (shadow_on() && MX == MAXM) ? b.take<float>(size_t(VH) * HD * HD) : nullptr; // not above 32K context (workspace budget)
   s.total = b.off;
   return s;
 }
@@ -752,6 +762,99 @@ void k_gdn_gate(Q &q, const float *yab, const float *nega, const float *dtb, flo
   });
 }
 
+// DeltaNet input preparation in one launch (replaces k_conv + k_gdn_qk + k_gdn_gate): per tile of TB tokens, 16 threads convolve + silu the q and k channels of one key head (2 + 2 chunks of 64)
+// and L2-normalise them (writing qn / kn directly; the convolved q / k are not stored), 96 threads convolve the value chunks (writing act), one thread computes beta / decay of the tile's tokens.
+// Same expressions as the three kernels it replaces (bit-identical).
+template <int TB> void k_gdn_prep(Q &q, const float *raw, size_t rs, const float *hist, const float *taps, float *act, float *qn, float *kn, const float *yab, const float *nega,
+                                  const float *dtb, float *beta, float *decay, int m) {
+  constexpr int NV = (QKV - 2 * KH * HD) / 64; // 96 value chunks
+  constexpr int PER = KH + NV + 1;
+  const int nt = (m + TB - 1) / TB;
+  q.parallel_for(sycl::range<1>(size_t(nt) * PER), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+    const int tile = int(id[0] / PER), r = int(id[0] % PER);
+    const int t0 = tile * TB;
+    const int tn = std::min(TB, m - t0);
+    if (r == KH + NV) { // gates of the tile's tokens
+      simd<float, 64> na, dt;
+      na.copy_from(nega);
+      dt.copy_from(dtb);
+      for (int t = 0; t < tn; t++) {
+        const size_t mi = size_t(t0 + t);
+        simd<float, 64> a, b;
+        a.copy_from(yab + mi * 128);
+        b.copy_from(yab + mi * 128 + 64);
+        simd<float, 64> x = a + dt;
+        simd<float, 64> sp = es::log(es::exp(x) + 1.0f);
+        sp.merge(x, x > 20.0f);
+        sigmoid<64>(b).copy_to(beta + mi * 64);
+        es::exp(na * sp).copy_to(decay + mi * 64);
+      }
+      return;
+    }
+    if (r < KH) { // q and k of key head r
+#pragma unroll
+      for (int part = 0; part < 2; part++) {
+        const size_t c0 = size_t(part ? (KH * HD) / 64 : 0) + 2 * size_t(r);
+        simd<float, 64> w[2][4], x[2][TB + 3];
+#pragma unroll
+        for (int cc = 0; cc < 2; cc++) {
+#pragma unroll
+          for (int k = 0; k < 4; k++) w[cc][k].copy_from(taps + size_t(k) * QKV + (c0 + cc) * 64);
+#pragma unroll
+          for (int i = 0; i < TB + 3; i++) {
+            if (i < tn + 3) {
+              const int rr = t0 - 3 + i;
+              x[cc][i].copy_from(rr >= 0 ? raw + size_t(rr) * rs + (c0 + cc) * 64 : hist + size_t(3 + rr) * QKV + (c0 + cc) * 64);
+            }
+          }
+        }
+#pragma unroll
+        for (int t = 0; t < TB; t++) {
+          if (t < tn) {
+            simd<float, HD> a;
+#pragma unroll
+            for (int cc = 0; cc < 2; cc++) {
+              simd<float, 64> acc(0.0f);
+#pragma unroll
+              for (int k = 0; k < 4; k++) acc += x[cc][t + k] * w[cc][k];
+              a.template select<64, 1>(64 * cc) = acc * sigmoid<64>(acc);
+            }
+            const size_t o = (size_t(t0 + t) * KH + size_t(r)) * HD;
+            if (part == 0) {
+              a = a * (srsqrt(hsum<HD>(a * a) + EPS) * 0.08838834764831845f);
+              a.copy_to(qn + o);
+            } else {
+              a = a * srsqrt(hsum<HD>(a * a) + EPS);
+              a.copy_to(kn + o);
+            }
+          }
+        }
+      }
+      return;
+    }
+    const size_t c = size_t(2 * KH * HD / 64) + size_t(r - KH); // value chunk
+    simd<float, 64> w[4], x[TB + 3];
+#pragma unroll
+    for (int k = 0; k < 4; k++) w[k].copy_from(taps + size_t(k) * QKV + c * 64);
+#pragma unroll
+    for (int i = 0; i < TB + 3; i++) {
+      if (i < tn + 3) {
+        const int rr = t0 - 3 + i;
+        x[i].copy_from(rr >= 0 ? raw + size_t(rr) * rs + c * 64 : hist + size_t(3 + rr) * QKV + c * 64);
+      }
+    }
+#pragma unroll
+    for (int t = 0; t < TB; t++) {
+      if (t < tn) {
+        simd<float, 64> acc(0.0f);
+#pragma unroll
+        for (int k = 0; k < 4; k++) acc += x[t + k] * w[k];
+        (acc * sigmoid<64>(acc)).copy_to(act + size_t(t0 + t) * QKV + c * 64);
+      }
+    }
+  });
+}
+
 // The delta rule. One thread owns one value column j of one head: 128 state
 // values stay in registers while the thread walks the tokens of the pass.
 //   S <- decay * S ; kv = S . k ; d = (v - kv) * beta ; S <- S + k * d ; o = S . q
@@ -794,7 +897,7 @@ void k_gdn_commit(Q &q, float *S, const float *kn, const float *decay, const flo
 // Same arithmetic as k_gdn_core per column; one thread owns CB adjacent value columns of one head, so the k and q rows of a token are loaded once for CB columns
 // (k_gdn_core reloads them in all 128 threads of the head) and CB independent update chains run side by side.
 template <int CB>
-void k_gdn_core_cb(Q &q, const float *S, const float *act, const float *qn, const float *kn, const float *beta, const float *decay, float *dsave, float *gout, int m) {
+void k_gdn_core_cb(Q &q, const float *S, const float *act, const float *qn, const float *kn, const float *beta, const float *decay, float *dsave, float *gout, int m, float *Sx) {
   q.parallel_for(sycl::range<1>(size_t(VH) * HD / CB), [=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
     const size_t col0 = id[0] * CB;
     const size_t h = col0 / HD, j0 = col0 % HD, kh = h / 3;
@@ -839,6 +942,10 @@ void k_gdn_core_cb(Q &q, const float *S, const float *act, const float *qn, cons
       dec = dec1;
       bet = bet1;
       vv = vv1;
+    }
+    if (Sx) {
+#pragma unroll
+      for (int c = 0; c < CB; c++) s[c].copy_to(Sx + (col0 + c) * HD);
     }
   });
 }
@@ -936,12 +1043,12 @@ bool gdn_old() {
   static const bool o = env_int("XF_GDN_OLD", 0) != 0;
   return o;
 }
-void gdn_core(Q &q, const float *S, const float *act, const float *qn, const float *kn, const float *beta, const float *decay, float *dsave, float *gout, int m) {
+void gdn_core(Q &q, const float *S, const float *act, const float *qn, const float *kn, const float *beta, const float *decay, float *dsave, float *gout, int m, float *Sx) {
   static const int cb = env_int("XF_GDN_CB", 2);
   if (gdn_old() || cb == 1) k_gdn_core(q, S, act, qn, kn, beta, decay, dsave, gout, m);
-  else if (cb == 8) k_gdn_core_cb<8>(q, S, act, qn, kn, beta, decay, dsave, gout, m);
-  else if (cb == 4) k_gdn_core_cb<4>(q, S, act, qn, kn, beta, decay, dsave, gout, m);
-  else k_gdn_core_cb<2>(q, S, act, qn, kn, beta, decay, dsave, gout, m);
+  else if (cb == 8) k_gdn_core_cb<8>(q, S, act, qn, kn, beta, decay, dsave, gout, m, Sx);
+  else if (cb == 4) k_gdn_core_cb<4>(q, S, act, qn, kn, beta, decay, dsave, gout, m, Sx);
+  else k_gdn_core_cb<2>(q, S, act, qn, kn, beta, decay, dsave, gout, m, Sx);
 }
 void gdn_commit(Q &q, float *S, const float *kn, const float *decay, const float *dsave, int n, float *hist, const float *raw, size_t rs) {
   static const int cb = env_int("XF_GDN_COMMIT_CB", 8); // 1 = the original two kernels
@@ -2434,13 +2541,19 @@ struct Pass {
     const int sk = skip_mask();
     if (!(sk & 8)) gdn_gemv_ab(q, L.aux[0], ws.xn, ws.yab, 96, m);
     tm.dtick(P_GDN, "gdn:gemv-ab");
-    if (!(sk & 4)) gdn_conv(q, s.raw, rs, s.hist, L.aux[1], ws.act, m);
-    tm.dtick(P_GDN, "gdn:conv");
-    if (!(sk & 4)) k_gdn_qk(q, ws.act, ws.qn, s.kn, m);
-    tm.dtick(P_GDN, "gdn:qk-norm");
-    if (!(sk & 4)) k_gdn_gate(q, ws.yab, L.aux[2], L.aux[3], s.beta, s.decay, m);
-    tm.dtick(P_GDN, "gdn:gate");
-    if (!(sk & 16)) gdn_core(q, s.S, ws.act, ws.qn, s.kn, s.beta, s.decay, s.dsave, ws.gout, m);
+    static const bool prep_fuse = env_int("XF_PREP_FUSE", 0) != 0; // XF_PREP_FUSE=1: conv + q-k norm + gate in one launch (bit-identical, no measurable gain: off)
+    if (prep_fuse && sk == 0 && m > 1 && !gdn_old()) {
+      k_gdn_prep<4>(q, s.raw, rs, s.hist, L.aux[1], ws.act, ws.qn, s.kn, ws.yab, L.aux[2], L.aux[3], s.beta, s.decay, m);
+      tm.dtick(P_GDN, "gdn:prep");
+    } else {
+      if (!(sk & 4)) gdn_conv(q, s.raw, rs, s.hist, L.aux[1], ws.act, m);
+      tm.dtick(P_GDN, "gdn:conv");
+      if (!(sk & 4)) k_gdn_qk(q, ws.act, ws.qn, s.kn, m);
+      tm.dtick(P_GDN, "gdn:qk-norm");
+      if (!(sk & 4)) k_gdn_gate(q, ws.yab, L.aux[2], L.aux[3], s.beta, s.decay, m);
+      tm.dtick(P_GDN, "gdn:gate");
+    }
+    if (!(sk & 16)) gdn_core(q, s.S, ws.act, ws.qn, s.kn, s.beta, s.decay, s.dsave, ws.gout, m, (s.Sx && m >= SHADOW_MIN_ROWS) ? s.Sx : nullptr);
     tm.dtick(P_GDN, "gdn:core");
     static const bool post_fuse = env_int("XF_POST_FUSE", 1) != 0; // XF_POST_FUSE=0: separate output norm and quantisation kernels
     if (post_fuse && sk == 0) {
@@ -2674,6 +2787,8 @@ size_t xf_ws_offset(int which, int ctx) {
 }
 
 int xf_forward(xf_ctx *ctx, const xf_model *md, int m, int pos0, int l0, int l1, int flags, double *prof) {
+  g_last_m = m;
+  g_shadow_valid = shadow_on() && m >= SHADOW_MIN_ROWS && l0 == 0 && l1 == md->nlayers && rows_cap(md->ctx) == MAXM;
   const int slot = (flags & XF_FWD_IDS_SLOT1) ? IDV : 0;
   if (!ctx || !md || m < 1 || m > rows_cap(md->ctx) || pos0 < 0 || pos0 + m > md->ctx || l0 < 0 || l1 > md->nlayers) {
     xf_set_error("xf_forward: invalid arguments (token count, position or layer range)");
@@ -2827,12 +2942,40 @@ int xf_commit(xf_ctx *ctx, const xf_model *md, int n) {
   if (!ctx || !md || n < 0 || n > MAXM) return XF_ERR_INVALID;
   return xf_guard("xf_commit", [&]() -> int {
     if (n == 0) return XF_OK;
+    // Whole pass accepted and the core left the state after its last token in the shadow buffer (bit-identical to what the commit kernels compute,
+    // benchmarks/results/m45/shadow_check_full.txt): copy it instead of replaying the tokens; the convolution history still needs its update.
+    const bool use_shadow = g_shadow_valid && n == g_last_m && !shadow_check();
     for (int l = 0; l < md->nlayers; l++) {
       const xf_layer &L = md->layers[l];
       if (L.kind != XF_LAYER_GDN) continue;
       GdnState s = carve_gdn(L.state, md->ctx);
-      gdn_commit(ctx->q, s.S, s.kn, s.decay, s.dsave, n, s.hist, s.raw, L.m[1].rows == 0 ? size_t(QKVZ) : size_t(QKV));
+      const size_t rs = L.m[1].rows == 0 ? size_t(QKVZ) : size_t(QKV);
+      if (use_shadow && s.Sx) {
+        ctx->q.memcpy(s.S, s.Sx, size_t(VH) * HD * HD * sizeof(float));
+        k_hist_commit(ctx->q, s.hist, s.raw, rs, n);
+      } else {
+        gdn_commit(ctx->q, s.S, s.kn, s.decay, s.dsave, n, s.hist, s.raw, rs);
+      }
     }
+    if (shadow_check() && g_shadow_valid && n == g_last_m && !use_shadow) {
+      // test mode: compare the shadow state with the one the commit kernels computed
+      ctx->q.wait_and_throw();
+      std::vector<float> a(size_t(VH) * HD * HD), b2(size_t(VH) * HD * HD);
+      size_t bad_layers = 0, bad_total = 0;
+      for (int l = 0; l < md->nlayers; l++) {
+        const xf_layer &L = md->layers[l];
+        if (L.kind != XF_LAYER_GDN) continue;
+        GdnState s = carve_gdn(L.state, md->ctx);
+        ctx->q.memcpy(a.data(), s.S, a.size() * 4).wait();
+        ctx->q.memcpy(b2.data(), s.Sx, b2.size() * 4).wait();
+        size_t bad = 0;
+        for (size_t i = 0; i < a.size(); i++) bad += std::memcmp(&a[i], &b2[i], 4) != 0;
+        if (bad) bad_layers++;
+        bad_total += bad;
+      }
+      std::fprintf(stderr, "[shadow] commit of %d rows: %zu of 48 layers differ, %zu of %zu floats differ\n", n, bad_layers, bad_total, size_t(48) * a.size());
+    }
+    g_shadow_valid = false;
     return XF_OK;
   });
 }

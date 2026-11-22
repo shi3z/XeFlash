@@ -616,6 +616,7 @@ impl Bd {
     fn step(&mut self, _: &[f32], _: usize, _: usize, _: usize, _: u32, _: usize) -> Result<Vec<u32>> { Ok(Vec::new()) }
     fn step_dev(&mut self, _: *const f32, _: usize, _: usize, _: usize, _: u32, _: usize) -> Result<Option<Vec<u32>>> { Ok(None) }
     fn ctx_dev(&mut self, _: *const f32, _: usize, _: usize) -> Result<bool> { Ok(false) }
+    fn ctx_dev_blocks(&mut self, _: *const f32, _: usize, _: usize, _: usize) -> Result<bool> { Ok(false) }
 }
 
 /// Speculative decoding with a host-driven draft source: `bd = Some` uses the
@@ -657,6 +658,8 @@ fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, bloc
     let mut nwide = 0usize;
     let mut n64 = 0usize;
     let host_ctx = std::env::var("XF_BD_HOSTCTX").map_or(false, |v| v == "1");
+    let staged = std::env::var("XF_BD_STAGED").map_or(false, |v| v == "1"); // staged multi-block catch-up (no gain: the drafter's GPU work just moves under the next main pass)
+    let lazy_ring = std::env::var("XF_BD_LAZY").map_or(false, |v| v == "1");
     let (mut t_prop, mut t_post) = (0f64, 0f64);
     let mut cp_ptr: Option<usize> = None; // sticky copy alignment (see CopyIndex::propose)
     let mut cp_src = 0usize;
@@ -738,8 +741,13 @@ fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, bloc
             ncopy += 1;
             if let Some(b) = bd.as_deref_mut() {
                 // Device-to-device ring catch-up (no host copy, not waited for) unless disabled with XF_BD_HOSTCTX=1 or not possible.
-                for blk in 0..pend.0.div_ceil(16) {
-                    ctx_block(e, b, &mut taps, blk, (pend.0 - 16 * blk).min(16), pend.1 + 16 * blk, zero_copy && !host_ctx)?;
+                let nbk = pend.0.div_ceil(16);
+                if lazy_ring {
+                    // experiment (XF_BD_LAZY=1): no ring catch-up in copy cycles; the drafter is only used for the rare non-copy cycles (the output is unaffected, only the drafts of those cycles can get worse)
+                } else if !(pend.0 > 0 && zero_copy && !host_ctx && staged && b.ctx_dev_blocks(e.taps_device_ptr(), nbk, pend.0, pend.1)?) {
+                    for blk in 0..nbk {
+                        ctx_block(e, b, &mut taps, blk, (pend.0 - 16 * blk).min(16), pend.1 + 16 * blk, zero_copy && !host_ctx)?;
+                    }
                 }
             }
             nwide += (prop.len() > 15) as usize;

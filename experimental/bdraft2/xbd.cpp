@@ -14,6 +14,7 @@
 // engines keep separate queues.
 #include "draft.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <string>
 
@@ -23,7 +24,12 @@ struct Xbd {
   yx::Engine E;
   yx::Draft D;
   yx::SmpParams smp; // greedy (on = false)
-  Xbd(const char *main_path, const char *draft_path, int max_ctx) : E(main_path, 0, 16) { D.load(E, draft_path, max_ctx); }
+  float *stage = nullptr; // staging copy of up to 4 tap blocks (64 rows), see xbd_ctx_dev_blocks
+  Xbd(const char *main_path, const char *draft_path, int max_ctx) : E(main_path, 0, 16) {
+    D.load(E, draft_path, max_ctx);
+    stage = sycl::malloc_device<float>(size_t(4) * 5 * 16 * 5120, E.q);
+  }
+  ~Xbd() { if (stage) sycl::free(stage, E.q); }
 };
 template <typename F> int guard(F &&f) {
   try {
@@ -81,6 +87,27 @@ int xbd_ctx_dev(void *h, const float *dev_taps, int n, int pos0) {
   return guard([&] {
     x->E.q.memcpy(x->D.cap, dev_taps, size_t(5) * 16 * 5120 * sizeof(float)).wait();
     x->D.ctx(n, pos0);
+  });
+}
+
+// Ring catch-up with n_total committed rows held in nblocks (<= 4) consecutive tap blocks of the other engine (block b = rows 16 b .. 16 b + 15, each [5][16][5120] f32, contiguous), ring positions pos0 ..:
+// one device-to-device copy of all blocks into a staging buffer (waited for: the other engine overwrites its taps with its next pass), then, queued without waiting, per block a staging -> capture copy and the
+// ring update. The queue is in order, so a later xbd_step runs after all of them. Returns 2 if dev_taps is not a device allocation of this context.
+int xbd_ctx_dev_blocks(void *h, const float *dev_taps, int nblocks, int n_total, int pos0) {
+  auto *x = static_cast<Xbd *>(h);
+  try {
+    if (sycl::get_pointer_type(dev_taps, x->E.q.get_context()) != sycl::usm::alloc::device) return 2;
+  } catch (...) {
+    return 2;
+  }
+  if (nblocks < 1 || nblocks > 4) return 1;
+  return guard([&] {
+    const size_t blk = size_t(5) * 16 * 5120;
+    x->E.q.memcpy(x->stage, dev_taps, size_t(nblocks) * blk * sizeof(float)).wait();
+    for (int b = 0; b < nblocks; b++) {
+      x->E.q.memcpy(x->D.cap, x->stage + size_t(b) * blk, blk * sizeof(float));
+      x->D.ctx(std::min(16, n_total - 16 * b), pos0 + 16 * b);
+    }
   });
 }
 

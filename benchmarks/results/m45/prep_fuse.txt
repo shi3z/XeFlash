@@ -1,0 +1,8 @@
+prep_fuse=1 rows=16:   16 rows: 42.76 ms per pass at position 2927;  16 rows: 42.76 ms per pass at position 2927;  commit of 16 rows: 1.47 ms;
+
+prep_fuse=1 rows=64:   digest: logits 87ba4d789449dc7b state ed1080d6282d57c8 whole cf2c1cec1a8ab0db;  64 rows: 74.07 ms per pass at position 2927;  commit of 64 rows: 2.95 ms;
+
+prep_fuse=0 rows=16:   16 rows: 42.91 ms per pass at position 2927;  16 rows: 42.93 ms per pass at position 2927;  commit of 16 rows: 1.47 ms;
+
+prep_fuse=0 rows=64:   digest: logits 87ba4d789449dc7b state ed1080d6282d57c8 whole cf2c1cec1a8ab0db;  64 rows: 74.11 ms per pass at position 2927;  commit of 64 rows: 2.94 ms;
+

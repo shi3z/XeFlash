@@ -1,0 +1,8 @@
+ctx 61440:
+  DeltaNet state           48       0.2168
+  TOTAL requested        1518      19.1476
+driver free VRAM: 22.4843 GiB before, 3.3002 GiB after, difference 19.1840 GiB
+ctx 32768:
+  DeltaNet state           48       0.5695
+  TOTAL requested        1518      17.8295
+driver free VRAM: 22.4843 GiB before, 4.6165 GiB after, difference 17.8677 GiB

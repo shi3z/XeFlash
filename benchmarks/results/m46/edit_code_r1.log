@@ -1,0 +1,37 @@
+loaded /data/B60special/models/xfm/qwen38-27b-s4-cal.xfm in 6.5s, context capacity 10240 tokens
+device allocations      count          GiB
+  DeltaNet state           48       0.5695
+  KV cache                 16       0.6250
+  MTP                       5       0.3687
+  MTP KV cache              1       0.0391
+  RoPE table                2       0.0024
+  body matrices           256      11.3428
+  embedding (bf16)          1       2.3682
+  head sketch               4       0.1291
+  lm_head                   1       0.5920
+  matrix scales           779       0.0393
+  small tensors           408       0.0978
+  workspace                 1       0.1845
+  TOTAL requested        1522      16.3583
+driver free VRAM: 22.4843 GiB before, 6.0910 GiB after, difference 16.3933 GiB
+bdraft2 backend loaded: +2.805 GiB device memory (driver)
+edit_edit_code none        26.28 tok/s | 1.00 tok/pass | main  38.05 ms/pass
+          cost probe at position 4769: 8 rows 40.2 ms, 16 rows 44.4 ms -> c16 = 1.089
+          adaptive block: 283 of 879 passes used 16 rows; taps device-to-device
+edit_edit_code bd2:adapt-cost  106.76 tok/s | 5.36 tok/pass | cycle  50.18 ms | main  42.84, draft   6.50 (of which taps 0.00) ms/pass | accept% [97 90 82 77 75 77 76 72 76 78 80 75 81 76 46] | same tokens, same state
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.002 ms
+          hybrid: 303 of 365 passes verified a copied candidate (min 4 tokens), 0 of them with more than 16 rows, 0 with more than 32
+          taps device-to-device
+edit_edit_code hy4+bd2:fixed8  273.54 tok/s | 12.90 tok/pass | cycle  47.16 ms | main  45.44, draft   1.10 (of which taps 0.00) ms/pass | accept% [81 72 78 96 70 68 54] | same tokens, same state
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.003 ms
+          hybrid: 166 of 228 passes verified a copied candidate (min 4 tokens), 163 of them with more than 16 rows, 0 with more than 32
+          taps device-to-device
+edit_edit_code hw4+bd2:fixed16  358.88 tok/s | 20.65 tok/pass | cycle  57.55 ms | main  54.48, draft   2.37 (of which taps 0.00) ms/pass | accept% [81 72 78 93 69 67 67 62 100 80 75 67 100 50 0] | same tokens, same state
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.004 ms
+          hybrid: 100 of 162 passes verified a copied candidate (min 4 tokens), 97 of them with more than 16 rows, 97 with more than 32
+          taps device-to-device
+edit_edit_code hv4+bd2:fixed16  408.89 tok/s | 29.07 tok/pass | cycle  71.09 ms | main  66.74, draft   3.52 (of which taps 0.00) ms/pass | accept% [81 72 78 93 69 67 67 62 100 80 75 67 100 50 0] | same tokens, same state
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.004 ms
+          hybrid: 101 of 163 passes verified a copied candidate (min 4 tokens), 98 of them with more than 16 rows, 98 with more than 32
+          taps device-to-device
+edit_edit_code hv4+bd2:fixed8  418.23 tok/s | 28.89 tok/pass | cycle  69.08 ms | main  65.23, draft   3.04 (of which taps 0.00) ms/pass | accept% [81 72 78 96 70 68 54] | same tokens, same state

@@ -2772,3 +2772,84 @@ Not explained: the integer-ALU instruction count of the nb kernel is 44 M per ga
 * The activation operand supply can be moved off the L1 (AE: full barrier, AF: named barriers), but with the instruction mix of this loop (16 DPAS per stage) the synchronisation + SLM read latency costs more than the saved L1 stall; the adopted register-only kernel (256 GRF, 32 tokens per thread, weights expanded once per 32 tokens) stays the best at 71% XMX, 50.5 ms for the 64-row GEMM.
 * The Part AE estimate (825 tok/s) was based on the SLM route and is withdrawn. What is measured today: 743.2 tok/s (JSONL edit), cycle 80.0 ms; the remaining ideas are smaller ones (conv / qk-norm / gate fusion ~0.9 ms, addnorm + quant ~1 ms, a persistent GDN layer kernel -6 ms at best), none of which reaches 74.4 ms (800 tok/s) alone.
 * A route not tried: hand-scheduled DPAS / load interleaving in assembly (the compiler keeps about one tile of loads in flight, `pd2` and the explicit prefetch showed it re-schedules); that needs inline vISA / raw ISA and was out of scope.
+
+
+## Part AG — ISA cost of the named-barrier kernel, scheduler control, kernel fusion, and removing the commit (2026-11-22)
+
+Baseline: Part AE / AF (JSONL edit 743.2 tok/s, cycle 80.0 ms). Final: **762.3 tok/s (+2.6%), cycle 78.3 ms**, bit-identical; 800 tok/s (74.4 ms) still not reached.
+
+### AG1. Where the 44 M extra ALU instructions of the named-barrier GEMM come from (ISA of `submit_nb<WF,2,4,1,2>`, `benchmarks/results/m45/isa_nb_text.asm`, hot loops counted per stage of 2 tiles)
+| | split kernel (per 2 tiles) | nb consumer (per stage) | nb producer (per stage) |
+|---|---|---|---|
+| instructions in the loop | 35 | **73** | **142** |
+| DPAS | 8 | 8 | - |
+| barrier primitives | - | ~20: full-barrier signal (`send.gtwy` + 3-4 header instructions), wait (`mov flag` + `sync.bar`), local fence (`send.slm fence` + descriptor + `mov null` to wait for it), empty-barrier signal (another `send.gtwy` + header) | ~15 (two signals, two `sync.bar`, fence) |
+| SLM traffic | - | 4 loads of 512 B (`load.slm.d64x64t`) + 4 address instructions = ~9 | 4 stores + addresses |
+| stage control | ~7 | **~22**: `if (st + 1 < nst)`, `if (st + NB < nst)` and the buffer index become `cmp` / `sel` / `and` / `or` / `jmpi` chains (5 jumps per stage) | counters and conditions |
+| register rotation | - | ~8: `wa = wb` is eight 32-wide `mov`s (the second copy of the loop body) | - |
+| 64-bit address arithmetic | - | - | **24** (`mul` / `macl` / `mach` of `size_t t * xstride`) + movs |
+Per gate+up call that is 80 stages x 8704 consumer threads x 73 = 51 M plus 1088 producer work-groups x 80 x 142 = 12 M instructions against 24 M for the split kernel (VTune: 44 M ALU1 against 8.5 M). So about half of the consumer loop and 70% of the producer loop are overhead that a leaner kernel could remove (unrolling by the buffer count for constant barrier ids and offsets, peeled prologue / epilogue instead of predicated branches, pointer-bumped addresses, no register rotation). The barrier primitives themselves (~20 instructions per stage, 2.5 per DPAS) cannot be removed. A lean kernel would be at ~45 instructions per stage, still above the split kernel's 35, with the Barrier / Dist-Acc / SBID stalls of AF4 unchanged: no evidence of a win, not pursued.
+
+### AG2. Can the loads of the register-only GEMM be issued earlier? (scheduler control on the 256-GRF kernel, `scripts/igc_sched_sweep.sh`, `m45/sched/`)
+IGC registry keys that exist in this IGC build (`EnableVISANoSchedule`, `ForceVISAPreSched`, `VISAPreSchedCtrl`, `VISAPreSchedRPThreshold`, `VISAPreSchedExtraGRF`) do **not** change the generated code: ISA and time are identical in all 8 settings.
+setting|gate+up a16 64 rows (ms)|GRF|spill|loads|DPAS|loop instr|loads before 1st wait|SBID waits
+base|0.3117|256|0|18|16|55|9|9
+nosched|0.3115|256|0|18|16|55|9|9
+presched1|0.3116|256|0|18|16|55|9|9
+presched_ctrl1|0.3114|256|0|18|16|55|9|9
+presched_ctrl2|0.3116|256|0|18|16|55|9|9
+presched_ctrl4|0.3118|256|0|18|16|55|9|9
+presched_rp|0.3118|256|0|18|16|55|9|9
+presched_xgrf|0.3115|256|0|18|16|55|9|9
+
+Hand-written vISA / ISA is not reachable from ESIMD: the only low-level hooks are `raw_send` (message construction, no scheduling control) and the property `grf_size`; earlier attempts (Part AD: prefetch distance 2 in source, explicit `prefetch` of the weights, Part AE) all ended with the compiler keeping about one tile of loads in flight. A manual schedule would need an assembler path outside the current build (not available here).
+
+### AG3. Kernel fusion of the small GDN kernels
+`k_gdn_prep` (conv + silu + q/k normalisation + gate in one launch; `XF_PREP_FUSE=1`): bit-identical (digest equal), 64-row Main pass 74.11 -> 74.07 ms, 16 rows 42.91 -> 42.76 ms: **no measurable gain, off by default**. Together with the earlier result (MLP activation + quantisation, GDN post + quantisation: -5.0 and -0.9 ms) this separates what pays: fusing away a **memory round trip** (the activated row written and read again) pays, fusing away a **launch** does not; back-to-back kernels on the in-order queue have almost no gap.
+
+### AG4. The commit is not needed when the whole pass is accepted (adopted)
+The DeltaNet core already holds the state after the last token in its registers. `XF_GDN_SHADOW` (default on, passes of >= 8 rows, context <= 32K): the core also writes that state to a shadow buffer; if `commit(n)` accepts every row of the last pass, the commit kernels are replaced by a copy shadow -> state (plus the convolution-history update).
+Exactness: before relying on it the two states were compared bit for bit after every commit of real runs (`XF_GDN_SHADOW_CHECK`, `m45/shadow_check_full.txt`): **1,112 full-acceptance commits (15 / 16 / 32 / 64 rows), 48 layers x 786,432 floats each, 0 differences**; the whole-model digest of tokens, logit bits and per-layer states is identical to the build without it at 16 / 32 / 64 rows.
+Commit time (`xf-run wide`): 16 rows 1.47 -> 0.89 ms, 32 rows 1.95 -> 0.89, **64 rows 2.94 -> 0.88 ms**; the shadow stores cost +0.14 ms in a 64-row pass (+0.5 ms at 16 rows: no net gain there). Memory: +0.15 GiB at contexts up to 32K, none above (60K footprint unchanged, `m45/mem_ctx.txt`).
+The remaining 0.9 ms are 48 state copies; a pointer swap instead (state double buffer with a flag the Rust state hash / reset would have to know) would save ~0.8 ms more: not done.
+
+### AG5. Experiments on the draft side (none adopted)
+* Host work per pass: candidate search 0.000 ms, token bookkeeping 0.005 ms; the 4 ms "missing" in Part AE was the commit, not the host.
+* Staged multi-block ring catch-up (`XF_BD_STAGED=1`: all tap blocks copied to a staging buffer with one wait, the ring updates queued asynchronously): draft time 1.86 -> 0.60 ms, but the drafter's GPU work now runs under the next main pass (Main 75.9 -> 77.2 ms): cycle unchanged (78.3 ms). The GPU, not the host, is the shared resource.
+* Skipping the ring catch-up in copy cycles (`XF_BD_LAZY=1`): output unaffected (verification), but the drafts of the rare non-copy cycles get worse: JSONL edit fixed16 759.8 -> 746.8 tok/s (fixed8 731.2 -> 749.0), **code edit 408.8 -> 357.3 tok/s**. Not adopted.
+
+### AG6. The three "unusual" ideas, with the measured facts
+1. *Prepare the next candidate while the GPU runs the main pass / speculative chaining.* The candidate search costs 0.000 ms, so there is nothing to overlap there; what is exposed per cycle is the draft catch-up (1.9 ms, GPU work that cannot be hidden, AG5), the commit (now 0.9 ms) and ~0.6 ms of host round trip. Chaining the next pass without waiting for the verification result (assume full acceptance, true for 96% of the passes) could hide only that ~0.6 ms and needs a discard path for the 4%: not implemented.
+2. *16-token blocks pipelined across layers.* A 16-row pass reads all weights again: GEMM 34.9 ms per block, **139.6 ms for four blocks against 50.4 ms for one 64-row pass**; overlapping the non-GEMM stages of one block with the GEMM of another cannot recover 89 ms, and the GDN state dependency between blocks serialises them per layer. Rejected on the numbers; no code.
+3. *Do not compute the copied tokens.* The state a copied token leaves in the KV cache and the DeltaNet state depends on its position and on everything before it, which differs between the prompt and the output; reusing the prompt's states changes the model's inputs (not bit-exact, and shifted RoPE positions are not even valid keys). Verifying copied tokens in a wide pass is exactly the cheapest exact way to build that state (1.16 ms per token at 64 rows, GEMM 0.8 ms of it). An approximate "edit engine" would be a different product with its own quality evaluation; not attempted.
+(The message announced five ideas; only three arrived.)
+
+### AG7. Final results, 5 processes per task (`scripts/edit_af_suite.sh`, `m46/`; s4-cal, XF_KV=xmx; same tokens and state as greedy in all repeats; JSONL answers equal the official expected text 5/5, code edit 0/5 as before)
+task|config|tok/s mean (min-max)|tokens/pass|accept1|Main ms/pass|Draft ms/pass|answer = expected|same tokens+state as greedy
+edit_code|greedy|26.3 (26.3-26.3)|1.00|-|38.05|-|0/5|-
+edit_code|bd2:adapt-cost|107.6 (106.8-107.8)|5.41|0.975|42.92|6.52|0/5|5/5
+edit_code|hy4+bd2:fixed8|273.5 (273.5-273.6)|12.90|0.806|45.45|1.10|0/5|5/5
+edit_code|hw4+bd2:fixed16|358.9 (358.9-359.0)|20.65|0.806|54.47|2.37|0/5|5/5
+edit_code|hv4+bd2:fixed16|408.9 (408.8-408.9)|29.07|0.806|66.75|3.52|0/5|5/5
+edit_code|hv4+bd2:fixed8|418.2 (418.1-418.2)|28.89|0.806|65.24|3.05|0/5|5/5
+edit_jsonl|greedy|26.6 (26.6-26.6)|1.00|-|37.61|-|5/5|-
+edit_jsonl|bd2:adapt-cost|289.8 (289.2-290.2)|15.26|1.000|44.63|7.41|5/5|5/5
+edit_jsonl|hy4+bd2:fixed8|340.9 (340.3-341.1)|15.60|1.000|45.14|0.17|5/5|5/5
+edit_jsonl|hw4+bd2:fixed16|545.3 (544.3-545.5)|31.03|1.000|55.66|0.78|5/5|5/5
+edit_jsonl|hv4+bd2:fixed16|762.3 (759.8-771.7)|59.48|1.000|75.64|1.88|5/5|5/5
+edit_jsonl|hv4+bd2:fixed8|733.6 (731.2-742.9)|57.10|1.000|75.56|1.76|5/5|5/5
+edit_jsonl_long|greedy|25.9 (25.9-25.9)|1.00|-|38.55|-|5/5|-
+edit_jsonl_long|bd2:adapt-cost|273.7 (273.5-273.8)|15.10|1.000|47.09|7.39|5/5|5/5
+edit_jsonl_long|hy4+bd2:fixed8|326.0 (325.9-326.0)|15.72|1.000|47.60|0.11|5/5|5/5
+edit_jsonl_long|hw4+bd2:fixed16|503.4 (503.3-503.4)|30.78|1.000|59.94|0.67|5/5|5/5
+edit_jsonl_long|hv4+bd2:fixed16|688.3 (688.3-688.3)|59.58|1.000|84.26|1.71|5/5|5/5
+edit_jsonl_long|hv4+bd2:fixed8|683.2 (683.1-683.2)|59.04|1.000|84.16|1.67|5/5|5/5
+
+| task | Part AE | Part AG | change |
+|---|---|---|---|
+| JSONL edit, 64 rows | 743.2 | **762.3** (759.8-771.7) | +2.6% |
+| long JSONL edit | 673.8 | **688.3** | +2.2% |
+| code edit | 414.0 | **418.2** | +1.0% |
+| JSONL edit, 32 / 16 rows | 536.6 / 339.9 | 545.3 / 340.9 | +1.6% / +0.3% |
+Exactness: 23 cases (17..64 rows, xmx / fp32 / fp16 / bf16 KV, JSONL / code / 8K prompts), 0 differences in tokens + logit bits, GDN state, KV cache, whole state with the shadow commit on (`m46/wide/`). Main pass at 2927: 43.3 / 53.7 / 74.2 ms (16 / 32 / 64 rows), commit 0.89 / 0.88 / 0.88 ms.
+Cycle now 78.3 ms: Main 75.6 (incl. the commit copy) + draft 1.9 + ~0.8. 800 tok/s needs 74.4 ms: 3.9 ms more; known pieces: state double buffer (~0.8), conv / addnorm tuning (~1-2), none of them GEMM; the GEMM (65% of the pass) is where the rest has to come from.

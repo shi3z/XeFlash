@@ -1,0 +1,9 @@
+device   : Intel(R) Arc(TM) Pro B60 Graphics (driver 1.18.40196+15)
+memory   : 23.91 GiB total, 22.48 GiB free, max single allocation 22.71 GiB
+threads  : 160 EU x 8 = 1280   SLM 128 KiB   2400 MHz
+Skip block with instructions 4
+launch   : 2.31 us queued, 7.43 us with a wait per launch
+
+matrix              shape    fmt  tok  tpt  seg        ms   ms(med)     Gw/s     GB/s     TOPS  check
+merged.gate_up   34816x5120     s4   64   32    1    0.2723    0.2723    654.7    327.3    83.80  exact
+merged.gate_up   34816x5120 s4+a16   64   32    1    0.3114    0.3116    572.4    286.2   146.52  exact
