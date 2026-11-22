@@ -1,0 +1,24 @@
+device   : Intel(R) Arc(TM) Pro B60 Graphics (driver 1.18.40196+15)
+memory   : 23.91 GiB total, 22.48 GiB free, max single allocation 22.71 GiB
+threads  : 160 EU x 8 = 1280   SLM 128 KiB   2400 MHz
+launch   : 2.91 us queued, 5.90 us with a wait per launch
+
+matrix              shape    fmt  tok  tpt  seg        ms   ms(med)     Gw/s     GB/s     TOPS  check
+mlp.gate/up    17408x5120     s4   64   32    1    0.1383    0.1383    644.4    322.2    82.48  exact
+mlp.gate/up    17408x5120 s4+a16   64   32    1    0.2131    0.2132    418.2    209.1   107.06  exact
+mlp.down       5120x17408     s4   64   32    1    0.1871    0.1871    476.5    238.2    60.99  exact
+mlp.down       5120x17408 s4+a16   64   32    1    0.2181    0.2182    408.7    204.4   104.63  exact
+gdn.qkv        10240x5120     s4   64   32    1    0.0774    0.0775    677.0    338.5    86.65  exact
+gdn.qkv        10240x5120 s4+a16   64   32    1    0.1283    0.1283    408.7    204.4   104.63  exact
+merged.qkvz    16384x5120     s4   64   32    1    0.1337    0.1339    627.3    313.7    80.30  exact
+merged.qkvz    16384x5120 s4+a16   64   32    1    0.2048    0.2049    409.5    204.8   104.83  exact
+merged.attn_qkv   14336x5120     s4   64   32    1    0.1261    0.1262    582.0    291.0    74.49  exact
+merged.attn_qkv   14336x5120 s4+a16   64   32    1    0.1741    0.1742    421.6    210.8   107.94  exact
+merged.gate_up   34816x5120     s4   64   32    1    0.2721    0.2722    655.2    327.6    83.86  exact
+merged.gate_up   34816x5120 s4+a16   64   32    1    0.4120    0.4121    432.6    216.3   110.75  exact
+out_proj        5120x6144     s4   64   32    1    0.0645    0.0645    487.7    243.8    62.43  exact
+out_proj        5120x6144 s4+a16   64   32    1    0.1106    0.1106    284.4    142.2    72.80  exact
+lm_head       248320x5120     s4   64   32    1    1.8022    1.8028    705.5    352.7    90.30  exact
+lm_head       248320x5120 s4+a16   64   32    1    2.7914    2.7917    455.5    227.7   116.60  exact
+
+wrote benchmarks/results/m44/unit_nb2p4.json

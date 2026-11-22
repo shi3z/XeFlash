@@ -2725,3 +2725,50 @@ GDN core 6.7 ms (chain-bound), attention 6.5 ms, MLP activation + quantisation 3
    The step that keeps the SLM benefit without the barrier stall is a **producer / consumer split with named (split) barriers**: one thread per work-group streams the next activation stage into SLM with big loads and signals, the 7 compute threads only wait on that signal for the stage they need (the previous stage is read while the next one is produced), and no thread waits at a full barrier. Expected: XMX 75-80% on every shape, i.e. GEMM 50 -> ~42 ms (-8 ms), cycle ~72 ms = 825 tok/s. Not implemented here (new kernel structure with `named_barrier`; the SLM data path and the exactness of the integer arithmetic are already validated by `submit_slm`).
 2. A 16-bit-activation GEMM with fewer DPAS per weight tile does not exist without changing the result (8-bit planes would be 36 ms but change the output).
 3. 1000 tok/s (59.5 ms) additionally needs ~15 ms out of the non-GEMM 27 ms (GDN chain, attention, ~900 small launches): a persistent / fused GDN layer kernel (conv + qk-norm + gate + core + post in one launch per layer, state kept in SLM / registers across tokens) is the only structural option there that keeps the floating-point order; it is a large rewrite with a ceiling of about -6 ms.
+
+
+## Part AF — producer / consumer GEMM with named barriers: implemented, exact, and slower (2026-11-21)
+
+Hypothesis from Part AE: sharing the activation tiles through SLM removes the L1 operand stall (Send 40% -> 6% was shown), the full work-group barrier is what cost the XMX; a producer / consumer split with named barriers (no thread waits for all) should reach 75-80% XMX, GEMM 50 -> ~42 ms, ~825 tok/s.
+**Result: the kernels work and are bit-exact, but none beats the adopted 256-GRF kernel; the prediction is falsified.** Default unchanged (Main pass 42.89 / 53.48 / 74.10 ms at 16 / 32 / 64 rows, same digests).
+
+### AF1. Named barriers on BMG (probe `kernels/probe/nbarrier_probe.cpp`)
+They work on this GPU, with one protocol that has to be followed (every other combination hangs the kernel, the GPU recovers; 15-20 s timeouts in `scripts/b60run` were enough):
+* `named_barrier_init<N>()` in every thread; a barrier completes when `num_producers` threads signalled with mode 0x1 and `num_consumers` threads with mode 0x2; **consumers must signal (0x2) and then wait; a producer only signals** (a consumer that waits without signalling, or a producer that waits, hangs).
+* A "reverse" barrier (consumers done reading -> producer may overwrite) therefore swaps the roles: the 7-8 readers signal 0x1, the single writer signals 0x2 and waits. Double / multiple buffering with full[b] and empty[b] checked with checksums: 0 mismatches in 64 stages x 64 work-groups.
+
+### AF2. The GEMM (`submit_nb<WF, NT, NB, NP, G>`, `XF_GEMM_A16_32=nb|nb4|nb1|nb2p|nb2p4|nbl|nbl4`)
+Work-group = NP producer threads + 8 consumer threads (8 row blocks of one token group). The producer moves the activation tiles of the group's tokens from L1 into SLM (NB buffers of NT tiles, both byte planes), the consumers wait for the stage they need, read the whole tiles from SLM and run the same integer DPAS loop; empty barriers let the producer run NB stages ahead.
+Variants: 1 or 2 producers (plane split), stage of 2 or 4 tiles, 2-4 buffers, signal fences reduced to a local-memory fence, producer loads issued one stage ahead of its SLM stores, and consumers with 32 tokens each at 256 GRF (nbl). Whole model with `nb` / `nbl`: tokens, logit bits, GDN state and KV cache identical to the default at 64 rows (digest equal).
+
+### AF3. Results at 64 rows (`xf-bench --cold`, ms, all exact; `benchmarks/results/m44/`)
+variant|gate_up|qkvz|attn_qkv|out_proj|down|lm_head|GEMM sum @64 rows (ms)|exact
+split (128 GRF, old default)|0.3692|0.2063|0.1592|0.0871|0.1997|2.9729|57.4|True
+lgrf (256 GRF, 32 tokens: adopted)|0.3107|0.1709|0.1364|0.0791|0.1998|2.3439|50.5|True
+SLM + full barrier, 2 tiles/stage|0.4335|0.2336|0.1828|0.0958|0.2101|3.0752|64.5|True
+nb: 1 producer, 2 tiles x 4 buffers|0.3981|0.1978|0.1868|0.1230|0.3036|2.8178|68.1|True
+nb4: 4 tiles x 3 buffers|0.4015|0.1971|0.1849|0.1156|0.2795|2.8679|66.3|True
+nb1: 2 tiles x 2 buffers|0.4030|0.2001|0.1894|0.1247|0.3023|2.8750|68.6|True
+nb2p: 2 producers (plane split)|0.4368|0.2159|0.1783|0.1154|0.2799|2.9586|69.4|True
+nb2p4: 2 producers, 4 tiles|0.4120|0.2048|0.1741|0.1106|0.2181|2.7914|62.8|True
+nb, local fences only|0.3945|0.1962|0.1857|0.1219|0.3037|2.7841|67.7|True
+nb, producer loads one stage ahead|0.3966|0.1976|0.1867|0.1223|0.3030|2.7993|67.9|True
+nbl: 8 consumers x 32 tokens, 256 GRF|0.4879|0.2448|0.2320|0.1242|0.4569|3.2712|87.2|True
+nbl4: same, 4 tiles x 3 buffers|0.5119|0.2574|0.2283|0.1426|0.4962|3.4718|93.1|True
+
+Whole-model Main pass at 64 rows (position 2927): default **74.10 ms**, `nb` 89.20 ms, `nbl` 107.40 ms.
+
+### AF4. Why (VTune, `scripts/vtune_one.sh`, `m44/vtune/`; adopted kernel for comparison: gate+up XMX 71.5%, Send 20%, SBID 31%, 312 us)
+kernel|shape|avg us|GRF|XVE act%|stall%|idle%|occ%|XMX%|SBID%|Send%|Barrier%|DistAcc%|DRAM GB/s|XMX instr/call (M)|ALU1 instr/call (M)
+nb|merged.gate_up|399|128|54.1|40.6|5.4|90.6|56.3|22.2|5.6|24.2|17.9|218|5.39|44.23
+nb|merged.qkvz|198|128|50.0|39.6|10.4|82.2|51.8|22.3|5.1|24.6|17.7|203|2.47|20.31
+nb|mlp.down|302|128|31.8|50.4|17.9|58.7|36.9|24.8|4.2|34.9|16.7|156|2.66|16.81
+
+The L1 supply problem is solved (Send stall 5.6%, DRAM 220 GB/s as before) but the XMX is lower (56% on gate+up) because the consumers now wait: Barrier 24% (waiting for the producer's signal), Dist / Acc 18% (scoreboard / in-order dependencies around the barrier and the SLM loads) and SBID 22% (the SLM loads are issued right where their data is needed, there is no second register set for them).
+What the experiments rule out: producer throughput (a second producer, a producer that runs a stage ahead, a stage of 4 tiles: no gain, the last two lose to register pressure), the cost of the fences (local-only fences: 0.398 -> 0.395 ms), the number of buffers; and 32 tokens per consumer (nbl) makes it worse, because 8 consumers x 2 KB tiles per stage overflow what one producer thread and the SLM write path can deliver.
+Not explained: the integer-ALU instruction count of the nb kernel is 44 M per gate+up call against 5.1 M (adopted) and 8.5 M (old split): about 8 per DPAS; it is probably the signal / wait / fence sequences and the producer's copy instructions, but that was not isolated.
+
+### AF5. Consequence for the 1000 tok/s roadmap
+* The activation operand supply can be moved off the L1 (AE: full barrier, AF: named barriers), but with the instruction mix of this loop (16 DPAS per stage) the synchronisation + SLM read latency costs more than the saved L1 stall; the adopted register-only kernel (256 GRF, 32 tokens per thread, weights expanded once per 32 tokens) stays the best at 71% XMX, 50.5 ms for the 64-row GEMM.
+* The Part AE estimate (825 tok/s) was based on the SLM route and is withdrawn. What is measured today: 743.2 tok/s (JSONL edit), cycle 80.0 ms; the remaining ideas are smaller ones (conv / qk-norm / gate fusion ~0.9 ms, addnorm + quant ~1 ms, a persistent GDN layer kernel -6 ms at best), none of which reaches 74.4 ms (800 tok/s) alone.
+* A route not tried: hand-scheduled DPAS / load interleaving in assembly (the compiler keeps about one tile of loads in flight, `pd2` and the explicit prefetch showed it re-schedules); that needs inline vISA / raw ISA and was out of scope.

@@ -1,0 +1,4 @@
+nb_merged.gate_up 0
+nb_merged.qkvz 0
+nb_mlp.down 0
+done
