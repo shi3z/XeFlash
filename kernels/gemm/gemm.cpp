@@ -17,8 +17,13 @@
 //   verify   (<= 16 tokens) R=8 G=2 U=1
 //   prefill  (many tokens)  R=8 G=4 U=1   XMX bound, weights reused from cache
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
+#include <optional>
+#include <vector>
 #include <sycl/ext/intel/esimd.hpp>
+#include <sycl/ext/oneapi/backend/level_zero.hpp>
+#include <level_zero/ze_api.h>
 
 #include "../ctx.hpp"
 
@@ -165,6 +170,63 @@ inline size_t wg32_size() {
 //       2 = software-pipelined loop with pointer-bumped addresses: all addresses are formed once before the loop and every tile load adds a constant
 //           (weights) or the activation stride to a running pointer; 32-bit loop counters and thread index (no 64-bit multiply, division or modulo in the loop).
 //           The caller guarantees the 32-bit ranges (addr32_ok); the pointers themselves stay 64-bit.
+// Experiment (XF_GEMM_NATIVE=<zebin>): run a hand-edited native binary (ocloc asm of the disassembly of the 256-GRF 32-token kernel) instead of the JIT-compiled one. The binary is loaded with
+// Level Zero, wrapped into a sycl::kernel through the Level Zero interop, and launched with the same two arguments the JIT kernel takes: nthreads (8 bytes) and the closure of `run` (128 bytes).
+struct NativeBlob {
+  unsigned char b[128];
+};
+struct NativeKernel {
+  bool tried = false;
+  std::optional<sycl::kernel> k;
+};
+sycl::kernel *native_kernel(sycl::queue &q) {
+  static NativeKernel nk;
+  if (!nk.tried) {
+    nk.tried = true;
+    const char *path = std::getenv("XF_GEMM_NATIVE");
+    if (!path || !*path) return nullptr;
+    std::FILE *f = std::fopen(path, "rb");
+    if (!f) {
+      std::fprintf(stderr, "XF_GEMM_NATIVE: cannot open %s\n", path);
+      return nullptr;
+    }
+    std::vector<unsigned char> bin;
+    unsigned char buf[65536];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) bin.insert(bin.end(), buf, buf + n);
+    std::fclose(f);
+    auto zc = sycl::get_native<sycl::backend::ext_oneapi_level_zero>(q.get_context());
+    auto zd = sycl::get_native<sycl::backend::ext_oneapi_level_zero>(q.get_device());
+    ze_module_desc_t md{};
+    md.stype = ZE_STRUCTURE_TYPE_MODULE_DESC;
+    md.format = ZE_MODULE_FORMAT_NATIVE;
+    md.inputSize = bin.size();
+    md.pInputModule = bin.data();
+    ze_module_handle_t mod = nullptr;
+    if (zeModuleCreate(zc, zd, &md, &mod, nullptr) != ZE_RESULT_SUCCESS) {
+      std::fprintf(stderr, "XF_GEMM_NATIVE: zeModuleCreate failed\n");
+      return nullptr;
+    }
+    uint32_t cnt = 0;
+    zeModuleGetKernelNames(mod, &cnt, nullptr);
+    std::vector<const char *> names(cnt);
+    zeModuleGetKernelNames(mod, &cnt, names.data());
+    ze_kernel_desc_t kd{};
+    kd.stype = ZE_STRUCTURE_TYPE_KERNEL_DESC;
+    kd.pKernelName = names[0];
+    ze_kernel_handle_t zk = nullptr;
+    if (zeKernelCreate(mod, &kd, &zk) != ZE_RESULT_SUCCESS) {
+      std::fprintf(stderr, "XF_GEMM_NATIVE: zeKernelCreate failed\n");
+      return nullptr;
+    }
+    auto kb = sycl::make_kernel_bundle<sycl::backend::ext_oneapi_level_zero, sycl::bundle_state::executable>(
+        {mod, sycl::ext::oneapi::level_zero::ownership::keep}, q.get_context());
+    nk.k.emplace(sycl::make_kernel<sycl::backend::ext_oneapi_level_zero>({kb, zk, sycl::ext::oneapi::level_zero::ownership::keep}, q.get_context()));
+    std::fprintf(stderr, "XF_GEMM_NATIVE: using %s (%zu bytes, kernel %s)\n", path, bin.size(), names[0]);
+  }
+  return nk.k ? &*nk.k : nullptr;
+}
+
 template <int WF, int R, int G, int U, bool A16, int PIPE = 0, bool LGRF = false, int RBK = 1> sycl::event submit(sycl::queue &q, const xf_gemm_desc &d) {
   using F = Fmt<WF>;
   constexpr int TPT = R * G;
@@ -554,6 +616,19 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0, bool LGRF = false
     // large register file: 256 GRF per thread (4 threads per EU instead of 8), for the 32-tokens-per-thread loop with 16-bit activations (does not fit 128 GRF)
     sycl::ext::oneapi::experimental::properties props{sycl::ext::intel::experimental::grf_size<256>};
     const size_t w = wg > 1 ? wg : 4;
+    if constexpr (WF == XF_W_S4 && A16 && PIPE == 2 && G == 4 && R == 8 && U == 1 && RBK == 1) {
+      if (sycl::kernel *nkp = native_kernel(q)) {
+        static_assert(sizeof(run) == 128, "the native launch expects the 128-byte closure of the thread body");
+        NativeBlob blob;
+        std::memcpy(blob.b, &run, sizeof(run));
+        const size_t gsz = nthreads / w * w + (nthreads % w ? w : 0);
+        return q.submit([&](sycl::handler &h) {
+          h.set_arg(0, nthreads);
+          h.set_arg(1, blob);
+          h.parallel_for(sycl::nd_range<1>(gsz, w), *nkp);
+        });
+      }
+    }
     return q.parallel_for(sycl::nd_range<1>(nthreads / w * w + (nthreads % w ? w : 0), w), props, [=](sycl::nd_item<1> it) SYCL_ESIMD_KERNEL {
       if (it.get_global_id(0) < nthreads) run(it.get_global_id(0));
     });

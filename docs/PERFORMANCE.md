@@ -2853,3 +2853,13 @@ edit_jsonl_long|hv4+bd2:fixed8|683.2 (683.1-683.2)|59.04|1.000|84.16|1.67|5/5|5/
 | JSONL edit, 32 / 16 rows | 536.6 / 339.9 | 545.3 / 340.9 | +1.6% / +0.3% |
 Exactness: 23 cases (17..64 rows, xmx / fp32 / fp16 / bf16 KV, JSONL / code / 8K prompts), 0 differences in tokens + logit bits, GDN state, KV cache, whole state with the shadow commit on (`m46/wide/`). Main pass at 2927: 43.3 / 53.7 / 74.2 ms (16 / 32 / 64 rows), commit 0.89 / 0.88 / 0.88 ms.
 Cycle now 78.3 ms: Main 75.6 (incl. the commit copy) + draft 1.9 + ~0.8. 800 tok/s needs 74.4 ms: 3.9 ms more; known pieces: state double buffer (~0.8), conv / addnorm tuning (~1-2), none of them GEMM; the GEMM (65% of the pass) is where the rest has to come from.
+
+## Part AH: hand-written ISA for the 256-GRF GEMM (infrastructure done, no edit adopted)
+
+Request: write the load / DPAS schedule of the register-only GEMM by hand.
+
+Built (default off, no change to any result): `XF_GEMM_NATIVE=<zebin>` makes the 32-token 256-GRF kernel `submit<0,8,4,1,true,2,true>` run from a native binary through Level Zero interop (`zeModuleCreate(NATIVE)` -> `sycl::make_kernel`), launched with the same two arguments as the JIT kernel (`scripts/native_gemm_roundtrip.sh`). The disassembly `ocloc disasm` -> `ocloc asm` round trip (unedited) gives a binary that loads, runs and is bit exact against the JIT kernel (64 rows, gate_up: 0.3107 ms vs 0.3117 ms, "exact"). Listing: `benchmarks/results/m47/lgrf_submit_0_8_4_1_true_2_true.bmg.asm`.
+
+What the loop looks like (read from the listing): two halves per trip, each = 9 loads (1 weight, 4 + 4 activation planes) into the buffer set just consumed (`sync.nop {$n.src}` waits for the DPAS that read it), then `sync.allwr` on the previous half's loads, then 8 + 8 DPAS. So the loads are already one full 16-DPAS stage ahead and the wait is split in two (b-plane DPAS first). Registers: accumulators r138..r201, buffers r21..r133, about 50 GRFs (r206..r254) unused in the loop.
+
+Not done: a three-buffer (two stages ahead) rewrite of the loop. It needs the unroll to become 3 halves (K-tile count is not a multiple of 3 for every shape: prologue/epilogue and SWSB token re-allocation by hand) and it is the only edit that the compiler's scheduler cannot undo; earlier source-level tests (pd2, explicit weight prefetch, Parts AD/AG) showed no gain, so the expected gain is small and no estimate is claimed. No performance change was measured in this part.

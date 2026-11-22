@@ -19,5 +19,6 @@ icpx -fsycl -O2 -std=c++20 -fPIC -shared \
   -Xsycl-target-backend "-ffp-contract=off" \
   -Wno-deprecated-declarations \
   "$here/runtime.cpp" "$here/gemm/gemm.cpp" "$here/model/model.cpp" \
+  -lze_loader \
   -o "$out/libxfk.so"
 echo "built $out/libxfk.so"
