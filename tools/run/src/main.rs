@@ -14,7 +14,9 @@
 //!
 //! `ids.json` is a JSON array of token ids. Run through scripts/b60run.
 
+mod ctl;
 mod ext;
+mod study;
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -99,6 +101,9 @@ fn load_opts(dev: &Device, model: &str, ctx: usize, args: &[String]) -> Result<E
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("sim") && args.len() >= 3 {
+        return study::sim(&args); // host only
+    }
     let dev = Device::open()?;
     match args.first().map(String::as_str) {
         Some("mem") if args.len() >= 2 => {
@@ -111,6 +116,9 @@ fn main() -> Result<()> {
         Some("wide") if args.len() >= 3 => wide_check(&dev, &args),
         Some("collect") if args.len() >= 5 => collect(&dev, &args),
         Some("mtp-tf") if args.len() >= 3 => mtp_teacher_forced(&dev, &args),
+        #[cfg(feature = "bdraft2")]
+        Some("trace") if args.len() >= 4 => study::trace(&dev, &args),
+        Some("sim") if args.len() >= 3 => study::sim(&args),
         _ => Err(Error::Invalid("usage: xf-run mem|dump|gen ... (see the source header)".into())),
     }
 }
@@ -420,7 +428,7 @@ fn generate(dev: &Device, args: &[String]) -> Result<()> {
                     nx = e.forward(c, None)?.last().unwrap().0;
                     e.commit(c.len())?;
                 }
-                for len in 1..=STATE_AT + 16 {
+                for len in 1..=STATE_AT + 70 {  // a pass may overshoot STATE_AT by up to 63 accepted tokens
                     nx = e.forward(&[nx], None)?[0].0;
                     e.commit(1)?;
                     if len >= STATE_AT {
@@ -624,7 +632,7 @@ impl Bd {
 /// Verify block is `k + 1` rows. Returns the stats plus seconds spent moving taps.
 /// `block` = 8 or 16 rows per verify pass, or 0 for the adaptive rule (see `Adapt`).
 fn run_ext(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, block: usize, bd: Option<&mut Bd>) -> Result<(RunStats, f64)> {
-    run_ext_mode(dev, e, prompt, n_new, block, bd, false, 0, 16)
+    run_ext_mode(dev, e, prompt, n_new, block, bd, false, 0, 16, None)
 }
 
 /// `cost` = adaptive rule with the 16/8 cycle-cost ratio measured on this machine, at the current context length
@@ -642,9 +650,12 @@ fn ctx_block(e: &Engine, b: &mut Bd, taps: &mut [f32], blk: usize, n: usize, pos
 /// `hy` > 0: hybrid copy mode (experimental): when the text so far holds an earlier occurrence of the last 5 tokens (4 committed + the
 /// frontier token) whose continuation gives at least `hy` candidate tokens, that continuation (up to 15 tokens) is verified instead of the
 /// drafter's block and the drafter is only caught up with the committed tap rows. Output is still exactly the greedy output.
-fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, block: usize, mut bd: Option<&mut Bd>, cost: bool, hy: usize, maxrows: usize) -> Result<(RunStats, f64)> {
+fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, block: usize, mut bd: Option<&mut Bd>, cost: bool, hy: usize, maxrows: usize, ad: Option<ctl::Params>) -> Result<(RunStats, f64)> {
     let k = if block == 0 { 15 } else { block - 1 };
     let mut adapt = Adapt::new();
+    let mut ad_costs = [38.4f64, 41.8, 49.2, 63.5, 64.7];
+    let mut ad_ctl: Option<ctl::Ctl> = None;
+    let mut ad_cand = ctl::Cand { len: 0, mlen: 0, sticky: false };
     let mut zero_copy = bd.is_some();
     let mut n16 = 0usize;
     e.reset()?;
@@ -667,8 +678,10 @@ fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, bloc
     let t0 = Instant::now();
     let mut next = 0u32;
     let mut pend = (0usize, 0usize); // rows of the last committed pass not yet in the drafter's ring
-    let nchunks = prompt.len().div_ceil(16);
-    for (ci, c) in prompt.chunks(16).enumerate() {
+    // XF_PREFILL_CHUNK (16, 32, 48 or 64, default 64 up to 32K context capacity, else 16): rows per prefill pass. A wide pass is bit-identical to passes of <= 16 rows (the 23-case check of Part AA/AG) and much cheaper per row.
+    let pc = std::env::var("XF_PREFILL_CHUNK").ok().and_then(|v| v.parse::<usize>().ok()).map_or(if e.capacity() <= 32768 { 64 } else { 16 }, |v| (v / 16).clamp(1, 4) * 16);
+    let nchunks = prompt.len().div_ceil(pc);
+    for (ci, c) in prompt.chunks(pc).enumerate() {
         let g = e.forward(c, None)?;
         e.commit(c.len())?;
         for (t, gi) in c.iter().zip(&g) {
@@ -677,11 +690,15 @@ fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, bloc
         }
         next = g.last().unwrap().0;
         if let Some(b) = bd.as_deref_mut() {
-            e.read_taps(&mut taps)?;
             if ci + 1 < nchunks {
-                b.ctx(&taps, c.len(), ci * 16)?;
+                // ring catch-up of every 16-row tap block of this pass
+                for blk in 0..c.len().div_ceil(16) {
+                    e.read_taps_block(blk, &mut taps)?;
+                    b.ctx(&taps, (c.len() - 16 * blk).min(16), ci * pc + 16 * blk)?;
+                }
             } else {
-                pend = (c.len(), ci * 16);
+                e.read_taps(&mut taps)?;
+                pend = (c.len(), ci * pc); // the blocks of the last pass are caught up with the first step, as after any wide pass
             }
         }
     }
@@ -702,10 +719,16 @@ fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, bloc
         let (t8, t16) = (time(e, 8)?, time(e, 16)?);
         let d = if bd.is_some() { 6.5 } else { 0.5 }; // drafter ms per cycle (bdraft2: measured 6.3)
         adapt.c16 = (t16 + d) / (t8 + d);
+        if ad.is_some() {
+            ad_costs = [t8, t16, time(e, 32)?, time(e, 48)?, time(e, 64)?];
+        }
         e.set_capture(bd.is_some());
         eprintln!("          cost probe at position {}: 8 rows {t8:.1} ms, 16 rows {t16:.1} ms -> c16 = {:.3}", e.position(), adapt.c16);
     }
 
+    if let Some(p) = ad.clone() {
+        ad_ctl = Some(ctl::Ctl::new(p, ad_costs, 6.0));
+    }
     let mut out: Vec<u32> = Vec::with_capacity(n_new + 16);
     let (mut t_draft, mut t_main, mut t_taps) = (0f64, 0f64, 0f64);
     let mut tried = vec![0usize; k + 1];
@@ -727,16 +750,24 @@ fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, bloc
             b => b,
         };
         let tp0 = Instant::now();
-        let prop = if hy > 0 {
-            let (mut c, src) = cp.propose(next, maxrows - 1, cp_ptr);
+        let mut prop = if hy > 0 {
+            let (mut c, src, mlen, sticky) = cp.propose_ex(next, maxrows - 1, cp_ptr);
             c.truncate(if c.len() >= 32 && maxrows >= 64 { 63 } else if c.len() >= 16 && maxrows >= 32 { 31 } else { 15 });
             cp_src = src;
+            ad_cand = ctl::Cand { len: c.len(), mlen, sticky };
             c
         } else {
             Vec::new()
         };
+        let mut copied = hy > 0 && prop.len() >= hy;
+        if let Some(c) = ad_ctl.as_mut() {
+            // online controller: verify the copy candidate only when its expected accepted tokens per ms beat the bdraft2 block
+            match c.decide(&ad_cand, if adapt.use16() { 16 } else { 8 }) {
+                Some(n) if copied => prop.truncate(n.min(prop.len())),
+                _ => copied = false,
+            }
+        }
         t_prop += tp0.elapsed().as_secs_f64();
-        let copied = hy > 0 && prop.len() >= hy;
         if copied {
             ncopy += 1;
             if let Some(b) = bd.as_deref_mut() {
@@ -782,7 +813,8 @@ fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, bloc
             None if copied => {}
             None => ids.extend(lk.draft(next, rows - 1).0),
         }
-        t_draft += td.elapsed().as_secs_f64();
+        let t_draft_pass = td.elapsed().as_secs_f64();
+        t_draft += t_draft_pass;
         let tv = Instant::now();
         let g = e.forward(&ids, None)?;
         let mut n = 1;
@@ -791,6 +823,15 @@ fn run_ext_mode(dev: &Device, e: &mut Engine, prompt: &[u32], n_new: usize, bloc
         }
         e.commit(n)?;
         t_main += tv.elapsed().as_secs_f64();
+        if let Some(c) = ad_ctl.as_mut() {
+            c.observe_main(ids.len().max(if copied { 0 } else { rows }), tv.elapsed().as_secs_f64() * 1e3);
+            if copied {
+                c.observe_copy(&ad_cand, ids.len() - 1, n - 1);
+            } else {
+                c.observe_bd(rows, n - 1);
+                c.observe_draft(t_draft_pass * 1e3);
+            }
+        }
         if !copied {
             adapt.update(rows, n - 1);
         }
@@ -1017,7 +1058,7 @@ fn compare(dev: &Device, args: &[String]) -> Result<()> {
             nx = e.forward(c, None)?.last().unwrap().0;
             e.commit(c.len())?;
         }
-        for len in 1..=STATE_AT + 16 {
+        for len in 1..=STATE_AT + 70 {
             nx = e.forward(&[nx], None)?[0].0;
             e.commit(1)?;
             if len >= STATE_AT {
@@ -1091,6 +1132,17 @@ fn compare(dev: &Device, args: &[String]) -> Result<()> {
             for cfg in cfgs {
                 // `hy<min>/<blk>`: hybrid copy mode (experimental), fallback drafter block <blk> (8, 16, 0 or 0c).
                 // `hw<min>/<blk>`: copy candidates up to 32 rows; `hv<min>/<blk>`: up to 64 rows.
+                let ad_params = cfg.strip_prefix("ad").map(|rest| {
+                    let mut p = ctl::Params::default();
+                    for item in rest.trim_start_matches(':').split(|ch| ch == ',' || ch == '_') {
+                        if let Some((k, v)) = item.split_once('=') {
+                            let v: f64 = v.parse().unwrap_or(0.0);
+                            match k { "alpha" => p.alpha = v, "prior" => p.prior = v, "margin" => p.margin = v, "explore" => p.explore = v as u32, "tcp" => p.tcp = v, "q0" => p.q0 = v, "mode" => p.mode_on = v > 0.0, "mix" => p.mix = v > 0.0, "exit" => p.exit_after = v as u32, "floor" => p.floor = v, "enter" => p.enter = v, k if k.starts_with('b') && k[1..].parse::<usize>().map_or(false, |i| i < ctl::NB) => p.qb[k[1..].parse::<usize>().unwrap()] = v, _ => {} }
+                        }
+                    }
+                    p
+                });
+                let cfg = if ad_params.is_some() { "hv4/0c".to_string() } else { cfg };
                 let maxrows = if cfg.starts_with("hv") { 64 } else if cfg.starts_with("hw") { 32 } else { 16 };
                 let (hy, cfg_b) = match cfg.strip_prefix("hy").or_else(|| cfg.strip_prefix("hw")).or_else(|| cfg.strip_prefix("hv")).and_then(|c| c.split_once('/')) {
                     Some((m, b)) => (m.parse::<usize>().map_err(|_| Error::Invalid("bad --configs hy<min>/<blk>".into()))?, b.to_string()),
@@ -1100,13 +1152,13 @@ fn compare(dev: &Device, args: &[String]) -> Result<()> {
                     "0c" => (0usize, true),
                     c => (c.parse::<usize>().map_err(|_| Error::Invalid("bad --configs".into()))?, false),
                 };
-                let (r, taps_s) = run_ext_mode(dev, &mut e, &prompt, n_new, blk, Some(b), cost, hy, maxrows)?;
+                let (r, taps_s) = run_ext_mode(dev, &mut e, &prompt, n_new, blk, Some(b), cost, hy, maxrows, ad_params.clone())?;
                 let label = match (blk, cost) {
                     (0, true) => "bd2:adapt-cost".to_string(),
                     (0, false) => "bd2:adapt-old".to_string(),
                     (n, _) => format!("bd2:fixed{n}"),
                 };
-                let label = if hy > 0 { format!("{}{hy}+{label}", match maxrows { 64 => "hv", 32 => "hw", _ => "hy" }) } else { label };
+                let label = if ad_params.is_some() { "ad+bd2:adapt".to_string() } else if hy > 0 { format!("{}{hy}+{label}", match maxrows { 64 => "hv", 32 => "hw", _ => "hy" }) } else { label };
                 report(&label, &r, taps_s, true);
             }
         }

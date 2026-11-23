@@ -1,0 +1,5 @@
+weights-only loops (same grid, 256 GRF, no activation loads, no DPAS), weight distance in tiles; 5 processes
+w0 compiler loop (1 half ahead)   0.2602 ms (0.2602..0.2603)  343 GB/s
+w1 hand loop DW=1                 0.2614 ms (0.2614..0.2615)  341 GB/s
+w2 hand loop DW=2                 0.2491 ms (0.2491..0.2491)  358 GB/s
+w3 hand loop DW=3                 0.2491 ms (0.2491..0.2492)  358 GB/s

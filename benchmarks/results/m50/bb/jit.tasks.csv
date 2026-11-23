@@ -1,0 +1,6 @@
+Computing Task	Work Size:Global	Work Size:Local	Computing Task:Total Time	Computing Task:Average Time	Computing Task:Instance Count	Computing Task:SIMD Width	Computing Task:SVM Usage Type	Computing Task:Spill Memory Size	Computing Task:General Register File Size	Transfer Size	Transfer Size:Host-to-Device	Transfer Size:Device-to-Host	Estimated GPU Cycles
+(anonymous namespace)::submit<(int)0, (int)8, (int)4, (int)1, (bool)0, (int)2, (bool)0, (int)1>(sycl::_V1::event, sycl::_V1::queue&, xf_gemm_desc const&)::{lambda(sycl::_V1::nd_item<(int)1>)#1}	4352	4	0.427065	0.000307	1392	1		0	128	0	0	0	863084704339
+(anonymous namespace)::submit<(int)0, (int)8, (int)4, (int)1, (bool)1, (int)2, (bool)1, (int)1>(sycl::_V1::event, sycl::_V1::queue&, xf_gemm_desc const&)::{lambda(sycl::_V1::nd_item<(int)1>)#1}	4352	4	0.345724	0.000363	952	1		0	256	0	0	0	323654616285
+xf_noop::{lambda()#1}::operator()(void) const::{lambda()#1}	1	1	0.003016	0.000001	4100	32		0	128	0	0	0	236775
+zeCommandListAppendMemoryCopy			0.058508	0.005851	10			0	0	179381248	179381248	0	
+zeCommandListAppendMemoryCopy			0.006995	0.003497	2			0	0	17825792	0	17825792	

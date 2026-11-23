@@ -1,0 +1,5 @@
+jsonl64 rc=0 wide 64 rows vs passes of <= 16: output tokens + logit bits: 0 of 64 rows differ;  GDN state + conv history: 0 of 48 layers differ [];  KV cache: 0 of 16 attention layers differ [];  whole-state hash: identical;
+code64 rc=0 wide 64 rows vs passes of <= 16: output tokens + logit bits: 0 of 64 rows differ;  GDN state + conv history: 0 of 48 layers differ [];  KV cache: 0 of 16 attention layers differ [];  whole-state hash: identical;
+jsonl32 rc=0 wide 32 rows vs passes of <= 16: output tokens + logit bits: 0 of 32 rows differ;  GDN state + conv history: 0 of 48 layers differ [];  KV cache: 0 of 16 attention layers differ [];  whole-state hash: identical;
+jsonl16 rc=0 wide 16 rows vs passes of <= 16: output tokens + logit bits: 0 of 16 rows differ;  GDN state + conv history: 0 of 48 layers differ [];  KV cache: 0 of 16 attention layers differ [];  whole-state hash: identical;
+done

@@ -5,6 +5,7 @@
 import re, sys
 src, dst = sys.argv[1], sys.argv[2]
 DW = int(sys.argv[sys.argv.index('--dw') + 1]) if '--dw' in sys.argv else 3
+B2D = '--b2d' in sys.argv   # 1 KB 2D block loads for activation planes whose destination registers are contiguous
 L = open(src).read().split('\n')
 # ---- register / token map ----
 W = [133, 21, 25, 29]                         # weight sets (4 regs each)
@@ -21,6 +22,8 @@ def e(s): out.append('        ' + s)
 def lab(s): out.append(s + ':')
 def load(dstreg, ptr, off, tok):
     out.append('        send.ugm (1|M0)          r%d      r%d  null:0  0x%X            0x0240F580           {I@1,$%d}' % (dstreg, ptr, off << 12 if off else 0, tok))
+def bload(dstreg, ptr, tok):
+    out.append('        send.ugm (1|M0)          r%d      r%d  null:0  0x0            0x03000403           {I@1,$%d}' % (dstreg, ptr, tok))
 def dpas(acc, w, a, ty, flags):
     e('dpas.8x8 (16|M0)         r%d:d        r%d:d            r%d:s4            r%d.0:%s         {%s}' % (acc, acc, w, a, ty, flags))
 def half(j, steady, last):
@@ -34,15 +37,23 @@ def half(j, steady, last):
         s = (j + DW) % 4
         load(W[s], WP, 0x100 * (j + DW), TW[s])
     if aload:
-        for k in range(4): load(AB[ja][k], BP[j], 0x100 * k, TB[ja][k])
-        for k in range(4): load(AU[ja][k], UP[j], 0x100 * k, TU[ja][k])
-    e('sync.allwr                           ($%d,%s)' % (TW[j], ','.join('$%d' % t for t in TB[jc])))
+        if B2D: bload(AB[ja][0], BP[j], TB[ja][0])
+        else:
+            for k in range(4): load(AB[ja][k], BP[j], 0x100 * k, TB[ja][k])
+        if B2D and ja == 1: bload(AU[ja][0], UP[j], TU[ja][0])
+        else:
+            for k in range(4): load(AU[ja][k], UP[j], 0x100 * k, TU[ja][k])
+    wb = TB[jc] if (not B2D or jc == 0) else TB[jc][:1]
+    wu = TU[jc] if (not B2D or jc == 0) else TU[jc][:1]
+    e('sync.allwr                           ($%d,%s)' % (TW[j], ','.join('$%d' % t for t in wb)))
     for k in range(4): dpas(ACB[k], W[j], AB[jc][k], 'b', 'Atomic' if k < 3 else '$%d' % RB[jc])
-    e('sync.allwr                           (%s)' % ','.join('$%d' % t for t in TU[jc]))
+    e('sync.allwr                           (%s)' % ','.join('$%d' % t for t in wu))
     for k in range(4): dpas(ACU[k], W[j], AU[jc][k], 'ub', 'Atomic' if k < 3 else '$%d' % RU[jc])
     if steady:
         toks = []
-        if aload: toks += TB[ja] + TU[ja]
+        if aload:
+            toks += (TB[ja][:1] if B2D else TB[ja])
+            toks += (TU[ja][:1] if (B2D and ja == 1) else TU[ja])
         if wl: toks += [TW[(j + DW) % 4]]
         e('sync.allrd                           (%s)' % ','.join('$%d' % t for t in toks))
         e('add (1|M0)               r%d.0<1>:q    r%d.0<0;1,0>:q    r%d.0<0;1,0>:q   {I@1}' % (BP[j], BP[j], P4))
@@ -60,6 +71,15 @@ e('mov (1|M0)               r%d.0<1>:q    r20.0<0;1,0>:q' % UP[0])
 for j in range(1, 4):
     e('add (1|M0)               r%d.0<1>:q    r%d.0<0;1,0>:q    r%d.0<0;1,0>:q   {I@1}' % (BP[j], BP[j - 1], P))
     e('add (1|M0)               r%d.0<1>:q    r%d.0<0;1,0>:q    r%d.0<0;1,0>:q   {I@1}' % (UP[j], UP[j - 1], P))
+if B2D:
+    for j in range(4):
+        regs = [BP[j]] + ([UP[j]] if j % 2 == 0 else [])
+        for r in regs:
+            e('mov (1|M0)               r%d.2<1>:ud   0x3F:uw' % r)
+            e('mov (1|M0)               r%d.3<1>:ud   0x1F:uw' % r)
+            e('mov (1|M0)               r%d.4<1>:ud   0x3F:uw' % r)
+            e('mov (2|M0)               r%d.5<1>:ud   0:w' % r)
+            e('mov (1|M0)               r%d.7<1>:ud   0xF0F:uw' % r)
 # prologue weight loads: tiles 1..DW-1 (tile 0 was loaded by the original prologue)
 for t in range(1, DW):
     load(W[t], WP, 0x100 * t, TW[t])

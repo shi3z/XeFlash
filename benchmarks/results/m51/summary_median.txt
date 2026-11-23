@@ -1,0 +1,6 @@
+edit_code        bd2:adapt-cost     n=5 tok/s median 108.2 min 108.2 max 108.7 | Main 42.92 ms/pass | cycle 50.37 ms | same tokens+state as greedy: True
+edit_code        hv4+bd2:fixed16    n=5 tok/s median 424.8 min 424.6 max 424.8 | Main 64.08 ms/pass | cycle 68.44 ms | same tokens+state as greedy: True | Part AG 418.2 -> +1.6%
+edit_jsonl       bd2:adapt-cost     n=5 tok/s median 289.8 min 289.6 max 289.8 | Main 44.65 ms/pass | cycle 52.66 ms | same tokens+state as greedy: True
+edit_jsonl       hv4+bd2:fixed16    n=5 tok/s median 804.1 min 803.8 max 804.2 | Main 71.54 ms/pass | cycle 73.97 ms | same tokens+state as greedy: True | Part AG 762.3 -> +5.5%
+edit_jsonl_long  bd2:adapt-cost     n=5 tok/s median 273.6 min 273.4 max 273.6 | Main 47.12 ms/pass | cycle 55.20 ms | same tokens+state as greedy: True
+edit_jsonl_long  hv4+bd2:fixed16    n=5 tok/s median 725.3 min 725.3 max 725.5 | Main 79.86 ms/pass | cycle 82.15 ms | same tokens+state as greedy: True | Part AG 688.3 -> +5.4%

@@ -1,0 +1,11 @@
+gate_up 64 rows, same grid (4352 threads), 256 GRF, 4 threads/EU, weight stream 89.1 MB; 5 processes, median (min..max) ms, GB/s of weights
+v_w_only  0.2603 (0.2602..0.2603)  0 GB/s
+v_w_d1    0.2655 (0.2655..0.2656)  0 GB/s
+v_w_d2    0.2712 (0.2712..0.2713)  0 GB/s
+v_w_d3    0.2747 (0.2746..0.2747)  0 GB/s
+v_w_d4    0.2836 (0.2836..0.2837)  0 GB/s
+v_w_act   0.3033 (0.3032..0.3036)  0 GB/s
+v_all_d1  0.3033 (0.3033..0.3033)  0 GB/s
+v_all_d2  0.3049 (0.3049..0.3050)  0 GB/s
+v_all_d3  0.3067 (0.3067..0.3068)  0 GB/s
+orig      0.3107 (0.3106..0.3109)  0 GB/s

@@ -1,0 +1,30 @@
+loaded /data/B60special/models/xfm/qwen38-27b-s4-cal.xfm in 12.1s, context capacity 9216 tokens
+device allocations      count          GiB
+  DeltaNet state           48       0.5695
+  KV cache                 16       0.5625
+  MTP                       5       0.3687
+  MTP KV cache              1       0.0352
+  RoPE table                2       0.0022
+  body matrices           256      11.3440
+  embedding (bf16)          1       2.3682
+  head sketch               4       0.1291
+  lm_head                   1       0.5920
+  matrix scales           779       0.0393
+  small tensors           408       0.0978
+  workspace                 1       0.1784
+  TOTAL requested        1522      16.2868
+driver free VRAM: 22.4843 GiB before, 6.1478 GiB after, difference 16.3365 GiB
+bdraft2 backend loaded: +2.804 GiB device memory (driver)
+long8000  none        26.48 tok/s | 1.00 tok/pass | main  37.76 ms/pass
+          cost probe at position 8024: 8 rows 41.1 ms, 16 rows 45.7 ms -> c16 = 1.098
+          adaptive block: 20 of 124 passes used 16 rows; taps device-to-device
+long8000  bd2:adapt-cost   62.77 tok/s | 3.10 tok/pass | cycle  49.34 ms | main  42.20, draft   6.33 (of which taps 0.00) ms/pass | accept% [70 67 72 71 67 55 73 100 50 100 0 0 0 0 0] | same tokens, same state
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.001 ms
+          hybrid: 20 of 118 passes verified a copied candidate (min 4 tokens), 20 of them with more than 16 rows, 20 with more than 32
+          taps device-to-device
+long8000  hv4+bd2:fixed16   55.86 tok/s | 3.25 tok/pass | cycle  58.26 ms | main  51.31, draft   6.12 (of which taps 0.00) ms/pass | accept% [74 63 70 72 91 52 64 57 25 100 0 0 0 0 0] | same tokens, same state
+          cost probe at position 8024: 8 rows 41.1 ms, 16 rows 45.8 ms -> c16 = 1.099
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.001 ms
+          hybrid: 8 of 122 passes verified a copied candidate (min 4 tokens), 2 of them with more than 16 rows, 2 with more than 32
+          adaptive block: 20 of 122 passes used 16 rows; taps device-to-device
+long8000  ad+bd2:adapt   63.24 tok/s | 3.15 tok/pass | cycle  49.77 ms | main  43.04, draft   5.92 (of which taps 0.00) ms/pass | accept% [71 65 74 67 77 55 73 100 50 100 0 0 0 0 0] | same tokens, same state

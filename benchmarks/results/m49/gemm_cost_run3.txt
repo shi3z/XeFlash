@@ -1,0 +1,18 @@
+gate+up 64 rows, weights 89.1 MB, cold, back to back (us)
+stage                                    256 GRF/32tok 128 GRF/16tok
+ro                                            208.1      219.3
+dup                                           227.4      287.5
+loop (weights)                                225.6      285.3
++ activation loads                            294.1      380.2
++ DPAS (= production loop)                    289.4      338.2
+activation loads only (no weights)            184.1      167.9
+weights + DPAS, no activation loads           250.5      287.8
+
+classification of the activation cost (256 GRF / 32 tok; 128 GRF / 16 tok), us
+full: activation tiles L1-hot (same tile every K step)            254.5      301.2
+full: weight tile L1-hot (no DRAM stream)                         242.4      340.1
+full: both L1-hot (DPAS + L1 only)                                239.9      242.5
+activation loads only (no weights), L1-hot                         27.9       29.5
+full: activation as one 2D block load per plane (256 GRF only)      291.1      338.0
++ activation loads (xor), 2D block loads (256 GRF only)           296.6      380.2
+full: activation loads issued before the weight load              297.8      405.1

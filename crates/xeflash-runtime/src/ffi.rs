@@ -60,6 +60,7 @@ pub struct xf_mat {
     pub rows: i32,
     pub cols: i32,
     pub fmt: i32,
+    pub wpad: i32,
 }
 
 #[repr(C)]

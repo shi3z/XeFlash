@@ -1,0 +1,17 @@
+seconds for prompt + generation (strategy ad; prefill 16-row passes (before) against 64-row passes (now)); decode speed is the same measured median
+task              prompt   new | prefill s prefill s |  total s  total s |  speedup
+                  tokens   tok |    before       now |   before      now |
+py_merge              80   512 |      0.12      0.12 |     3.09     3.09 |    1.00x
+cpp_merge             72   512 |      0.11      0.11 |     3.09     3.09 |    1.00x
+gen_ja_chat           43   512 |      0.06      0.06 |    11.53    11.53 |    1.00x
+gen_en_chat           46   512 |      0.06      0.06 |     7.72     7.72 |    1.00x
+gen_math             108   512 |      0.14      0.14 |     3.27     3.27 |    1.00x
+explain               30   512 |      0.05      0.05 |     5.18     5.18 |    1.00x
+japanese              31   512 |      0.05      0.05 |    11.78    11.78 |    1.00x
+story                 29   512 |      0.05      0.05 |     9.48     9.48 |    1.00x
+gen_ja_write          43   512 |      0.06      0.06 |    13.56    13.56 |    1.00x
+proof                 24   512 |      0.05      0.05 |     3.22     3.22 |    1.00x
+edit_edit_code      4769  1024 |     13.86      5.69 |    16.29     8.12 |    2.01x
+gen_cpp_edit        3246  1024 |      9.44      3.81 |    11.16     5.53 |    2.02x
+long8000            8024   384 |     23.33      9.86 |    29.40    15.93 |    1.85x
+edit_edit_jsonl     2927  2854 |      8.51      3.43 |    12.10     7.02 |    1.72x

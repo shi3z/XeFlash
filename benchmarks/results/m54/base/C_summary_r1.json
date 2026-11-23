@@ -1,0 +1,6 @@
+[
+  {"prompt":"long8000","drafter":"bd2:adapt-cost","block":8,"tok_per_s":62.674,"tokens_per_pass":3.0968,"cycle_ms":49.411,"main_ms":42.207,"draft_ms":6.391,"taps_ms":0.000,"same_tokens":true,"same_state":true,"passes":124,"passes16":20,"emitted":384,"new_tokens":384,"accept1":0.7016,"prefill_tok_s":344.0,"copy_passes":0,"wide_passes":0},
+  {"prompt":"long8000","drafter":"hy4+bd2:fixed8","block":8,"tok_per_s":66.944,"tokens_per_pass":3.2269,"cycle_ms":48.203,"main_ms":42.255,"draft_ms":5.146,"taps_ms":0.000,"same_tokens":true,"same_state":true,"passes":119,"passes16":0,"emitted":384,"new_tokens":384,"accept1":0.7500,"prefill_tok_s":344.0,"copy_passes":19,"wide_passes":0},
+  {"prompt":"long8000","drafter":"hw4+bd2:fixed16","block":8,"tok_per_s":59.444,"tokens_per_pass":3.2542,"cycle_ms":54.745,"main_ms":47.801,"draft_ms":6.103,"taps_ms":0.000,"same_tokens":true,"same_state":true,"passes":118,"passes16":98,"emitted":384,"new_tokens":384,"accept1":0.7449,"prefill_tok_s":344.1,"copy_passes":20,"wide_passes":20},
+  {"prompt":"long8000","drafter":"hv4+bd2:fixed16","block":8,"tok_per_s":55.871,"tokens_per_pass":3.2542,"cycle_ms":58.246,"main_ms":51.305,"draft_ms":6.102,"taps_ms":0.000,"same_tokens":true,"same_state":true,"passes":118,"passes16":98,"emitted":384,"new_tokens":384,"accept1":0.7449,"prefill_tok_s":344.1,"copy_passes":20,"wide_passes":20}
+]

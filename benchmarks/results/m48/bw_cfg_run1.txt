@@ -1,0 +1,13 @@
+gate+up weights 89.1 MB, 2176 streams (16 rows each, contiguous), cold, back to back
+configuration                                               us     GB/s
+probe: 1 thr/stream, U=2, plain launch, 128 GRF          214.6      415
+1 thr/stream, U=1, plain                                 219.4      406
+1 thr/stream, U=4, plain                                 217.0      411
+1 thr/stream, U=2, WG 4, 128 GRF                         217.3      410
+1 thr/stream, U=2, WG 4, 256 GRF                         207.9      429
+2 thr/stream, U=2, plain                                 229.4      389
+2 thr/stream, U=2, WG 4, 128 GRF                         222.9      400
+2 thr/stream, U=2, WG 4, 256 GRF (GEMM config)           229.0      389
+2 thr/stream, U=1, WG 4, 256 GRF                         367.7      242
+2 thr/stream, U=4, WG 4, 256 GRF                         235.2      379
+2 thr/stream, U=8, WG 4, 256 GRF                         226.0      394

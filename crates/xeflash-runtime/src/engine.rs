@@ -93,7 +93,43 @@ impl Loader<'_> {
         if m.format != WeightFormat::S4 && m.format != WeightFormat::S8 && m.format != WeightFormat::S2 && m.format != WeightFormat::S3 && m.format != WeightFormat::S3P {
             return Err(Error::Invalid(format!("{name}: unsupported matrix format")));
         }
-        let w = self.dev.upload(m.tiles)?;
+        // XF_WPAD=<dwords>: body matrices (not the head) are stored with this much padding after the weight stream of every 16-row block (stream pitch 40,960 B + 4 * pad): the
+        // staggered stream starts avoid the weight-stream conflicts of the GEMM (Part AH9). The kernels receive the value in xf_mat.wpad.
+        let mut wpad = 0i32;
+        let padded: Vec<u8>;
+        let mut tiles: &[u8] = m.tiles;
+        if category == "body matrices" && m.format == WeightFormat::S4 {
+            // XF_WLAYOUT=auto: 64 B base offset for the wide matrices, 64 B stream padding for the narrow 5,120 x 6,144 projections (Part AH9, measured per shape)
+            let auto = std::env::var("XF_WLAYOUT").map(|v| v == "auto").unwrap_or(false);
+            let want_pad = if auto { if m.rows <= 5120 && m.cols <= 8192 { Some(16) } else { None } } else { std::env::var("XF_WPAD").ok().and_then(|v| v.parse::<usize>().ok()) };
+            if let Some(p) = want_pad.filter(|p| *p > 0 && m.rows % 16 == 0) {
+                let blk = m.tiles.len() / (m.rows / 16);
+                let mut v = Vec::with_capacity(m.tiles.len() + (m.rows / 16 + 1) * p * 4);
+                for b in m.tiles.chunks(blk) {
+                    v.extend_from_slice(b);
+                    v.extend(std::iter::repeat(0u8).take(p * 4));
+                }
+                padded = v;
+                tiles = &padded;
+                wpad = p as i32;
+            }
+        }
+        // XF_WOFF=<dwords>: the weight stream starts this far into the buffer (zero bytes in front; no repacking). Same switch category as XF_WPAD; the value is packed into wpad bits 16..31.
+        let auto_layout = std::env::var("XF_WLAYOUT").map(|v| v == "auto").unwrap_or(false);
+        let woff = if category == "body matrices" && m.format == WeightFormat::S4 {
+            if auto_layout { if wpad == 0 { 16 } else { 0 } } else { std::env::var("XF_WOFF").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0) & 0xFFFF }
+        } else {
+            0
+        };
+        let shifted: Vec<u8>;
+        if woff > 0 {
+            let mut v = vec![0u8; woff * 4];
+            v.extend_from_slice(tiles);
+            shifted = v;
+            tiles = &shifted;
+        }
+        let wpad = wpad | ((woff as i32) << 16);
+        let w = self.dev.upload(tiles)?;
         let w = self.keep(category, name, w);
         let rs = self.upload_f32("matrix scales", name, &m.row_scale)?;
         let cs = self.upload_f32("matrix scales", name, &m.col_scale)?;
@@ -102,7 +138,7 @@ impl Loader<'_> {
             None => std::ptr::null(),
         };
         let cmax = m.col_scale.iter().fold(0f32, |a, v| a.max(v.abs()));
-        Ok(ffi::xf_mat { w, rs, cs, bias, cmax, rows: m.rows as i32, cols: m.cols as i32, fmt: m.format as i32 })
+        Ok(ffi::xf_mat { w, rs, cs, bias, cmax, rows: m.rows as i32, cols: m.cols as i32, fmt: m.format as i32, wpad })
     }
 }
 
@@ -121,7 +157,7 @@ impl Engine {
         }
         let mut ld = Loader { dev, xfm, bufs: Vec::new(), allocs: Vec::new() };
         let null_mat =
-            ffi::xf_mat { w: std::ptr::null(), rs: std::ptr::null(), cs: std::ptr::null(), bias: std::ptr::null(), cmax: 0.0, rows: 0, cols: 0, fmt: 0 };
+            ffi::xf_mat { w: std::ptr::null(), rs: std::ptr::null(), cs: std::ptr::null(), bias: std::ptr::null(), cmax: 0.0, rows: 0, cols: 0, fmt: 0, wpad: 0 };
         let mut layers = Vec::with_capacity(LAYERS);
         let mut states = Vec::new();
         let mut state_allocs = Vec::new();
@@ -632,7 +668,7 @@ impl Engine {
             self.allocs.push(Alloc { category: "head sketch", name: name.into(), bytes: buf.len_bytes() });
         }
         self.sketch = Some(Box::new(ffi::xf_sketch {
-            a: ffi::xf_mat { w: w.ptr, rs: rs.ptr.cast(), cs: cs.ptr.cast(), bias: std::ptr::null(), cmax: 1.0, rows: VOCAB as i32, cols: rank as i32, fmt: WeightFormat::S8 as i32 },
+            a: ffi::xf_mat { w: w.ptr, rs: rs.ptr.cast(), cs: cs.ptr.cast(), bias: std::ptr::null(), cmax: 1.0, rows: VOCAB as i32, cols: rank as i32, fmt: WeightFormat::S8 as i32, wpad: 0 },
             b: b.ptr.cast(),
             rank: rank as i32,
             groups: groups as i32,

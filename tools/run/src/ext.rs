@@ -129,19 +129,25 @@ impl CopyIndex {
 
     /// (candidate tokens, index in the text of the first candidate token). `sticky` = source position following the one aligned with `next`.
     pub fn propose(&self, next: u32, k: usize, sticky: Option<usize>) -> (Vec<u32>, usize) {
+        let (c, src, _, _) = self.propose_ex(next, k, sticky);
+        (c, src)
+    }
+
+    /// Like `propose`, plus the length of the backward match of the chosen source with the current context (0 for a sticky continuation) and whether the candidate is a sticky continuation.
+    pub fn propose_ex(&self, next: u32, k: usize, sticky: Option<usize>) -> (Vec<u32>, usize, usize, bool) {
         let l = self.seq.len();
         if let Some(p) = sticky {
             if p >= 1 && p < l && self.seq[p - 1] == next {
-                return (self.seq[p..l.min(p + k)].to_vec(), p);
+                return (self.seq[p..l.min(p + k)].to_vec(), p, 0, true);
             }
         }
         if l < 2 {
-            return (Vec::new(), 0);
+            return (Vec::new(), 0, 0, false);
         }
         let key = [self.seq[l - 2], self.seq[l - 1], next];
         let occ = match self.grams.get(&key) {
             Some(o) => o,
-            None => return (Vec::new(), 0),
+            None => return (Vec::new(), 0, 0, false),
         };
         // virtual context v = seq + [next]; v[l - j] for j = 0.. is next, seq[l-1], ...
         let (mut best, mut best_len) = (usize::MAX, 0usize);
@@ -160,9 +166,9 @@ impl CopyIndex {
             }
         }
         if best == usize::MAX || best + 1 >= l {
-            return (Vec::new(), 0);
+            return (Vec::new(), 0, 0, false);
         }
-        (self.seq[best + 1..l.min(best + 1 + k)].to_vec(), best + 1)
+        (self.seq[best + 1..l.min(best + 1 + k)].to_vec(), best + 1, best_len, false)
     }
 }
 

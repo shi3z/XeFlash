@@ -1,0 +1,7 @@
+TIMING ONLY (chunked weight order, results wrong except chunk 1 = layout unchanged is not equal either): gate_up 64 rows, 5 processes
+base  0.3204 (0.3199..0.3208) +0.0%
+ch1   0.3564 (0.3561..0.3573) +11.2%
+ch2   0.3571 (0.3565..0.3573) +11.5%
+ch4   0.3505 (0.3504..0.3508) +9.4%
+ch8   0.3511 (0.3505..0.3515) +9.6%
+ch16  0.3503 (0.3497..0.3507) +9.3%

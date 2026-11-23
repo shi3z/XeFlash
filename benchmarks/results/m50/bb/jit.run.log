@@ -1,0 +1,57 @@
+vtune: Warning: The 'profiling-mode' option is deprecated for GPU analysis. Use 'gpu-profiling-mode' instead.
+vtune: Collection started. To stop the collection, either press CTRL-C or enter from another console window: vtune -r /tmp/claude-1000/vtr/jit -command stop.
+ZET_ENABLE_API_TRACING_EXP is deprecated. Use ZE_ENABLE_TRACING_LAYER instead
+device   : Intel(R) Arc(TM) Pro B60 Graphics (driver 1.18.40196+15)
+memory   : 23.91 GiB total, 22.48 GiB free, max single allocation 22.71 GiB
+threads  : 160 EU x 8 = 1280   SLM 128 KiB   2400 MHz
+WARNING: SYCL_CACHE_DISABLE_PERSISTENT environment variable is deprecated and has no effect. By default, persistent device code caching is disabled. Use SYCL_CACHE_PERSISTENT=1/0 to enable/disable.
+launch   : 227.84 us queued, 243.32 us with a wait per launch
+
+matrix              shape    fmt  tok  tpt  seg        ms   ms(med)     Gw/s     GB/s     TOPS  check
+merged.gate_up   34816x5120     s4   64   32    1    1.2050    1.2085    147.9     74.0    18.94  exact
+merged.gate_up   34816x5120 s4+a16   64   32    1    1.2811    1.2883    139.1     69.6    35.62  exact
+vtune: Collection stopped.
+vtune: Using result path `/tmp/claude-1000/vtr/jit'
+vtune: Executing actions  0 %                                                  vtune: Executing actions  0 % Finalizing results                               vtune: Executing actions  0 % Finalizing the result                            vtune: Executing actions  0 % Clearing the database                            vtune: Executing actions  7 % Clearing the database                            vtune: Executing actions  7 % Loading raw data to the database                 vtune: Executing actions  7 % Loading 'systemcollector-3734212-aiarcade02.sc' fvtune: Executing actions 12 % Loading 'systemcollector-3734212-aiarcade02.sc' fvtune: Executing actions 12 % Loading '3734212-3734217.0.trace' file           vtune: Executing actions 12 % Loading '3734212-3734217.1.trace' file           vtune: Executing actions 12 % Loading '3734212-3734217.2.trace' file           vtune: Executing actions 12 % Loading '3734217-3734266.0.trace' file           vtune: Executing actions 12 % Loading '3734217-3734290.0.trace' file           vtune: Executing actions 12 % Loading '3734217-3734290.1.trace' file           vtune: Executing actions 12 % Loading '3734266-3734271.0.trace' file           vtune: Executing actions 12 % Loading '3734266-3734271.1.trace' file           vtune: Executing actions 12 % Loading '3734290-3734333.0.trace' file           vtune: Executing actions 12 % Loading '3734290-3734333.1.trace' file           vtune: Executing actions 12 % Updating precomputed scalar metrics              vtune: Executing actions 14 % Updating precomputed scalar metrics              vtune: Executing actions 14 % Processing profile metrics and debug information vtune: Executing actions 19 % Processing profile metrics and debug information vtune: Executing actions 19 % Setting data model parameters                    vtune: Executing actions 19 % Resolving module symbols                         vtune: Executing actions 19 % Resolving information for `flock'                vtune: Executing actions 19 % Resolving information for `1575e1c9509c78a7.zebinvtune: Executing actions 19 % Resolving information for `8c8133d947e636b3.zebin
+vtune: Warning: Cannot locate debugging information for file `/usr/bin/flock'.
+vtune: Executing actions 19 % Resolving information for `bash'                 vtune: Executing actions 19 % Resolving information for `libstdc++.so.6'       
+vtune: Warning: Cannot locate debugging information for file `/usr/bin/bash'.
+vtune: Executing actions 20 % Resolving information for `libstdc++.so.6'       
+vtune: Warning: Cannot locate debugging information for file `/usr/lib/x86_64-linux-gnu/libstdc++.so.6'.
+vtune: Executing actions 20 % Resolving information for `43545f5549dd138e.zebinvtune: Executing actions 20 % Resolving information for `env'                  vtune: Executing actions 20 % Resolving information for `timeout'              vtune: Executing actions 20 % Resolving information for `dirname'              vtune: Executing actions 20 % Resolving information for `xf-bench'             
+vtune: Warning: Cannot locate debugging information for file `/usr/lib/cargo/bin/coreutils/env'.
+vtune: Warning: Cannot locate debugging information for file `/usr/lib/cargo/bin/coreutils/timeout'.
+vtune: Warning: Cannot locate debugging information for file `/usr/lib/cargo/bin/coreutils/dirname'.
+vtune: Executing actions 20 % Resolving information for dangling locations     vtune: Executing actions 21 % Resolving information for dangling locations     vtune: Executing actions 21 % Resolving information for `libze_intel_gpu.so.1' vtune: Executing actions 22 % Resolving information for `libze_intel_gpu.so.1' 
+vtune: Warning: Cannot locate debugging information for file `/usr/lib/x86_64-linux-gnu/libze_intel_gpu.so.1'.
+vtune: Executing actions 22 % Resolving bottom user stack information          vtune: Executing actions 23 % Resolving bottom user stack information          vtune: Executing actions 23 % Resolving thread name information                vtune: Executing actions 24 % Resolving thread name information                vtune: Executing actions 24 % Resolving call target names for dynamic code     vtune: Executing actions 25 % Resolving call target names for dynamic code     vtune: Executing actions 25 % Resolving interrupt name information             vtune: Executing actions 26 % Resolving interrupt name information             vtune: Executing actions 26 % Processing profile metrics and debug information vtune: Executing actions 27 % Processing profile metrics and debug information vtune: Executing actions 28 % Processing profile metrics and debug information vtune: Executing actions 29 % Processing profile metrics and debug information vtune: Executing actions 30 % Processing profile metrics and debug information vtune: Executing actions 31 % Processing profile metrics and debug information vtune: Executing actions 32 % Processing profile metrics and debug information vtune: Executing actions 33 % Processing profile metrics and debug information vtune: Executing actions 34 % Processing profile metrics and debug information vtune: Executing actions 35 % Processing profile metrics and debug information vtune: Executing actions 35 % Setting data model parameters                    vtune: Executing actions 35 % Precomputing frequently used data                vtune: Executing actions 35 % Precomputing frequently used data                vtune: Executing actions 36 % Precomputing frequently used data                vtune: Executing actions 37 % Precomputing frequently used data                vtune: Executing actions 38 % Precomputing frequently used data                vtune: Executing actions 39 % Precomputing frequently used data                vtune: Executing actions 40 % Precomputing frequently used data                vtune: Executing actions 41 % Precomputing frequently used data                vtune: Executing actions 41 % Updating precomputed scalar metrics              vtune: Executing actions 42 % Updating precomputed scalar metrics              vtune: Executing actions 42 % Discarding redundant overtime data               vtune: Executing actions 44 % Discarding redundant overtime data               vtune: Executing actions 44 % Saving the result                                vtune: Executing actions 46 % Saving the result                                vtune: Executing actions 48 % Saving the result                                vtune: Executing actions 49 % Saving the result                                vtune: Executing actions 50 % Saving the result                                vtune: Executing actions 50 % Generating a report                              vtune: Executing actions 50 % Setting data model parameters                    vtune: Executing actions 75 % Setting data model parameters                    vtune: Executing actions 75 % Generating a report                              Elapsed Time: 7.452s
+Collection and Platform Info
+    Application Command Line: scripts/b60run "timeout" "300" "./target/release/xf-bench" "--cold" "--format" "s4" "--shape" "merged.gate_up" "--tokens" "64" "--segs" "1" 
+    Operating System: 7.0.0-43-generic DISTRIB_ID=Ubuntu DISTRIB_RELEASE=26.04 DISTRIB_CODENAME=resolute DISTRIB_DESCRIPTION="Ubuntu 26.04.1 LTS"
+    Computer Name: aiarcade02
+    Result Size: 8.6 MB 
+    Collection start time: 07:32:06 22/11/2026 UTC
+    Collection stop time: 07:32:14 22/11/2026 UTC
+    Collector Type: User-mode sampling and tracing
+    CPU
+        Name: Unknown
+        Frequency: 3.192 GHz
+        Logical CPU Count: 12
+    GPU
+        Name: Battlemage G21 [Arc Pro B60]
+        Vendor: Intel Corporation
+        EU Count
+        Max EU Thread Count
+        Max Core Frequency
+        GPU OpenCL Info
+            Version
+            Max Compute Units: 160
+            Max Work Group Size: 1,024
+            Local Memory: 131.1 KB 
+            SVM Capabilities
+
+If you want to skip descriptions of detected performance issues in the report,
+enter: vtune -report summary -report-knob show-issues=false -r <my_result_dir>.
+Alternatively, you may view the report in the csv format: vtune -report
+<report_name> -format=csv.
+vtune: Executing actions 100 % Generating a report                             vtune: Executing actions 100 % done                                            

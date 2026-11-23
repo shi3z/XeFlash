@@ -1,0 +1,9 @@
+gate+up 64 rows, weights 89.1 MB, cold, back to back (us)
+stage                                    256 GRF/32tok 128 GRF/16tok
+ro                                            207.8      218.9
+dup                                           227.4      287.7
+loop (weights)                                225.7      285.8
++ activation loads                            293.9      380.3
++ DPAS (= production loop)                    289.3      338.1
+activation loads only (no weights)            184.2      168.0
+weights + DPAS, no activation loads           250.5      287.5

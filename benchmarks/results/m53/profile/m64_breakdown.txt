@@ -1,0 +1,43 @@
+m=64 rows per pass (passes=6), ms per pass, synchronised stages (sum exceeds the unprofiled pass)
+  GEMM (body)                                  pad0   51.78   auto   46.29   -5.48
+  GEMM head                                    pad0    2.38   auto    2.38   -0.01
+  GDN (conv+core+gate+gemv-ab+post+qk-norm)    pad0   12.72   auto   12.76   +0.03
+  attention                                    pad0    6.47   auto    6.52   +0.05
+  mlp-act                                      pad0    0.00   auto    0.00   +0.00
+  norm+quant (addnorm, act-quant)              pad0    3.55   auto    3.56   +0.00
+  embed+argmax                                 pad0    0.27   auto    0.28   +0.01
+  sum                                          pad0   77.17   auto   71.78   -5.39
+  per shape (us per call, pad0 -> auto):
+    gemm  5120x17408               194.9 ->   172.1
+    gemm  5120x6144                 99.9 ->    79.4
+    gemm 14336x5120                152.2 ->   140.1
+    gemm 16384x5120                189.8 ->   176.9
+    gemm 248320x5120  (head)      2381.2 ->  2375.5
+    gemm 34816x5120                333.8 ->   304.1
+  top non-GEMM (ms per pass, auto):
+    gdn:core               6.45
+    attn:xmx-main          4.36
+    mlp-act+quant          3.26
+    addnorm+quant          3.19
+    gdn:gemv-ab            3.06
+    gdn:conv               1.16
+    gdn:post+quant         1.05
+    attn:combine           0.93
+    attn:q16               0.54
+    gdn:qk-norm            0.53
+    gdn:gate               0.51
+    attn:q-prep            0.42
+    act-quant              0.35
+    attn:kv-store          0.27
+    head:argmax            0.24
+    embed                  0.04
+    addnorm                0.02
+m=16 rows per pass (passes=6), ms per pass, synchronised stages (sum exceeds the unprofiled pass)
+  GEMM (body)                                  pad0   35.75   auto   35.42   -0.33
+  GEMM head                                    pad0    1.57   auto    1.57   -0.00
+  GDN (conv+core+gate+gemv-ab+post+qk-norm)    pad0    6.63   auto    6.64   +0.01
+  attention                                    pad0    2.65   auto    2.63   -0.01
+  mlp-act                                      pad0    0.00   auto    0.00   +0.00
+  norm+quant (addnorm, act-quant)              pad0    2.30   auto    2.27   -0.02
+  embed+argmax                                 pad0    0.10   auto    0.10   +0.00
+  sum                                          pad0   48.99   auto   48.64   -0.36

@@ -1,0 +1,8 @@
+message type / duplicate requests vs the stream phase (256 GRF, us): base offset 0 / 64 / 128 / 192 / 256 B (pad 0)
+  full, weights as one 256 B load (production)      316.3    258.0    260.8    268.2    289.4
+  full, weights as 2 x 128 B loads                  332.1    304.6    310.7    322.9    332.4
+  full, weights as 4 x 64 B loads                   343.2    316.1    321.1    332.3    342.8
+  full, only the first token group loads weights    338.0    311.2    318.9    325.7    338.3
+  + act (xor), weights as one 256 B load            295.3    263.1    269.8    278.3    294.4
+  + act (xor), weights as 4 x 64 B loads            298.6    271.0    279.5    287.7    297.9
+  128 GRF full, weights as one 256 B load           348.5    267.6    287.4    316.2    348.6

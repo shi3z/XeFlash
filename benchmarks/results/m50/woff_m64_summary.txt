@@ -1,0 +1,6 @@
+median ms (min..max), n, results; delta vs woff0
+merged.attn_qkv  m64  | woff0 0.1331 (0.1331..0.1331) n=5 exact | woff16 0.1219 (0.1219..0.1219) n=4 exact -8.4% | woff32 0.1230 (0.1229..0.1230) n=4 exact -7.6%
+merged.gate_up   m64  | woff0 0.3116 (0.3116..0.3116) n=5 exact | woff16 0.2836 (0.2836..0.2839) n=5 exact -9.0% | woff32 0.2865 (0.2863..0.2869) n=5 exact -8.1%
+merged.qkvz      m64  | woff0 0.1703 (0.1701..0.1704) n=5 exact | woff16 0.1569 (0.1568..0.1570) n=5 exact -7.9% | woff32 0.1587 (0.1586..0.1587) n=5 exact -6.8%
+mlp.down         m64  | woff0 0.1963 (0.1963..0.1964) n=4 exact | woff16 0.1812 (0.1812..0.1813) n=4 exact -7.7% | woff32 0.1815 (0.1815..0.1816) n=4 exact -7.5%
+out_proj         m64  | woff0 0.0824 (0.0823..0.0824) n=4 exact | woff16 0.0733 (0.0733..0.0735) n=4 exact -11.0% | woff32 0.0752 (0.0752..0.0753) n=4 exact -8.7%

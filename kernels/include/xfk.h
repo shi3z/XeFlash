@@ -127,6 +127,7 @@ typedef struct {
   const float *bias; /* rows, or NULL: bias correction from calibration */
   float cmax;       /* max |cs| */
   int32_t rows, cols, fmt;
+  int32_t wpad;     /* padding in dwords after each 16-row block's weight stream (0 = packed layout; XF_WPAD) */
 } xf_mat;
 
 enum { XF_LAYER_GDN = 0, XF_LAYER_ATTN = 1 };

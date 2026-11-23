@@ -1,0 +1,4 @@
+jsonl_r1 exit=0
+jsonl_r2 exit=0
+jsonl_r3 exit=0
+done

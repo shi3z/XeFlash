@@ -1,0 +1,63 @@
+vtune: Warning: The 'profiling-mode' option is deprecated for GPU analysis. Use 'gpu-profiling-mode' instead.
+vtune: Collection started. To stop the collection, either press CTRL-C or enter from another console window: vtune -r /tmp/claude-1000/vtr/orig -command stop.
+device   : Intel(R) Arc(TM) Pro B60 Graphics (driver 1.18.40196+15)
+memory   : 23.91 GiB total, 22.30 GiB free, max single allocation 22.71 GiB
+threads  : 160 EU x 8 = 1280   SLM 128 KiB   2400 MHz
+launch   : 19.99 us queued, 17.10 us with a wait per launch
+
+matrix              shape    fmt  tok  tpt  seg        ms   ms(med)     Gw/s     GB/s     TOPS  check
+merged.gate_up   34816x5120     s4   64   32    1    0.2893    0.2896    616.2    308.1    78.87  exact
+XF_GEMM_NATIVE: using /tmp/nat/dump/rt.zebin (44872 bytes, kernel _ZTSZN12_GLOBAL__N_16submitILi0ELi8ELi4ELi1ELb1ELi2ELb1EEEN4sycl3_V15eventERNS2_5queueERK12xf_gemm_descEUlNS2_7nd_itemILi1EEEE_)
+merged.gate_up   34816x5120 s4+a16   64   32    1    0.3291    0.3291    541.7    270.9   138.68  exact
+vtune: Collection stopped.
+vtune: Using result path `/tmp/claude-1000/vtr/orig'
+vtune: Executing actions  0 %                                                  vtune: Executing actions  0 % Finalizing results                               vtune: Executing actions  0 % Finalizing the result                            vtune: Executing actions  0 % Clearing the database                            vtune: Executing actions  7 % Clearing the database                            vtune: Executing actions  7 % Loading raw data to the database                 vtune: Executing actions  7 % Loading 'systemcollector-3732335-aiarcade02.sc' fvtune: Executing actions 12 % Loading 'systemcollector-3732335-aiarcade02.sc' fvtune: Executing actions 12 % Loading '3732335-3732348.0.trace' file           vtune: Executing actions 12 % Loading '3732335-3732348.1.trace' file           vtune: Executing actions 12 % Loading '3732335-3732348.2.trace' file           vtune: Executing actions 12 % Loading '3732348-3732398.0.trace' file           vtune: Executing actions 12 % Loading '3732348-3732422.0.trace' file           vtune: Executing actions 12 % Loading '3732348-3732422.1.trace' file           vtune: Executing actions 12 % Loading '3732398-3732403.0.trace' file           vtune: Executing actions 12 % Loading '3732398-3732403.1.trace' file           vtune: Executing actions 12 % Loading '3732422-3732461.0.trace' file           vtune: Executing actions 12 % Loading '3732422-3732461.1.trace' file           vtune: Executing actions 12 % Loading 'stallreasons_0.0.lzm' file              vtune: Executing actions 12 % Updating precomputed scalar metrics              vtune: Executing actions 14 % Updating precomputed scalar metrics              vtune: Executing actions 14 % Processing profile metrics and debug information vtune: Executing actions 19 % Processing profile metrics and debug information vtune: Executing actions 19 % Setting data model parameters                    vtune: Executing actions 19 % Resolving module symbols                         vtune: Executing actions 19 % Resolving information for `2e724872e22be32e.zebinvtune: Executing actions 19 % Resolving information for `1575e1c9509c78a7.zebinvtune: Executing actions 19 % Resolving information for `libstdc++.so.6'       
+vtune: Warning: Cannot locate debugging information for file `/usr/lib/x86_64-linux-gnu/libstdc++.so.6'.
+vtune: Executing actions 19 % Resolving information for `xf-bench'             vtune: Executing actions 19 % Resolving information for `env'                  vtune: Executing actions 19 % Resolving information for `timeout'              vtune: Executing actions 19 % Resolving information for `dirname'              vtune: Executing actions 19 % Resolving information for dangling locations     vtune: Executing actions 20 % Resolving information for dangling locations     vtune: Executing actions 20 % Resolving information for `bash'                 
+vtune: Warning: Cannot locate debugging information for file `/usr/bin/bash'.
+vtune: Executing actions 20 % Resolving information for `flock'                
+vtune: Warning: Cannot locate debugging information for file `/usr/bin/flock'.
+vtune: Warning: Cannot locate debugging information for file `/usr/lib/cargo/bin/coreutils/env'.
+vtune: Executing actions 20 % Resolving information for `43545f5549dd138e.zebin
+vtune: Warning: Cannot locate debugging information for file `/usr/lib/cargo/bin/coreutils/timeout'.
+vtune: Warning: Cannot locate debugging information for file `/usr/lib/cargo/bin/coreutils/dirname'.
+vtune: Executing actions 21 % Resolving information for `43545f5549dd138e.zebinvtune: Executing actions 22 % Resolving information for `43545f5549dd138e.zebinvtune: Executing actions 22 % Resolving information for `libze_intel_gpu.so.1' 
+vtune: Warning: Cannot locate debugging information for file `/usr/lib/x86_64-linux-gnu/libze_intel_gpu.so.1'.
+vtune: Executing actions 22 % Resolving bottom user stack information          vtune: Executing actions 23 % Resolving bottom user stack information          vtune: Executing actions 23 % Resolving thread name information                vtune: Executing actions 24 % Resolving thread name information                vtune: Executing actions 24 % Resolving call target names for dynamic code     vtune: Executing actions 25 % Resolving call target names for dynamic code     vtune: Executing actions 25 % Resolving interrupt name information             vtune: Executing actions 26 % Resolving interrupt name information             vtune: Executing actions 26 % Processing profile metrics and debug information vtune: Executing actions 27 % Processing profile metrics and debug information vtune: Executing actions 28 % Processing profile metrics and debug information vtune: Executing actions 29 % Processing profile metrics and debug information vtune: Executing actions 30 % Processing profile metrics and debug information vtune: Executing actions 31 % Processing profile metrics and debug information vtune: Executing actions 32 % Processing profile metrics and debug information vtune: Executing actions 33 % Processing profile metrics and debug information vtune: Executing actions 34 % Processing profile metrics and debug information vtune: Executing actions 35 % Processing profile metrics and debug information vtune: Executing actions 35 % Setting data model parameters                    vtune: Executing actions 35 % Precomputing frequently used data                vtune: Executing actions 35 % Precomputing frequently used data                vtune: Executing actions 36 % Precomputing frequently used data                vtune: Executing actions 37 % Precomputing frequently used data                vtune: Executing actions 38 % Precomputing frequently used data                vtune: Executing actions 39 % Precomputing frequently used data                vtune: Executing actions 40 % Precomputing frequently used data                vtune: Executing actions 41 % Precomputing frequently used data                vtune: Executing actions 41 % Updating precomputed scalar metrics              vtune: Executing actions 42 % Updating precomputed scalar metrics              vtune: Executing actions 42 % Discarding redundant overtime data               vtune: Executing actions 44 % Discarding redundant overtime data               vtune: Executing actions 44 % Saving the result                                vtune: Executing actions 46 % Saving the result                                vtune: Executing actions 48 % Saving the result                                vtune: Executing actions 49 % Saving the result                                vtune: Executing actions 50 % Saving the result                                vtune: Executing actions 50 % Generating a report                              vtune: Executing actions 50 % Setting data model parameters                    vtune: Executing actions 75 % Setting data model parameters                    vtune: Executing actions 75 % Generating a report                              Elapsed Time: 6.265s
+
+Hottest GPU Computing Tasks
+Computing Task                                                                                                                                                                                     Total Time  Average Time  Instance Count  Control  Dist or Acc  Instruction Fetch  Pipe  SBID   Send  Synchronization  Pixel Shader Order  Other
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------  ----------  ------------  --------------  -------  -----------  -----------------  ----  ----  -----  ---------------  ------------------  -----
+(anonymous namespace)::submit<(int)0, (int)8, (int)4, (int)1, (bool)0, (int)2, (bool)0, (int)1>(sycl::_V1::event, sycl::_V1::queue&, xf_gemm_desc const&)::{lambda(sycl::_V1::nd_item<(int)1>)#1}      1.696s        0.000s           6,237     0.0%         0.3%               0.2%  0.3%  5.1%  41.0%             0.0%                0.0%   0.1%
+(anonymous namespace)::submit<(int)0, (int)8, (int)4, (int)1, (bool)1, (int)2, (bool)1>(sycl::_V1::event, sycl::_V1::queue&, xf_gemm_desc const&)::{lambda(sycl::_V1::nd_item<(int)1>)#1}              1.256s        0.000s           4,037     0.0%         0.3%               0.1%  0.2%  3.3%   5.7%             0.0%                0.0%   0.0%
+xf_noop::{lambda()#1}::operator()(void) const::{lambda()#1}                                                                                                                                            0.002s        0.000s           4,100     0.0%         0.0%               0.0%  0.0%  0.0%   0.0%             0.0%                0.0%   0.0%
+Collection and Platform Info
+    Application Command Line: scripts/b60run "timeout" "300" "./target/release/xf-bench" "--cold" "--format" "s4" "--shape" "merged.gate_up" "--tokens" "64" "--segs" "1" 
+    Operating System: 7.0.0-43-generic DISTRIB_ID=Ubuntu DISTRIB_RELEASE=26.04 DISTRIB_CODENAME=resolute DISTRIB_DESCRIPTION="Ubuntu 26.04.1 LTS"
+    Computer Name: aiarcade02
+    Result Size: 15.7 MB 
+    Collection start time: 07:31:17 22/11/2026 UTC
+    Collection stop time: 07:31:24 22/11/2026 UTC
+    Collector Type: User-mode sampling and tracing
+    CPU
+        Name: Unknown
+        Frequency: 3.192 GHz
+        Logical CPU Count: 12
+    GPU
+        Name: Battlemage G21 [Arc Pro B60]
+        Vendor: Intel Corporation
+        EU Count
+        Max EU Thread Count
+        Max Core Frequency
+        GPU OpenCL Info
+            Version
+            Max Compute Units: 160
+            Max Work Group Size: 1,024
+            Local Memory: 131.1 KB 
+            SVM Capabilities
+
+If you want to skip descriptions of detected performance issues in the report,
+enter: vtune -report summary -report-knob show-issues=false -r <my_result_dir>.
+Alternatively, you may view the report in the csv format: vtune -report
+<report_name> -format=csv.
+vtune: Executing actions 100 % Generating a report                             vtune: Executing actions 100 % done                                            

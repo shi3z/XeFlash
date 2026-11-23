@@ -233,7 +233,12 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0, bool LGRF = false
   constexpr int WDW = F::stored_dw;
   constexpr int XDW = 8 * TPT; // activation dwords per tile per thread
 
-  const int32_t *W = static_cast<const int32_t *>(d.w);
+  // Weight base offset (dwords, experiment XF_WOFF / xf_mat.wpad bits 16..31): the weight tensor starts this far into its buffer. A 256-byte weight load that is not 256-byte aligned is split by
+  // the load unit into smaller requests and the send queue no longer backs up behind aligned weight misses (Part AH9): no repacking, +4 * woff bytes per matrix.
+  uint32_t woff = (uint32_t(d.reserved) >> 16) & 0xFFFF;
+  if (!woff)
+    if (const char *e = std::getenv("XF_GEMM_WOFF")) woff = uint32_t(std::atoi(e)) & 0xFFFF;
+  const int32_t *W = static_cast<const int32_t *>(d.w) + woff;
   const int32_t *X = static_cast<const int32_t *>(d.x);
   const int32_t *XL = static_cast<const int32_t *>(d.xlo);
   const float *RS = d.rs;
@@ -251,11 +256,18 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0, bool LGRF = false
   float *YF = static_cast<float *>(d.ypart);     // float partials (bf16) when segs > 1
   int32_t *YI = static_cast<int32_t *>(d.ypart); // exact integer partials when segs > 1
   float *Y = segs == 1 ? d.y : YF;
+  // Experiment (default off): XF_GEMM_WPAD = dwords of padding between the weight streams of consecutive row blocks (the stream pitch becomes tiles * stored_dw + pad). The weights must be
+  // stored with the same pitch (xf-bench: XF_BENCH_WPAD). The value travels in the upper bits of segs so that the closure of the thread body keeps its 128 bytes (native-ISA hook).
+  uint32_t wpad = uint32_t(d.reserved) & 0xFFFF; // xf_mat.wpad from the engine
+  if (!wpad)
+    if (const char *e = std::getenv("XF_GEMM_WPAD")) wpad = uint32_t(std::atoi(e)) & 0xFFFF;
   constexpr size_t PLANES = A16 ? 2 : 1;
 
   // The thread body is shared by the two launch forms below. A plain range lets the runtime pick a work-group of 32 threads; a work-group cannot span Xe cores, so a launch of 320
   // threads (the 5,120-row matrices) filled only about half of the 20 cores. PIPE == 2 launches small work-groups (XF_GEMM_WG threads, default 4) which the dispatcher spreads over all cores.
+  const size_t segs_pk = segs | (size_t(wpad) << 48);
   const auto run = [=](const size_t gid) SYCL_ESIMD_FUNCTION {
+    const size_t segs = segs_pk & 0xFFFF, wpad = segs_pk >> 48;
     size_t rb, tg, seg;
     if constexpr (PIPE >= 2) {
       if (segs == 1 && tgroups == 1) { // every engine shape at 1 / 8 / 16 tokens: the thread index is the row block
@@ -276,7 +288,7 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0, bool LGRF = false
       seg = idx / (rowblks * tgroups);
     }
 
-    const int32_t *wp = W + (rb * tiles + seg * tps) * WDW;
+    const int32_t *wp = W + (rb * tiles + seg * tps) * WDW + rb * wpad;
     const size_t xoff = (seg * tps * mpad + tg * TPT) * 8; // dwords
     const size_t xstride = mpad * 8;                       // dwords per tile
 

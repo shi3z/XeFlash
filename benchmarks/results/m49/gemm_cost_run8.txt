@@ -1,0 +1,29 @@
+gate+up 64 rows, weights 89.1 MB, cold, back to back (us)
+stage                                    256 GRF/32tok 128 GRF/16tok
+ro                                            208.1      219.3
+dup                                           227.3      287.7
+loop (weights)                                225.6      285.5
++ activation loads                            294.0      380.1
++ DPAS (= production loop)                    289.5      338.1
+activation loads only (no weights)            184.2      167.7
+weights + DPAS, no activation loads           250.5      287.5
+
+classification of the activation cost (256 GRF / 32 tok; 128 GRF / 16 tok), us
+full: activation tiles L1-hot (same tile every K step)            254.4      301.0
+full: weight tile L1-hot (no DRAM stream)                         242.1      339.9
+full: both L1-hot (DPAS + L1 only)                                240.0      242.3
+activation loads only (no weights), L1-hot                         27.9       29.5
+full: activation as one 2D block load per plane (256 GRF only)      291.3      338.1
++ activation loads (xor), 2D block loads (256 GRF only)           296.6      380.2
+full: activation loads issued before the weight load              297.6      405.1
+full: weights L1-uncached (L2 cached)                             305.0      363.7
+full: weights L1-streaming (L2 cached)                            294.4      337.0
+full: K split in 2 segments (partial sums not written)            354.8      431.0
+full: K split in 4 segments                                       395.5      504.9
+full: WG 8, barrier every 8 tiles (K lockstep)                    312.2      386.2
+full: WG 16, barrier every 8 tiles                                322.9      384.7
+full: WG 32, barrier every 8 tiles                                335.9      389.2
+full: WG 16, barrier every 16 tiles                               303.9      365.1
+full: WG 16, barrier every 4 tiles                                343.3      411.2
+full: WG 16, no barrier (work-group size only)                    290.2      333.2
+full: weights L1- and L2-uncached                                1606.6     3206.9

@@ -1,0 +1,147 @@
+loaded /data/B60special/models/xfm/qwen38-27b-s4-cal.xfm in 12.3s, context capacity 8192 tokens
+device allocations      count          GiB
+  DeltaNet state           48       0.5695
+  KV cache                 16       0.5000
+  MTP                       5       0.3687
+  MTP KV cache              1       0.0312
+  RoPE table                2       0.0020
+  body matrices           256      11.3440
+  embedding (bf16)          1       2.3682
+  head sketch               4       0.1291
+  lm_head                   1       0.5920
+  matrix scales           779       0.0393
+  small tensors           408       0.0978
+  workspace                 1       0.1723
+  TOTAL requested        1522      16.2141
+driver free VRAM: 22.4843 GiB before, 6.2203 GiB after, difference 16.2640 GiB
+bdraft2 backend loaded: +2.804 GiB device memory (driver)
+py_merge  none        27.36 tok/s | 1.00 tok/pass | main  36.55 ms/pass
+          cost probe at position 80: 8 rows 38.4 ms, 16 rows 41.9 ms -> c16 = 1.078
+          adaptive block: 56 of 60 passes used 16 rows; taps device-to-device
+py_merge  bd2:adapt-cost  172.45 tok/s | 8.55 tok/pass | cycle  49.58 ms | main  42.25, draft   6.50 (of which taps 0.00) ms/pass | accept% [93 96 93 92 91 86 89 93 86 71 88 100 100 80 92] | same tokens, same state
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.002 ms
+          hybrid: 16 of 70 passes verified a copied candidate (min 4 tokens), 16 of them with more than 16 rows, 10 with more than 32
+          taps device-to-device
+py_merge  hv4+bd2:fixed16  140.31 tok/s | 7.33 tok/pass | cycle  52.23 ms | main  46.36, draft   5.03 (of which taps 0.00) ms/pass | accept% [94 96 90 86 82 90 93 88 96 86 89 88 93 86 92] | same tokens, same state
+          cost probe at position 80: 8 rows 38.4 ms, 16 rows 41.8 ms -> c16 = 1.077
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.002 ms
+          hybrid: 0 of 60 passes verified a copied candidate (min 4 tokens), 0 of them with more than 16 rows, 0 with more than 32
+          adaptive block: 57 of 60 passes used 16 rows; taps device-to-device
+py_merge  ad+bd2:adapt  172.35 tok/s | 8.55 tok/pass | cycle  49.61 ms | main  42.29, draft   6.48 (of which taps 0.00) ms/pass | accept% [93 96 93 92 91 86 89 93 86 71 88 100 100 80 92] | same tokens, same state
+cpp_merge none        27.37 tok/s | 1.00 tok/pass | main  36.54 ms/pass
+          cost probe at position 72: 8 rows 38.4 ms, 16 rows 41.9 ms -> c16 = 1.077
+          adaptive block: 57 of 60 passes used 16 rows; taps device-to-device
+cpp_merge bd2:adapt-cost  172.18 tok/s | 8.55 tok/pass | cycle  49.66 ms | main  42.28, draft   6.49 (of which taps 0.00) ms/pass | accept% [98 93 89 94 85 95 92 84 96 81 81 88 80 75 78] | same tokens, same state
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.002 ms
+          hybrid: 12 of 69 passes verified a copied candidate (min 4 tokens), 10 of them with more than 16 rows, 8 with more than 32
+          taps device-to-device
+cpp_merge hv4+bd2:fixed16  152.82 tok/s | 7.90 tok/pass | cycle  51.69 ms | main  45.39, draft   5.40 (of which taps 0.00) ms/pass | accept% [96 95 87 98 77 88 97 86 100 84 76 81 85 73 88] | same tokens, same state
+          cost probe at position 72: 8 rows 38.4 ms, 16 rows 41.8 ms -> c16 = 1.076
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.002 ms
+          hybrid: 0 of 60 passes verified a copied candidate (min 4 tokens), 0 of them with more than 16 rows, 0 with more than 32
+          adaptive block: 58 of 60 passes used 16 rows; taps device-to-device
+cpp_merge ad+bd2:adapt  171.99 tok/s | 8.55 tok/pass | cycle  49.71 ms | main  42.34, draft   6.49 (of which taps 0.00) ms/pass | accept% [98 93 89 94 85 95 92 84 96 81 81 88 80 75 78] | same tokens, same state
+gen_ja_chat none        27.39 tok/s | 1.00 tok/pass | main  36.50 ms/pass
+          cost probe at position 43: 8 rows 38.3 ms, 16 rows 41.8 ms -> c16 = 1.077
+          adaptive block: 11 of 248 passes used 16 rows; taps device-to-device
+gen_ja_chat bd2:adapt-cost   45.16 tok/s | 2.06 tok/pass | cycle  45.71 ms | main  39.11, draft   5.82 (of which taps 0.00) ms/pass | accept% [51 46 54 66 62 62 50 0 0 0 0 0 0 0 0] | same tokens, same state
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.001 ms
+          hybrid: 6 of 247 passes verified a copied candidate (min 4 tokens), 6 of them with more than 16 rows, 5 with more than 32
+          taps device-to-device
+gen_ja_chat hv4+bd2:fixed16   41.44 tok/s | 2.07 tok/pass | cycle  50.02 ms | main  42.92, draft   6.31 (of which taps 0.00) ms/pass | accept% [49 44 53 63 71 67 62 80 100 100 50 100 50 100 100] | same tokens, same state
+          cost probe at position 43: 8 rows 38.4 ms, 16 rows 41.8 ms -> c16 = 1.076
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.001 ms
+          hybrid: 6 of 250 passes verified a copied candidate (min 4 tokens), 0 of them with more than 16 rows, 0 with more than 32
+          adaptive block: 26 of 250 passes used 16 rows; taps device-to-device
+gen_ja_chat ad+bd2:adapt   44.63 tok/s | 2.05 tok/pass | cycle  45.88 ms | main  39.40, draft   5.70 (of which taps 0.00) ms/pass | accept% [51 45 52 66 58 55 67 100 100 100 0 0 0 0 0] | same tokens, same state
+gen_en_chat none        27.39 tok/s | 1.00 tok/pass | main  36.50 ms/pass
+          cost probe at position 46: 8 rows 38.3 ms, 16 rows 41.8 ms -> c16 = 1.078
+          adaptive block: 31 of 164 passes used 16 rows; taps device-to-device
+gen_en_chat bd2:adapt-cost   67.64 tok/s | 3.13 tok/pass | cycle  46.34 ms | main  39.61, draft   5.91 (of which taps 0.00) ms/pass | accept% [77 69 61 64 74 56 57 100 50 0 0 0 0 0 0] | same tokens, same state
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.001 ms
+          hybrid: 4 of 165 passes verified a copied candidate (min 4 tokens), 4 of them with more than 16 rows, 4 with more than 32
+          taps device-to-device
+gen_en_chat hv4+bd2:fixed16   61.88 tok/s | 3.10 tok/pass | cycle  50.15 ms | main  42.98, draft   6.33 (of which taps 0.00) ms/pass | accept% [76 67 57 68 69 55 67 88 71 60 100 0 0 0 0] | same tokens, same state
+          cost probe at position 46: 8 rows 38.3 ms, 16 rows 41.8 ms -> c16 = 1.078
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.001 ms
+          hybrid: 2 of 166 passes verified a copied candidate (min 4 tokens), 0 of them with more than 16 rows, 0 with more than 32
+          adaptive block: 31 of 166 passes used 16 rows; taps device-to-device
+gen_en_chat ad+bd2:adapt   66.89 tok/s | 3.10 tok/pass | cycle  46.29 ms | main  39.64, draft   5.84 (of which taps 0.00) ms/pass | accept% [76 68 60 65 73 58 57 100 50 0 0 0 0 0 0] | same tokens, same state
+gen_math  none        27.34 tok/s | 1.00 tok/pass | main  36.57 ms/pass
+          cost probe at position 108: 8 rows 38.4 ms, 16 rows 41.9 ms -> c16 = 1.077
+          adaptive block: 55 of 64 passes used 16 rows; taps device-to-device
+gen_math  bd2:adapt-cost  163.51 tok/s | 8.06 tok/pass | cycle  49.31 ms | main  42.02, draft   6.45 (of which taps 0.00) ms/pass | accept% [94 95 96 89 86 76 84 88 86 95 89 94 100 87 92] | same tokens, same state
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.001 ms
+          hybrid: 16 of 74 passes verified a copied candidate (min 4 tokens), 15 of them with more than 16 rows, 13 with more than 32
+          taps device-to-device
+gen_math  hv4+bd2:fixed16  132.09 tok/s | 6.97 tok/pass | cycle  52.79 ms | main  46.79, draft   5.14 (of which taps 0.00) ms/pass | accept% [98 91 94 90 86 79 80 79 89 94 100 88 93 77 100] | same tokens, same state
+          cost probe at position 108: 8 rows 38.4 ms, 16 rows 41.9 ms -> c16 = 1.077
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.002 ms
+          hybrid: 0 of 64 passes verified a copied candidate (min 4 tokens), 0 of them with more than 16 rows, 0 with more than 32
+          adaptive block: 55 of 64 passes used 16 rows; taps device-to-device
+gen_math  ad+bd2:adapt  163.53 tok/s | 8.06 tok/pass | cycle  49.30 ms | main  42.01, draft   6.45 (of which taps 0.00) ms/pass | accept% [94 95 96 89 86 76 84 88 86 95 89 94 100 87 92] | same tokens, same state
+explain   none        27.41 tok/s | 1.00 tok/pass | main  36.49 ms/pass
+          cost probe at position 30: 8 rows 38.3 ms, 16 rows 41.8 ms -> c16 = 1.077
+          adaptive block: 46 of 109 passes used 16 rows; taps device-to-device
+explain   bd2:adapt-cost   99.84 tok/s | 4.72 tok/pass | cycle  47.32 ms | main  40.40, draft   6.08 (of which taps 0.00) ms/pass | accept% [84 86 84 82 81 73 56 70 71 80 50 50 100 100 0] | same tokens, same state
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.001 ms
+          hybrid: 2 of 105 passes verified a copied candidate (min 4 tokens), 2 of them with more than 16 rows, 1 with more than 32
+          taps device-to-device
+explain   hv4+bd2:fixed16   98.18 tok/s | 4.90 tok/pass | cycle  49.96 ms | main  42.70, draft   6.37 (of which taps 0.00) ms/pass | accept% [84 85 84 89 76 81 59 75 73 55 33 50 100 0 0] | same tokens, same state
+          cost probe at position 30: 8 rows 38.4 ms, 16 rows 41.8 ms -> c16 = 1.077
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.001 ms
+          hybrid: 0 of 109 passes verified a copied candidate (min 4 tokens), 0 of them with more than 16 rows, 0 with more than 32
+          adaptive block: 46 of 109 passes used 16 rows; taps device-to-device
+explain   ad+bd2:adapt   99.83 tok/s | 4.72 tok/pass | cycle  47.33 ms | main  40.40, draft   6.08 (of which taps 0.00) ms/pass | accept% [84 86 84 82 81 73 56 70 71 80 50 50 100 100 0] | same tokens, same state
+japanese  none        27.41 tok/s | 1.00 tok/pass | main  36.49 ms/pass
+          cost probe at position 31: 8 rows 38.3 ms, 16 rows 41.8 ms -> c16 = 1.077
+          adaptive block: 22 of 256 passes used 16 rows; taps device-to-device
+japanese  bd2:adapt-cost   43.89 tok/s | 2.01 tok/pass | cycle  45.84 ms | main  39.23, draft   5.82 (of which taps 0.00) ms/pass | accept% [48 46 51 62 89 50 75 100 0 0 0 0 0 0 0] | same tokens, same state
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.001 ms
+          hybrid: 9 of 260 passes verified a copied candidate (min 4 tokens), 9 of them with more than 16 rows, 6 with more than 32
+          taps device-to-device
+japanese  hv4+bd2:fixed16   39.57 tok/s | 1.98 tok/pass | cycle  50.05 ms | main  43.02, draft   6.24 (of which taps 0.00) ms/pass | accept% [47 50 48 54 73 45 80 50 0 0 0 0 0 0 0] | same tokens, same state
+          cost probe at position 31: 8 rows 38.3 ms, 16 rows 41.8 ms -> c16 = 1.077
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.001 ms
+          hybrid: 2 of 257 passes verified a copied candidate (min 4 tokens), 1 of them with more than 16 rows, 0 with more than 32
+          adaptive block: 24 of 257 passes used 16 rows; taps device-to-device
+japanese  ad+bd2:adapt   43.67 tok/s | 2.00 tok/pass | cycle  45.89 ms | main  39.32, draft   5.78 (of which taps 0.00) ms/pass | accept% [48 47 49 61 88 53 75 100 0 0 0 0 0 0 0] | same tokens, same state
+story     none        27.40 tok/s | 1.00 tok/pass | main  36.49 ms/pass
+          cost probe at position 29: 8 rows 38.3 ms, 16 rows 41.7 ms -> c16 = 1.076
+          adaptive block: 14 of 207 passes used 16 rows; taps device-to-device
+story     bd2:adapt-cost   54.02 tok/s | 2.47 tok/pass | cycle  45.78 ms | main  39.17, draft   5.81 (of which taps 0.00) ms/pass | accept% [68 59 55 39 56 40 75 0 0 0 0 0 0 0 0] | same tokens, same state
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.001 ms
+          hybrid: 2 of 209 passes verified a copied candidate (min 4 tokens), 1 of them with more than 16 rows, 1 with more than 32
+          taps device-to-device
+story     hv4+bd2:fixed16   49.27 tok/s | 2.45 tok/pass | cycle  49.72 ms | main  42.50, draft   6.41 (of which taps 0.00) ms/pass | accept% [68 59 55 38 65 45 60 0 0 0 0 0 0 0 0] | same tokens, same state
+          cost probe at position 29: 8 rows 38.3 ms, 16 rows 41.7 ms -> c16 = 1.076
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.001 ms
+          hybrid: 1 of 206 passes verified a copied candidate (min 4 tokens), 0 of them with more than 16 rows, 0 with more than 32
+          adaptive block: 14 of 206 passes used 16 rows; taps device-to-device
+story     ad+bd2:adapt   54.30 tok/s | 2.49 tok/pass | cycle  45.77 ms | main  39.19, draft   5.78 (of which taps 0.00) ms/pass | accept% [69 59 57 38 56 40 75 0 0 0 0 0 0 0 0] | same tokens, same state
+gen_ja_write none        27.39 tok/s | 1.00 tok/pass | main  36.50 ms/pass
+          cost probe at position 43: 8 rows 38.3 ms, 16 rows 41.8 ms -> c16 = 1.077
+          adaptive block: 0 of 297 passes used 16 rows; taps device-to-device
+gen_ja_write bd2:adapt-cost   37.91 tok/s | 1.72 tok/pass | cycle  45.48 ms | main  38.93, draft   5.76 (of which taps 0.00) ms/pass | accept% [46 34 38 33 67 50 0 0 0 0 0 0 0 0 0] | same tokens, same state
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.001 ms
+          hybrid: 9 of 297 passes verified a copied candidate (min 4 tokens), 8 of them with more than 16 rows, 8 with more than 32
+          taps device-to-device
+gen_ja_write hv4+bd2:fixed16   34.41 tok/s | 1.72 tok/pass | cycle  50.10 ms | main  43.04, draft   6.27 (of which taps 0.00) ms/pass | accept% [48 33 38 35 50 67 0 0 0 0 0 0 0 0 0] | same tokens, same state
+          cost probe at position 43: 8 rows 38.3 ms, 16 rows 41.8 ms -> c16 = 1.077
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.001 ms
+          hybrid: 2 of 297 passes verified a copied candidate (min 4 tokens), 0 of them with more than 16 rows, 0 with more than 32
+          adaptive block: 0 of 297 passes used 16 rows; taps device-to-device
+gen_ja_write ad+bd2:adapt   37.92 tok/s | 1.72 tok/pass | cycle  45.46 ms | main  38.95, draft   5.72 (of which taps 0.00) ms/pass | accept% [47 34 38 33 67 50 0 0 0 0 0 0 0 0 0] | same tokens, same state
+proof     none        27.41 tok/s | 1.00 tok/pass | main  36.48 ms/pass
+          cost probe at position 24: 8 rows 38.3 ms, 16 rows 41.8 ms -> c16 = 1.078
+          adaptive block: 52 of 66 passes used 16 rows; taps device-to-device
+proof     bd2:adapt-cost  161.30 tok/s | 7.88 tok/pass | cycle  48.85 ms | main  41.64, draft   6.35 (of which taps 0.00) ms/pass | accept% [97 88 89 94 91 84 81 96 88 95 90 78 93 85 73] | same tokens, same state
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.001 ms
+          hybrid: 13 of 76 passes verified a copied candidate (min 4 tokens), 12 of them with more than 16 rows, 10 with more than 32
+          taps device-to-device
+proof     hv4+bd2:fixed16  129.91 tok/s | 6.74 tok/pass | cycle  51.86 ms | main  45.61, draft   5.39 (of which taps 0.00) ms/pass | accept% [97 90 85 87 95 82 81 92 83 95 84 81 85 91 90] | same tokens, same state
+          cost probe at position 24: 8 rows 38.3 ms, 16 rows 41.8 ms -> c16 = 1.077
+          host time per pass: candidate search 0.000 ms, token bookkeeping 0.001 ms
+          hybrid: 0 of 66 passes verified a copied candidate (min 4 tokens), 0 of them with more than 16 rows, 0 with more than 32
+          adaptive block: 52 of 66 passes used 16 rows; taps device-to-device
+proof     ad+bd2:adapt  161.35 tok/s | 7.88 tok/pass | cycle  48.83 ms | main  41.63, draft   6.35 (of which taps 0.00) ms/pass | accept% [97 88 89 94 91 84 81 96 88 95 90 78 93 85 73] | same tokens, same state

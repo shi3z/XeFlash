@@ -1,0 +1,20 @@
+base offset 0 dwords (0 B): 0.3117 exact
+
+base offset 4 dwords (16 B): 0.3054 exact
+
+base offset 8 dwords (32 B): 0.3045 exact
+
+base offset 12 dwords (48 B): 0.3053 exact
+
+base offset 16 dwords (64 B): 0.2836 exact
+
+base offset 24 dwords (96 B): 0.3292 exact
+
+base offset 32 dwords (128 B): 0.2865 exact
+
+base offset 48 dwords (192 B): 0.2946 exact
+
+base offset 64 dwords (256 B): 0.3118 exact
+
+base offset 80 dwords (320 B): 0.2836 exact
+

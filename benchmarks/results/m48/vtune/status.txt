@@ -1,0 +1,5 @@
+orig_merged.gate_up 0
+wonly_merged.gate_up 0
+wact_merged.gate_up 0
+wd4_merged.gate_up 0
+done

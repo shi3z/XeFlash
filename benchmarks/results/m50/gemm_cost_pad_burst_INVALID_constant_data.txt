@@ -1,0 +1,45 @@
+gate+up 64 rows, weights 89.1 MB, cold, back to back (us)
+stage                                    256 GRF/32tok 128 GRF/16tok
+ro                                            207.8      219.7
+dup                                           227.5      286.9
+loop (weights)                                225.8      285.9
++ activation loads                            294.5      379.9
++ DPAS (= production loop)                    289.4      348.7
+activation loads only (no weights)            183.6      166.9
+weights + DPAS, no activation loads           250.8      288.0
+
+classification of the activation cost (256 GRF / 32 tok; 128 GRF / 16 tok), us
+full: activation tiles L1-hot (same tile every K step)            254.5      301.2
+full: weight tile L1-hot (no DRAM stream)                         242.2      331.1
+full: both L1-hot (DPAS + L1 only)                                240.0      242.2
+activation loads only (no weights), L1-hot                         28.1       29.4
+full: activation as one 2D block load per plane (256 GRF only)      291.4      348.8
++ activation loads (xor), 2D block loads (256 GRF only)           296.7      380.1
+full: activation loads issued before the weight load              297.8      363.8
+full: weights L1-uncached (L2 cached)                             305.9      377.3
+full: weights L1-streaming (L2 cached)                            295.0      350.2
+full: K split in 2 segments (partial sums not written)            354.0      430.9
+full: K split in 4 segments                                       395.1      504.5
+full: WG 8, barrier every 8 tiles (K lockstep)                    312.0      385.7
+full: WG 16, barrier every 8 tiles                                323.0      384.7
+full: WG 32, barrier every 8 tiles                                335.4      389.1
+full: WG 16, barrier every 16 tiles                               304.4      364.9
+full: WG 16, barrier every 4 tiles                                343.6      411.4
+full: WG 16, no barrier (work-group size only)                    290.2      346.6
+full: weights L1- and L2-uncached                                1607.2     3209.5
+
+weight stream pitch padding (stream = 40,960 B): full loop, 256 GRF / 128 GRF us
+pad 0 B per stream                                                274.5      328.9
+pad 64 B per stream                                               253.5      291.6
+pad 256 B per stream                                              274.9      331.5
+pad 1024 B per stream                                             274.7      329.9
+pad 4096 B per stream                                             275.5      330.5
+pad 16384 B per stream                                            275.4      329.7
+pad 16640 B per stream                                            279.1      334.4
+pad 132 B per stream                                              319.1      381.5
+
+weight bursts (WB tiles requested back to back, 256 GRF), us
+WB = 2                                                            310.9        0.0
+WB = 4                                                            285.4        0.0
+WB = 8                                                            310.9        0.0
+FIN

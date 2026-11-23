@@ -1,0 +1,21 @@
+general benchmark, 512 new tokens, tok/s: previous layout (1 process) -> automatic layout (median of 3, min..max); all identical to greedy in tokens and state: True
+prompt           config                 pad0                       auto  change
+cpp_merge        bd2:adapt-cost        176.5    172.2 (172.1..172.2)   -2.5%
+cpp_merge        hv4+bd2:fixed16       150.2    152.8 (152.8..152.8)   +1.7%
+cpp_merge        hy4+bd2:fixed8        129.2    130.9 (130.9..130.9)   +1.3%
+edit_edit_code   bd2:adapt-cost         97.7     99.3 (99.3..99.3)   +1.6%
+edit_edit_code   hv4+bd2:fixed16       637.5    676.3 (676.2..676.5)   +6.1%
+edit_edit_code   hy4+bd2:fixed8        326.0    328.0 (328.0..328.1)   +0.6%
+explain          bd2:adapt-cost         98.5     99.9 (99.8..100.0)   +1.4%
+explain          hv4+bd2:fixed16        97.6     98.2 (98.2..98.2)   +0.6%
+explain          hy4+bd2:fixed8         93.1     94.4 (94.4..94.4)   +1.4%
+japanese         bd2:adapt-cost         43.2     43.9 (43.9..43.9)   +1.5%
+japanese         hv4+bd2:fixed16        39.3     39.6 (39.6..39.6)   +0.8%
+japanese         hy4+bd2:fixed8         43.0     43.6 (43.6..43.6)   +1.4%
+py_merge         bd2:adapt-cost        171.2    172.5 (172.2..172.5)   +0.8%
+py_merge         hv4+bd2:fixed16       137.6    140.3 (140.3..140.3)   +2.0%
+py_merge         hy4+bd2:fixed8        126.5    128.0 (128.0..128.0)   +1.2%
+story            bd2:adapt-cost         53.3     54.1 (54.0..54.1)   +1.5%
+story            hv4+bd2:fixed16        49.0     49.3 (49.3..49.3)   +0.6%
+story            hy4+bd2:fixed8         53.4     54.2 (54.1..54.2)   +1.4%
+greedy (none): {'py_merge': 27.4, 'cpp_merge': 27.4, 'edit_edit_code': 26.9, 'explain': 27.4, 'story': 27.4, 'japanese': 27.4}

@@ -1,0 +1,89 @@
+diff --git a/kernels/gemm/gemm.cpp b/kernels/gemm/gemm.cpp
+index 54ea6e7..7f5dc42 100644
+--- a/kernels/gemm/gemm.cpp
++++ b/kernels/gemm/gemm.cpp
+@@ -251,11 +251,30 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0, bool LGRF = false
+   float *YF = static_cast<float *>(d.ypart);     // float partials (bf16) when segs > 1
+   int32_t *YI = static_cast<int32_t *>(d.ypart); // exact integer partials when segs > 1
+   float *Y = segs == 1 ? d.y : YF;
++  // Experiments (default off, results unchanged by construction): XF_GEMM_RBPERM=m maps thread index -> row block through (index * m') % row blocks (m' = the first number >= m coprime to the
++  // row block count), so that concurrently running row blocks are not neighbours in memory; XF_GEMM_KROT=m starts the K loop of a row block at tile ((row block * m) % tiles) rounded to
++  // an even tile and wraps around (integer partial sums: the order of the additions does not change the result).
++  uint32_t rbperm = 0, krot = 0, wch = 0;
++  {
++    const char *e1 = std::getenv("XF_GEMM_RBPERM"), *e2 = std::getenv("XF_GEMM_KROT");
++    const uint32_t rq0 = uint32_t(rowblks) / RBK;
++    if (e1 && std::atoi(e1) > 1 && rq0 > 1) {
++      uint32_t m = uint32_t(std::atoi(e1));
++      auto gcd = [](uint32_t a, uint32_t b) { while (b) { uint32_t t = a % b; a = b; b = t; } return a; };
++      while (gcd(m, rq0) != 1) m++;
++      rbperm = m;
++    }
++    if (e2 && std::atoi(e2) > 0) krot = uint32_t(std::atoi(e2));
++    if (const char *e3 = std::getenv("XF_GEMM_WCHUNK")) wch = uint32_t(std::atoi(e3)); // TIMING ONLY: chunked weight order (the layout is not changed in memory, results are wrong)
++  }
+   constexpr size_t PLANES = A16 ? 2 : 1;
+ 
+   // The thread body is shared by the two launch forms below. A plain range lets the runtime pick a work-group of 32 threads; a work-group cannot span Xe cores, so a launch of 320
+   // threads (the 5,120-row matrices) filled only about half of the 20 cores. PIPE == 2 launches small work-groups (XF_GEMM_WG threads, default 4) which the dispatcher spreads over all cores.
++  const size_t segs_pk = segs | (size_t(rbperm) << 16) | (size_t(krot) << 32) | (size_t(wch) << 48); // the closure must stay 128 bytes (native-ISA experiments): the knobs travel in the upper bits of segs
+   const auto run = [=](const size_t gid) SYCL_ESIMD_FUNCTION {
++    const size_t segs = segs_pk & 0xFFFF;
++    const uint32_t rbperm = uint32_t(segs_pk >> 16) & 0xFFFF, krot = uint32_t(segs_pk >> 32) & 0xFFFF, wch = uint32_t(segs_pk >> 48) & 0xFFFF;
+     size_t rb, tg, seg;
+     if constexpr (PIPE >= 2) {
+       if (segs == 1 && tgroups == 1) { // every engine shape at 1 / 8 / 16 tokens: the thread index is the row block
+@@ -266,7 +285,8 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0, bool LGRF = false
+         const uint32_t i32 = uint32_t(gid), rq = uint32_t(rowblks) / RBK, tq = uint32_t(tgroups);
+         // token groups of one row block (pair) are adjacent threads: they read the same weight tiles at about the same time (cache hits); for one group (every shape up to 16 rows) this is the old order
+         tg = i32 % tq;
+-        rb = ((i32 / tq) % rq) * RBK;
++        const uint32_t ri = (i32 / tq) % rq;
++        rb = (rbperm ? uint32_t((uint64_t(ri) * rbperm) % rq) : ri) * RBK;
+         seg = i32 / (rq * tq);
+       }
+     } else {
+@@ -417,10 +437,15 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0, bool LGRF = false
+         simd<int32_t, WDW> wa1[U], wb1[U]; // second row block (RBK == 2): the activation tiles are shared by both
+         simd<int32_t, XDW> xa[U], xb[U], xla[U], xlb[U];
+         const int32_t *wq = wp, *wq1 = wp + tiles * WDW, *xq = X + xoff, *xlq = XL + xoff;
++        uint32_t wcc = 0;
+ #define XF_PL3(WV, WV1, XV, XLV)                                                      \
+   _Pragma("unroll") for (int u = 0; u < U; u++) {                                    \
+     WV[u].copy_from(wq);                                                              \
+     wq += WDW;                                                                        \
++    if (wch && ++wcc == wch) {                                                        \
++      wcc = 0;                                                                        \
++      wq += (size_t(rowblks) * wch - wch) * WDW;                                      \
++    }                                                                                 \
+     if constexpr (RBK == 2) {                                                         \
+       WV1[u].copy_from(wq1);                                                          \
+       wq1 += WDW;                                                                     \
+@@ -460,12 +485,21 @@ template <int WF, int R, int G, int U, bool A16, int PIPE = 0, bool LGRF = false
+     }                                                                                 \
+   }
+         const uint32_t tps32 = uint32_t(tps);
+-        XF_PL3(wa, wa1, xa, xla)
+-        for (uint32_t t32 = 0; t32 < tps32; t32 += 2 * U) {
+-          XF_PL3(wb, wb1, xb, xlb)
+-          XF_PC3(wa, wa1, xa, xla)
+-          if (t32 + 2 * U < tps32) XF_PL3(wa, wa1, xa, xla)
+-          XF_PC3(wb, wb1, xb, xlb)
++        uint32_t t0 = 0;
++        if (krot) t0 = ((uint32_t(rb) * krot) % tps32) / (2 * U) * (2 * U);
++        for (int sg = 0; sg < (t0 ? 2 : 1); sg++) {
++          const uint32_t tb = (sg == 0) ? t0 : 0, te = (sg == 0) ? tps32 : t0;
++          wq = wch ? (W + size_t(rb) * wch * WDW) : (wp + size_t(tb) * WDW);
++          wq1 = wp + tiles * WDW + size_t(tb) * WDW;
++          xq = X + xoff + size_t(tb) * xstride;
++          xlq = XL + xoff + size_t(tb) * xstride;
++          XF_PL3(wa, wa1, xa, xla)
++          for (uint32_t t32 = tb; t32 < te; t32 += 2 * U) {
++            XF_PL3(wb, wb1, xb, xlb)
++            XF_PC3(wa, wa1, xa, xla)
++            if (t32 + 2 * U < te) XF_PL3(wa, wa1, xa, xla)
++            XF_PC3(wb, wb1, xb, xlb)
++          }
+         }
+ #undef XF_PL3
+ #undef XF_PC3

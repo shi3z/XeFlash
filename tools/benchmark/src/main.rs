@@ -79,7 +79,24 @@ fn make_weights(dev: &Device, shape: Shape, format: WeightFormat, cold: bool) ->
     } else {
         let (lo, hi) = format.int_range();
         let int: Vec<i8> = (0..n).map(|_| rng.range_i8(lo, hi)).collect();
-        let packed = pack_weights(format, shape.rows, shape.cols, &int)?;
+        let mut packed = pack_weights(format, shape.rows, shape.cols, &int)?;
+        // XF_BENCH_WPAD=<dwords>: weight streams of consecutive 16-row blocks are stored with this much padding (pair with XF_GEMM_WPAD in the kernel)
+        if let Some(pad) = std::env::var("XF_BENCH_WPAD").ok().and_then(|v| v.parse::<usize>().ok()).filter(|p| *p > 0).map(|p| p * 4) { // dwords -> bytes
+            let rb = packed.len() / (shape.rows / 16);
+            let mut padded = Vec::with_capacity(packed.len() + (shape.rows / 16) * pad);
+            for blk in packed.chunks(rb) {
+                padded.extend_from_slice(blk);
+                padded.extend(std::iter::repeat(packed[0]).take(pad));
+            }
+            padded.extend(std::iter::repeat(packed[0]).take(pad));
+            packed = padded;
+        }
+        // XF_BENCH_WOFF=<dwords>: the weights start this far into the buffer (pair with XF_GEMM_WOFF in the kernel)
+        if let Some(off) = std::env::var("XF_BENCH_WOFF").ok().and_then(|v| v.parse::<usize>().ok()).filter(|p| *p > 0).map(|p| p * 4) {
+            let mut v = vec![0u8; off];
+            v.extend_from_slice(&packed);
+            packed = v;
+        }
         let nc = if cold { (160_000_000usize / (packed.len() * std::mem::size_of_val(&packed[0])).max(1)).max(1) } else { 0 };
         let copies = (0..nc).map(|_| dev.upload(&packed)).collect::<Result<Vec<_>>>()?;
         Ok(Weights { dev: dev.upload(&packed)?, int, bf16: Vec::new(), row_scale, row_scale_dev, copies })

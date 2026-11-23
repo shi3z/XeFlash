@@ -1,0 +1,4 @@
+[
+  {"prompt":"edit_edit_jsonl_long","drafter":"bd2:adapt-cost","block":8,"tok_per_s":275.054,"tokens_per_pass":15.1000,"cycle_ms":54.898,"main_ms":46.828,"draft_ms":7.380,"taps_ms":0.000,"same_tokens":true,"same_state":true,"passes":430,"passes16":425,"emitted":6493,"new_tokens":6493,"accept1":1.0000,"prefill_tok_s":346.6,"copy_passes":0,"wide_passes":0},
+  {"prompt":"edit_edit_jsonl_long","drafter":"hv4+bd2:fixed16","block":8,"tok_per_s":731.182,"tokens_per_pass":59.5780,"cycle_ms":81.482,"main_ms":79.195,"draft_ms":1.708,"taps_ms":0.000,"same_tokens":true,"same_state":true,"passes":109,"passes16":2,"emitted":6494,"new_tokens":6493,"accept1":1.0000,"prefill_tok_s":347.0,"copy_passes":107,"wide_passes":107}
+]

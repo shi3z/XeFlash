@@ -1,0 +1,6 @@
+median ms (min..max), n, results; delta vs pad0
+merged.attn_qkv  m64  | pad0 0.1331 (0.1331..0.1331) n=5 exact | pad16 0.1250 (0.1250..0.1251) n=5 exact -6.1% | pad48 0.1250 (0.1250..0.1250) n=5 exact -6.1%
+merged.gate_up   m64  | pad0 0.3116 (0.3115..0.3116) n=5 exact | pad16 0.2924 (0.2923..0.2926) n=5 exact -6.2% | pad48 0.2904 (0.2904..0.2904) n=5 exact -6.8%
+merged.qkvz      m64  | pad0 0.1703 (0.1700..0.1703) n=5 exact | pad16 0.1607 (0.1606..0.1607) n=5 exact -5.6% | pad48 0.1598 (0.1598..0.1599) n=5 exact -6.2%
+mlp.down         m64  | pad0 0.1963 (0.1963..0.1964) n=5 exact | pad16 0.1844 (0.1843..0.1844) n=5 exact -6.1% | pad48 0.1843 (0.1842..0.1844) n=5 exact -6.1%
+out_proj         m64  | pad0 0.0825 (0.0823..0.0827) n=5 exact | pad16 0.0654 (0.0653..0.0655) n=5 exact -20.7% | pad48 0.0675 (0.0675..0.0676) n=5 exact -18.2%

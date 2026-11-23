@@ -2451,6 +2451,7 @@ struct Pass {
     }
     d.a16 = 1;
     d.w = mat.w;
+    d.reserved = mat.wpad;
     d.x = ws.xhi;
     d.xlo = ws.xlo;
     d.rs = mat.rs;

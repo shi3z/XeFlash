@@ -1,0 +1,10 @@
+gate_up 64 rows, timing-only prototypes of the role-swapped loop (results wrong on purpose), ms, 5 processes for swap, single runs for the variants
+original round trip (exact)                      0.3107
+swap, weights loaded twice from the same line    0.3949   (artifact: duplicate request to one line)
+swap, DPAS only (no loads)                       0.2531   (same as the original DPAS-only floor 0.2529)
+swap, no weight loads                            0.2540
+swap, no activation loads                        0.3331
+swap, one weight send (half the weight bytes)    0.2864   (under-reads)
+swap, faithful traffic, weights 1 tile ahead     0.3061   (-1.5%)   qkvz 0.1673 (-1.4%)
+swap2 weights 1 / 2 / 3 tiles ahead              0.3061 / 0.3049 / 0.3049   (-1.5 / -1.9 / -1.9%)
+VTune gate_up (orig -> swap, 1 tile): XMX 71.6 -> 72.6 %, SBID 31.0 -> 32.1 %, Send 20.2 -> 7.6 %, L3 read 596 -> 423 GB/s, DRAM read 277 -> 280 GB/s

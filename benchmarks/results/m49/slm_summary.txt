@@ -1,0 +1,11 @@
+gate_up 64 rows, XF_GEMM_A16_32 modes of the production source, 5 processes: median (min..max) ms, results
+lgrf   n=5 0.3115 (0.3114..0.3116) {'exact'}
+split  n=5 0.3690 (0.3689..0.3690) {'exact'}
+slm    n=5 0.4343 (0.4342..0.4344) {'exact'}
+slm4   n=5 0.4337 (0.4336..0.4338) {'exact'}
+slm8   n=5 0.5934 (0.5932..0.5935) {'exact'}
+nbl    n=5 0.4879 (0.4878..0.4880) {'exact'}
+nbl4   n=5 0.5118 (0.5118..0.5119) {'exact'}
+nb2p   n=5 0.4314 (0.4313..0.4314) {'exact'}
+rb2s   n=5 0.3524 (0.3521..0.3526) {'exact'}
+pd2l   n=5 0.3343 (0.3341..0.3346) {'exact'}

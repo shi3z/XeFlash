@@ -1,0 +1,16 @@
+loaded /data/B60special/models/xfm/qwen38-27b-s4-cal.xfm in 11.8s, context capacity 8192 tokens
+device allocations      count          GiB
+  DeltaNet state           48       0.5695
+  KV cache                 16       0.5000
+  MTP                       5       0.3687
+  MTP KV cache              1       0.0312
+  RoPE table                2       0.0020
+  body matrices           256      11.3440
+  embedding (bf16)          1       2.3682
+  lm_head                   1       0.5920
+  matrix scales           779       0.0393
+  small tensors           408       0.0978
+  workspace                 1       0.1723
+  TOTAL requested        1518      16.0850
+driver free VRAM: 22.4843 GiB before, 6.3485 GiB after, difference 16.1358 GiB
+edit_edit_jsonl: traced 2854 positions; main pass 8/16/32/48/64 rows [39.2, 43.09, 51.26, 66.9, 68.93] ms; bdraft2 step 8 rows 5.61 ms, 16 rows (with 1 pending row) 7.90 ms
